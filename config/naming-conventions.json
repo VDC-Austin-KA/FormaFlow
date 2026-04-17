@@ -1,0 +1,106 @@
+{
+  "$schema": "../schemas/naming-conventions.schema.json",
+  "version": "1.0.0",
+  "description": "Standardised naming rules for clash groups and clash test results. Ensures every clash group has a globally unique, human-readable identifier that is transferable and sortable across projects.",
+  "clashGroupNaming": {
+    "format": "[Level]_[TestName]_[SearchSetA]_vs_[SearchSetB]_[Sequence]",
+    "example": "L03_ARCH_vs_STRUCT_ARCH_Floors_vs_STRUCT_Framing_001",
+    "components": {
+      "level": {
+        "description": "Building level or zone derived from the 'Level' property on clashing elements. Falls back to 'Z01' if not available.",
+        "property": "Level",
+        "fallback": "ZUNK",
+        "normalisation": "uppercase, remove spaces, prefix 'L' if numeric (e.g. '3' → 'L03'), max 8 chars",
+        "examples": ["L01", "L02", "L03", "BAS", "RF", "MECH", "ZUNK"]
+      },
+      "testName": {
+        "description": "Abbreviated clash test name from the clash test template ID.",
+        "source": "clashTest.name",
+        "maxLength": 20,
+        "examples": ["ARCH_vs_STRUCT", "MECH_vs_ARCH", "PLUMB_vs_STRUCT"]
+      },
+      "searchSetA": {
+        "description": "Name of the Search Set used for Side A of the clash test.",
+        "source": "clashTest.sideA.searchSetName",
+        "maxLength": 25,
+        "normalisation": "replace spaces with underscores",
+        "examples": ["ARCH_Floors", "MECH_Duct_Supply", "Plumbing_Sanitary"]
+      },
+      "searchSetB": {
+        "description": "Name of the Search Set used for Side B.",
+        "source": "clashTest.sideB.searchSetName",
+        "maxLength": 25,
+        "normalisation": "replace spaces with underscores",
+        "examples": ["STRUCT_Framing", "ARCH_Walls", "STRUCT_Columns"]
+      },
+      "sequence": {
+        "description": "Zero-padded integer to distinguish multiple groups at the same level with the same test/set combination.",
+        "format": "3-digit zero-padded",
+        "start": 1,
+        "examples": ["001", "002", "003", "100"]
+      }
+    },
+    "separator": "_",
+    "maximumLength": 120
+  },
+  "clashTestNaming": {
+    "format": "[ProjectCode]_[TestName]_[Date]",
+    "example": "PROJ001_ARCH_vs_STRUCT_20260315",
+    "components": {
+      "projectCode": {
+        "description": "Short project code from workflow config — applied to all tests for that run.",
+        "source": "workflowConfig.projectCode",
+        "maxLength": 10,
+        "fallback": "PROJ"
+      },
+      "testName": {
+        "source": "clashTestTemplate.name",
+        "maxLength": 30
+      },
+      "date": {
+        "format": "YYYYMMDD",
+        "source": "auto — workflow run date"
+      }
+    }
+  },
+  "searchSetNaming": {
+    "format": "[Discipline]_[ServiceOrSystem]",
+    "examples": [
+      "ARCH_Walls",
+      "ARCH_Floors",
+      "STRUCT_Framing",
+      "MEP_Duct_Supply",
+      "MEP_Duct_Return",
+      "Plumbing_Sanitary",
+      "Plumbing_DCW",
+      "ELEC_CableTrays",
+      "FP_Sprinklers"
+    ],
+    "rules": [
+      "Discipline prefix matches config/discipline-rules.json abbreviations",
+      "CamelCase for service/system name — no spaces",
+      "Max 40 characters total",
+      "System-based sets must include the system keyword (e.g. Supply, Return, DCW, Sanitary)"
+    ]
+  },
+  "levelNormalisation": {
+    "patterns": [
+      { "match": "^(Ground|GF|G)$", "normalised": "L00", "flag": "groundFloor" },
+      { "match": "^B(\\d+)$", "normalised": "B{n:02}", "flag": "basement" },
+      { "match": "^(\\d+)$", "normalised": "L{n:02}", "flag": "standard" },
+      { "match": "^Level\\s+(\\d+)$", "normalised": "L{n:02}", "flag": "standard" },
+      { "match": "^L(\\d+)$", "normalised": "L{n:02}", "flag": "standard" },
+      { "match": "^(Roof|RF|Rooftop)$", "normalised": "RF", "flag": "roof" },
+      { "match": "^(Mech|MR|MechRoom)$", "normalised": "MR", "flag": "plantRoom" },
+      { "match": "^(Penthouse|PH)$", "normalised": "PH", "flag": "penthouse" }
+    ],
+    "fallback": "ZUNK"
+  },
+  "groupingProperties": {
+    "primary": "Level",
+    "secondary": "System Classification",
+    "tertiary": "Category",
+    "quaternary": null,
+    "description": "Properties used for multi-property clash grouping in priority order. Groups are first split by Level, then sub-grouped by System Classification if present."
+  }
+}
