@@ -1,0 +1,406 @@
+{
+  "$schema": "../schemas/clash-test-templates.schema.json",
+  "version": "1.0.0",
+  "description": "Standard Clash Test pairing templates. Each template defines which Search Sets to use on Side A and Side B, the clash type, tolerance, and auto-pairing rules based on detected disciplines.",
+  "clashTypes": {
+    "hard": "Physical intersection — two elements occupy the same space",
+    "clearance": "Elements are within a specified clearance distance of each other",
+    "duplicate": "Duplicate elements occupying identical positions"
+  },
+  "clashTests": [
+    {
+      "id": "ct-arch-struct",
+      "name": "ARCH_vs_STRUCT",
+      "displayName": "Architecture vs Structure",
+      "priority": 1,
+      "enabled": true,
+      "requiredDisciplines": ["ARCH", "STRUCT"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Architecture",
+        "searchSetIds": ["ss-arch-floors", "ss-arch-walls", "ss-arch-roofs"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Structure",
+        "searchSetIds": ["ss-struct-columns", "ss-struct-framing", "ss-struct-slabs", "ss-struct-walls"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Highest priority test — identifies major coordination failures between architectural and structural elements. Focus on floors vs beams, walls vs columns.",
+      "subTests": [
+        {
+          "id": "ct-arch-struct-floors-framing",
+          "name": "ARCH_Floors_vs_STRUCT_Framing",
+          "sideASearchSetIds": ["ss-arch-floors"],
+          "sideBSearchSetIds": ["ss-struct-framing"],
+          "priority": 1
+        },
+        {
+          "id": "ct-arch-struct-walls-columns",
+          "name": "ARCH_Walls_vs_STRUCT_Columns",
+          "sideASearchSetIds": ["ss-arch-walls"],
+          "sideBSearchSetIds": ["ss-struct-columns"],
+          "priority": 2
+        },
+        {
+          "id": "ct-arch-struct-roofs-framing",
+          "name": "ARCH_Roofs_vs_STRUCT_Framing",
+          "sideASearchSetIds": ["ss-arch-roofs"],
+          "sideBSearchSetIds": ["ss-struct-framing"],
+          "priority": 3
+        }
+      ]
+    },
+    {
+      "id": "ct-mech-struct",
+      "name": "MECH_vs_STRUCT",
+      "displayName": "Mechanical (Ductwork) vs Structure",
+      "priority": 2,
+      "enabled": true,
+      "requiredDisciplines": ["MECH", "STRUCT"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Mechanical Ductwork",
+        "searchSetIds": ["ss-mech-ducts-all"],
+        "fallbackSearchSetIds": ["ss-mech-ducts-supply", "ss-mech-ducts-return", "ss-mech-ducts-exhaust"]
+      },
+      "sideB": {
+        "label": "Structure",
+        "searchSetIds": ["ss-struct-framing", "ss-struct-columns", "ss-struct-slabs"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Ductwork vs structural steel/concrete. Common failure point: ductwork routing through beams without coordinated openings.",
+      "subTests": [
+        {
+          "id": "ct-mech-struct-supply-framing",
+          "name": "MECH_Duct_Supply_vs_STRUCT_Framing",
+          "sideASearchSetIds": ["ss-mech-ducts-supply"],
+          "sideBSearchSetIds": ["ss-struct-framing"],
+          "priority": 1
+        },
+        {
+          "id": "ct-mech-struct-all-slabs",
+          "name": "MECH_Duct_All_vs_STRUCT_Slabs",
+          "sideASearchSetIds": ["ss-mech-ducts-all"],
+          "sideBSearchSetIds": ["ss-struct-slabs"],
+          "priority": 2
+        }
+      ]
+    },
+    {
+      "id": "ct-mech-arch",
+      "name": "MECH_vs_ARCH",
+      "displayName": "Mechanical (Ductwork) vs Architecture",
+      "priority": 3,
+      "enabled": true,
+      "requiredDisciplines": ["MECH", "ARCH"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Mechanical Ductwork",
+        "searchSetIds": ["ss-mech-ducts-all"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Architecture",
+        "searchSetIds": ["ss-arch-walls", "ss-arch-floors", "ss-arch-ceilings"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Ductwork vs walls, floor slabs, and ceilings. Catches routing into ceiling voids and penetrations.",
+      "subTests": [
+        {
+          "id": "ct-mech-arch-duct-walls",
+          "name": "MECH_Duct_All_vs_ARCH_Walls",
+          "sideASearchSetIds": ["ss-mech-ducts-all"],
+          "sideBSearchSetIds": ["ss-arch-walls"],
+          "priority": 1
+        },
+        {
+          "id": "ct-mech-arch-duct-ceilings",
+          "name": "MECH_Duct_All_vs_ARCH_Ceilings",
+          "sideASearchSetIds": ["ss-mech-ducts-all"],
+          "sideBSearchSetIds": ["ss-arch-ceilings"],
+          "priority": 2
+        }
+      ]
+    },
+    {
+      "id": "ct-plumb-struct",
+      "name": "PLUMB_vs_STRUCT",
+      "displayName": "Plumbing vs Structure",
+      "priority": 4,
+      "enabled": true,
+      "requiredDisciplines": ["PLUMB", "STRUCT"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Plumbing",
+        "searchSetIds": ["ss-plumb-all"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Structure",
+        "searchSetIds": ["ss-struct-framing", "ss-struct-columns", "ss-struct-slabs", "ss-struct-foundations"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Piping through beams and slabs. Priority on sanitary and cold water — commonly misrouted through structural zones.",
+      "subTests": [
+        {
+          "id": "ct-plumb-struct-sanitary-framing",
+          "name": "Plumbing_Sanitary_vs_STRUCT_Framing",
+          "sideASearchSetIds": ["ss-plumb-sanitary"],
+          "sideBSearchSetIds": ["ss-struct-framing"],
+          "priority": 1
+        },
+        {
+          "id": "ct-plumb-struct-dcw-framing",
+          "name": "Plumbing_DCW_vs_STRUCT_Framing",
+          "sideASearchSetIds": ["ss-plumb-dcw"],
+          "sideBSearchSetIds": ["ss-struct-framing"],
+          "priority": 2
+        }
+      ]
+    },
+    {
+      "id": "ct-plumb-arch",
+      "name": "PLUMB_vs_ARCH",
+      "displayName": "Plumbing vs Architecture",
+      "priority": 5,
+      "enabled": true,
+      "requiredDisciplines": ["PLUMB", "ARCH"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Plumbing",
+        "searchSetIds": ["ss-plumb-all"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Architecture",
+        "searchSetIds": ["ss-arch-walls", "ss-arch-floors", "ss-arch-ceilings"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Pipe routing through walls and slabs. Common: exposed sanitary lines through occupied ceilings.",
+      "subTests": []
+    },
+    {
+      "id": "ct-elec-struct",
+      "name": "ELEC_vs_STRUCT",
+      "displayName": "Electrical vs Structure",
+      "priority": 6,
+      "enabled": true,
+      "requiredDisciplines": ["ELEC", "STRUCT"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Electrical",
+        "searchSetIds": ["ss-elec-cabletrays", "ss-elec-conduits"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Structure",
+        "searchSetIds": ["ss-struct-framing", "ss-struct-columns"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Cable tray and conduit routing vs beams. Typically lower priority than MECH/PLUMB.",
+      "subTests": []
+    },
+    {
+      "id": "ct-elec-arch",
+      "name": "ELEC_vs_ARCH",
+      "displayName": "Electrical vs Architecture",
+      "priority": 7,
+      "enabled": true,
+      "requiredDisciplines": ["ELEC", "ARCH"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Electrical",
+        "searchSetIds": ["ss-elec-cabletrays", "ss-elec-conduits"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Architecture",
+        "searchSetIds": ["ss-arch-walls", "ss-arch-floors", "ss-arch-ceilings"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Tray routing through walls and slabs.",
+      "subTests": []
+    },
+    {
+      "id": "ct-mech-plumb",
+      "name": "MECH_vs_PLUMB",
+      "displayName": "Mechanical vs Plumbing",
+      "priority": 8,
+      "enabled": true,
+      "requiredDisciplines": ["MECH", "PLUMB"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Mechanical Ductwork",
+        "searchSetIds": ["ss-mech-ducts-all"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Plumbing",
+        "searchSetIds": ["ss-plumb-all"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Ductwork vs piping — common in congested ceiling spaces. Use System Classification based sets for targeted results.",
+      "subTests": []
+    },
+    {
+      "id": "ct-mech-elec",
+      "name": "MECH_vs_ELEC",
+      "displayName": "Mechanical vs Electrical",
+      "priority": 9,
+      "enabled": true,
+      "requiredDisciplines": ["MECH", "ELEC"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Mechanical Ductwork",
+        "searchSetIds": ["ss-mech-ducts-all"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Electrical",
+        "searchSetIds": ["ss-elec-cabletrays", "ss-elec-conduits"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Duct vs tray in ceiling zones.",
+      "subTests": []
+    },
+    {
+      "id": "ct-plumb-elec",
+      "name": "PLUMB_vs_ELEC",
+      "displayName": "Plumbing vs Electrical",
+      "priority": 10,
+      "enabled": true,
+      "requiredDisciplines": ["PLUMB", "ELEC"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Plumbing",
+        "searchSetIds": ["ss-plumb-all"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Electrical",
+        "searchSetIds": ["ss-elec-cabletrays", "ss-elec-conduits"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Piping over electrical — critical for safety and code compliance.",
+      "subTests": []
+    },
+    {
+      "id": "ct-fp-struct",
+      "name": "FP_vs_STRUCT",
+      "displayName": "Fire Protection vs Structure",
+      "priority": 11,
+      "enabled": true,
+      "requiredDisciplines": ["FP", "STRUCT"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Fire Protection",
+        "searchSetIds": ["ss-fp-pipes", "ss-fp-sprinklers"],
+        "fallbackSearchSetIds": ["ss-fp-all"]
+      },
+      "sideB": {
+        "label": "Structure",
+        "searchSetIds": ["ss-struct-framing", "ss-struct-slabs"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "FP mains and branch lines through structural zones. Sprinkler head locations vs slab penetrations.",
+      "subTests": []
+    },
+    {
+      "id": "ct-fp-arch",
+      "name": "FP_vs_ARCH",
+      "displayName": "Fire Protection vs Architecture",
+      "priority": 12,
+      "enabled": true,
+      "requiredDisciplines": ["FP", "ARCH"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Fire Protection",
+        "searchSetIds": ["ss-fp-all"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Architecture",
+        "searchSetIds": ["ss-arch-ceilings", "ss-arch-walls", "ss-arch-floors"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Sprinkler coverage and FP piping vs ceilings and walls.",
+      "subTests": []
+    },
+    {
+      "id": "ct-fp-mech",
+      "name": "FP_vs_MECH",
+      "displayName": "Fire Protection vs Mechanical",
+      "priority": 13,
+      "enabled": true,
+      "requiredDisciplines": ["FP", "MECH"],
+      "clashType": "hard",
+      "tolerance": 0.01,
+      "sideA": {
+        "label": "Fire Protection",
+        "searchSetIds": ["ss-fp-all"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Mechanical",
+        "searchSetIds": ["ss-mech-ducts-all"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "FP branch lines conflicting with ductwork — common in corridor ceiling spaces.",
+      "subTests": []
+    },
+    {
+      "id": "ct-mep-clearance",
+      "name": "MEP_Clearance",
+      "displayName": "MEP Clearance Check (All Services)",
+      "priority": 14,
+      "enabled": false,
+      "requiredDisciplines": ["MECH", "PLUMB", "ELEC", "FP"],
+      "clashType": "clearance",
+      "tolerance": 0.05,
+      "sideA": {
+        "label": "Mechanical + Fire Protection",
+        "searchSetIds": ["ss-mech-ducts-all", "ss-fp-pipes"],
+        "fallbackSearchSetIds": []
+      },
+      "sideB": {
+        "label": "Plumbing + Electrical",
+        "searchSetIds": ["ss-plumb-all", "ss-elec-cabletrays"],
+        "fallbackSearchSetIds": []
+      },
+      "notes": "Optional 50mm clearance check for maintainability — enable on projects with congested ceiling spaces."
+    }
+  ],
+  "autoPairingMatrix": {
+    "description": "When disciplines are auto-detected, this matrix drives automatic test selection. Keys are sorted discipline pairs.",
+    "pairs": {
+      "ARCH+STRUCT":   ["ct-arch-struct"],
+      "ARCH+MECH":     ["ct-mech-arch"],
+      "ARCH+PLUMB":    ["ct-plumb-arch"],
+      "ARCH+ELEC":     ["ct-elec-arch"],
+      "ARCH+FP":       ["ct-fp-arch"],
+      "STRUCT+MECH":   ["ct-mech-struct"],
+      "STRUCT+PLUMB":  ["ct-plumb-struct"],
+      "STRUCT+ELEC":   ["ct-elec-struct"],
+      "STRUCT+FP":     ["ct-fp-struct"],
+      "MECH+PLUMB":    ["ct-mech-plumb"],
+      "MECH+ELEC":     ["ct-mech-elec"],
+      "MECH+FP":       ["ct-fp-mech"],
+      "PLUMB+ELEC":    ["ct-plumb-elec"],
+      "PLUMB+FP":      [],
+      "ELEC+FP":       []
+    }
+  }
+}

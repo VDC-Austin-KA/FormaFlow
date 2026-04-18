@@ -1,0 +1,46 @@
+{
+  "$schema": "../schemas/workflow-config.schema.json",
+  "version": "1.0.0",
+  "description": "Top-level workflow configuration. Override per-project by copying and adjusting these values.",
+  "project": {
+    "code": "PROJ",
+    "name": "My Project",
+    "notes": "Override 'code' and 'name' for each project. Code is used in clash test names."
+  },
+  "workflow": {
+    "dryRun": false,
+    "phases": ["identify", "createSearchSets", "createClashTests", "waitForResults", "processResults"],
+    "stopOnUnknownDiscipline": false,
+    "requireManualReviewBeforeClash": false,
+    "pollIntervalMs": 5000,
+    "clashTestTimeoutMs": 600000
+  },
+  "modelIdentification": {
+    "strategy": "auto",
+    "minimumConfidence": 0.60,
+    "fallbackDiscipline": "UNKNOWN",
+    "skipUnknownModels": false,
+    "extractPropertiesFromDerivative": true
+  },
+  "searchSets": {
+    "createSystemBasedSets": true,
+    "createFallbackCategorySets": true,
+    "overwriteExisting": false,
+    "groupsToCreate": ["ARCH", "STRUCT", "MECH", "PLUMB", "ELEC", "FP"]
+  },
+  "clashTests": {
+    "autoSelectFromMatrix": true,
+    "subTestsEnabled": true,
+    "runParallel": false,
+    "toleranceOverride": null,
+    "disabledTestIds": ["ct-mep-clearance"]
+  },
+  "results": {
+    "groupByLevel": true,
+    "groupBySystemClassification": true,
+    "generateUniqueNames": true,
+    "namingConvention": "standard",
+    "exportFormat": "json",
+    "exportPath": "./output/clash-results"
+  }
+}

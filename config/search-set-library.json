@@ -1,0 +1,584 @@
+{
+  "$schema": "../schemas/search-set-library.schema.json",
+  "version": "1.0.0",
+  "description": "Reusable Search Set library for Autodesk Forma / ACC Model Coordination. All sets use Forma's property-based query syntax (March 2026+). Import this library into any project for instant standardised clash configuration.",
+  "formatNotes": [
+    "operator values: 'equals' | 'contains' | 'startsWith' | 'in' | 'exists' | 'notEquals'",
+    "conditionOperator: 'and' | 'or' — joins conditions within a single filter",
+    "Sets marked transferable:true can be imported to any project without modification",
+    "Sets marked systemBased:true rely on System Classification / System Type properties; ensure authoring standards are consistent"
+  ],
+  "searchSets": [
+    {
+      "id": "ss-arch-walls",
+      "name": "ARCH_Walls",
+      "discipline": "ARCH",
+      "category": "Architecture",
+      "transferable": true,
+      "systemBased": false,
+      "description": "All wall elements (architectural, including curtain wall)",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Walls" },
+          { "property": "Category", "operator": "equals", "value": "Curtain Walls" },
+          { "property": "Category", "operator": "equals", "value": "Curtain Panels" },
+          { "property": "Category", "operator": "equals", "value": "Curtain Wall Mullions" }
+        ]
+      }
+    },
+    {
+      "id": "ss-arch-floors",
+      "name": "ARCH_Floors",
+      "discipline": "ARCH",
+      "category": "Architecture",
+      "transferable": true,
+      "systemBased": false,
+      "description": "All architectural floor/slab elements",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Floors" }
+        ]
+      }
+    },
+    {
+      "id": "ss-arch-ceilings",
+      "name": "ARCH_Ceilings",
+      "discipline": "ARCH",
+      "category": "Architecture",
+      "transferable": true,
+      "systemBased": false,
+      "description": "All ceiling elements",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Ceilings" }
+        ]
+      }
+    },
+    {
+      "id": "ss-arch-roofs",
+      "name": "ARCH_Roofs",
+      "discipline": "ARCH",
+      "category": "Architecture",
+      "transferable": true,
+      "systemBased": false,
+      "description": "All roof elements",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Roofs" }
+        ]
+      }
+    },
+    {
+      "id": "ss-arch-openings",
+      "name": "ARCH_Openings",
+      "discipline": "ARCH",
+      "category": "Architecture",
+      "transferable": true,
+      "systemBased": false,
+      "description": "Doors and windows",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Doors" },
+          { "property": "Category", "operator": "equals", "value": "Windows" }
+        ]
+      }
+    },
+    {
+      "id": "ss-struct-columns",
+      "name": "STRUCT_Columns",
+      "discipline": "STRUCT",
+      "category": "Structure",
+      "transferable": true,
+      "systemBased": false,
+      "description": "Structural columns (steel and concrete)",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Structural Columns" }
+        ]
+      }
+    },
+    {
+      "id": "ss-struct-framing",
+      "name": "STRUCT_Framing",
+      "discipline": "STRUCT",
+      "category": "Structure",
+      "transferable": true,
+      "systemBased": false,
+      "description": "Structural beams, joists, braces, and other framing",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Structural Framing" }
+        ]
+      }
+    },
+    {
+      "id": "ss-struct-foundations",
+      "name": "STRUCT_Foundations",
+      "discipline": "STRUCT",
+      "category": "Structure",
+      "transferable": true,
+      "systemBased": false,
+      "description": "Structural foundations and footings",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Structural Foundations" }
+        ]
+      }
+    },
+    {
+      "id": "ss-struct-slabs",
+      "name": "STRUCT_Slabs",
+      "discipline": "STRUCT",
+      "category": "Structure",
+      "transferable": true,
+      "systemBased": false,
+      "description": "Structural floors and slabs",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Structural Floors" }
+        ]
+      }
+    },
+    {
+      "id": "ss-struct-walls",
+      "name": "STRUCT_Walls",
+      "discipline": "STRUCT",
+      "category": "Structure",
+      "transferable": true,
+      "systemBased": false,
+      "description": "Structural walls (shear walls, core walls)",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Structural Walls" }
+        ]
+      }
+    },
+    {
+      "id": "ss-mech-ducts-supply",
+      "name": "MEP_Duct_Supply",
+      "discipline": "MECH",
+      "category": "Mechanical",
+      "transferable": true,
+      "systemBased": true,
+      "description": "Supply air ductwork — relies on System Classification = 'Supply Air'",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "Category", "operator": "equals", "value": "Ducts" },
+              { "property": "Category", "operator": "equals", "value": "Duct Fittings" },
+              { "property": "Category", "operator": "equals", "value": "Flex Ducts" }
+            ]
+          },
+          { "property": "System Classification", "operator": "equals", "value": "Supply Air" }
+        ]
+      }
+    },
+    {
+      "id": "ss-mech-ducts-return",
+      "name": "MEP_Duct_Return",
+      "discipline": "MECH",
+      "category": "Mechanical",
+      "transferable": true,
+      "systemBased": true,
+      "description": "Return air ductwork — System Classification = 'Return Air'",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "Category", "operator": "equals", "value": "Ducts" },
+              { "property": "Category", "operator": "equals", "value": "Duct Fittings" },
+              { "property": "Category", "operator": "equals", "value": "Flex Ducts" }
+            ]
+          },
+          { "property": "System Classification", "operator": "equals", "value": "Return Air" }
+        ]
+      }
+    },
+    {
+      "id": "ss-mech-ducts-exhaust",
+      "name": "MEP_Duct_Exhaust",
+      "discipline": "MECH",
+      "category": "Mechanical",
+      "transferable": true,
+      "systemBased": true,
+      "description": "Exhaust air ductwork — System Classification = 'Exhaust Air'",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "Category", "operator": "equals", "value": "Ducts" },
+              { "property": "Category", "operator": "equals", "value": "Duct Fittings" },
+              { "property": "Category", "operator": "equals", "value": "Flex Ducts" }
+            ]
+          },
+          { "property": "System Classification", "operator": "equals", "value": "Exhaust Air" }
+        ]
+      }
+    },
+    {
+      "id": "ss-mech-ducts-oa",
+      "name": "MEP_Duct_OutsideAir",
+      "discipline": "MECH",
+      "category": "Mechanical",
+      "transferable": true,
+      "systemBased": true,
+      "description": "Outside / fresh air ductwork — System Classification = 'Outside Air'",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "Category", "operator": "equals", "value": "Ducts" },
+              { "property": "Category", "operator": "equals", "value": "Duct Fittings" }
+            ]
+          },
+          { "property": "System Classification", "operator": "equals", "value": "Outside Air" }
+        ]
+      }
+    },
+    {
+      "id": "ss-mech-ducts-all",
+      "name": "MEP_Duct_All",
+      "discipline": "MECH",
+      "category": "Mechanical",
+      "transferable": true,
+      "systemBased": false,
+      "description": "All duct categories (supply, return, exhaust, OA combined) — use when system classification is unreliable",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Ducts" },
+          { "property": "Category", "operator": "equals", "value": "Duct Fittings" },
+          { "property": "Category", "operator": "equals", "value": "Duct Accessories" },
+          { "property": "Category", "operator": "equals", "value": "Flex Ducts" },
+          { "property": "Category", "operator": "equals", "value": "Air Terminals" }
+        ]
+      }
+    },
+    {
+      "id": "ss-mech-equipment",
+      "name": "MEP_MechanicalEquipment",
+      "discipline": "MECH",
+      "category": "Mechanical",
+      "transferable": true,
+      "systemBased": false,
+      "description": "AHUs, fan coil units, VAVs, and other mechanical equipment",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Mechanical Equipment" },
+          { "property": "Category", "operator": "equals", "value": "HVAC Zones" }
+        ]
+      }
+    },
+    {
+      "id": "ss-plumb-dcw",
+      "name": "Plumbing_DomesticColdWater",
+      "discipline": "PLUMB",
+      "category": "Plumbing",
+      "transferable": true,
+      "systemBased": true,
+      "description": "Domestic cold water piping — System Classification = 'Domestic Cold Water'",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "Category", "operator": "equals", "value": "Pipes" },
+              { "property": "Category", "operator": "equals", "value": "Pipe Fittings" },
+              { "property": "Category", "operator": "equals", "value": "Pipe Accessories" }
+            ]
+          },
+          { "property": "System Classification", "operator": "equals", "value": "Domestic Cold Water" }
+        ]
+      }
+    },
+    {
+      "id": "ss-plumb-dhw",
+      "name": "Plumbing_DomesticHotWater",
+      "discipline": "PLUMB",
+      "category": "Plumbing",
+      "transferable": true,
+      "systemBased": true,
+      "description": "Domestic hot water supply and return piping",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "Category", "operator": "equals", "value": "Pipes" },
+              { "property": "Category", "operator": "equals", "value": "Pipe Fittings" }
+            ]
+          },
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "System Classification", "operator": "equals", "value": "Domestic Hot Water" },
+              { "property": "System Classification", "operator": "equals", "value": "Domestic Hot Water Return" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ss-plumb-sanitary",
+      "name": "Plumbing_Sanitary",
+      "discipline": "PLUMB",
+      "category": "Plumbing",
+      "transferable": true,
+      "systemBased": true,
+      "description": "Sanitary drain and waste piping",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "Category", "operator": "equals", "value": "Pipes" },
+              { "property": "Category", "operator": "equals", "value": "Pipe Fittings" }
+            ]
+          },
+          { "property": "System Classification", "operator": "equals", "value": "Sanitary" }
+        ]
+      }
+    },
+    {
+      "id": "ss-plumb-vent",
+      "name": "Plumbing_Vent",
+      "discipline": "PLUMB",
+      "category": "Plumbing",
+      "transferable": true,
+      "systemBased": true,
+      "description": "Plumbing vent piping",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Pipes" },
+          { "property": "System Classification", "operator": "equals", "value": "Vent" }
+        ]
+      }
+    },
+    {
+      "id": "ss-plumb-storm",
+      "name": "Plumbing_Storm",
+      "discipline": "PLUMB",
+      "category": "Plumbing",
+      "transferable": true,
+      "systemBased": true,
+      "description": "Storm / rainwater drainage piping",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Pipes" },
+          { "property": "System Classification", "operator": "equals", "value": "Storm" }
+        ]
+      }
+    },
+    {
+      "id": "ss-plumb-hydronic",
+      "name": "Plumbing_Hydronic",
+      "discipline": "PLUMB",
+      "category": "Plumbing",
+      "transferable": true,
+      "systemBased": true,
+      "description": "Hydronic heating/cooling supply and return piping (incl. chilled water)",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "Category", "operator": "equals", "value": "Pipes" },
+              { "property": "Category", "operator": "equals", "value": "Pipe Fittings" },
+              { "property": "Category", "operator": "equals", "value": "Pipe Insulation" }
+            ]
+          },
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "System Classification", "operator": "equals", "value": "Hydronic Supply" },
+              { "property": "System Classification", "operator": "equals", "value": "Hydronic Return" },
+              { "property": "System Classification", "operator": "equals", "value": "Chilled Water Supply" },
+              { "property": "System Classification", "operator": "equals", "value": "Chilled Water Return" },
+              { "property": "System Classification", "operator": "equals", "value": "Condenser Water Supply" },
+              { "property": "System Classification", "operator": "equals", "value": "Condenser Water Return" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ss-plumb-all",
+      "name": "Plumbing_All",
+      "discipline": "PLUMB",
+      "category": "Plumbing",
+      "transferable": true,
+      "systemBased": false,
+      "description": "All pipe categories — fallback when System Classification is not populated",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Pipes" },
+          { "property": "Category", "operator": "equals", "value": "Pipe Fittings" },
+          { "property": "Category", "operator": "equals", "value": "Pipe Accessories" },
+          { "property": "Category", "operator": "equals", "value": "Pipe Insulation" },
+          { "property": "Category", "operator": "equals", "value": "Flex Pipes" },
+          { "property": "Category", "operator": "equals", "value": "Plumbing Fixtures" },
+          { "property": "Category", "operator": "equals", "value": "Plumbing Equipment" }
+        ]
+      }
+    },
+    {
+      "id": "ss-elec-cabletrays",
+      "name": "ELEC_CableTrays",
+      "discipline": "ELEC",
+      "category": "Electrical",
+      "transferable": true,
+      "systemBased": false,
+      "description": "Cable tray systems (primary routing)",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Cable Trays" },
+          { "property": "Category", "operator": "equals", "value": "Cable Tray Fittings" }
+        ]
+      }
+    },
+    {
+      "id": "ss-elec-conduits",
+      "name": "ELEC_Conduits",
+      "discipline": "ELEC",
+      "category": "Electrical",
+      "transferable": true,
+      "systemBased": false,
+      "description": "Electrical conduit runs and fittings",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Conduits" },
+          { "property": "Category", "operator": "equals", "value": "Conduit Fittings" }
+        ]
+      }
+    },
+    {
+      "id": "ss-elec-equipment",
+      "name": "ELEC_Equipment",
+      "discipline": "ELEC",
+      "category": "Electrical",
+      "transferable": true,
+      "systemBased": false,
+      "description": "Electrical panels, switchboards, transformers",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Electrical Equipment" }
+        ]
+      }
+    },
+    {
+      "id": "ss-elec-lighting",
+      "name": "ELEC_Lighting",
+      "discipline": "ELEC",
+      "category": "Electrical",
+      "transferable": true,
+      "systemBased": false,
+      "description": "Lighting fixtures and devices",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Lighting Fixtures" },
+          { "property": "Category", "operator": "equals", "value": "Lighting Devices" }
+        ]
+      }
+    },
+    {
+      "id": "ss-fp-sprinklers",
+      "name": "FP_Sprinklers",
+      "discipline": "FP",
+      "category": "FireProtection",
+      "transferable": true,
+      "systemBased": false,
+      "description": "Fire sprinkler heads",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Sprinklers" }
+        ]
+      }
+    },
+    {
+      "id": "ss-fp-pipes",
+      "name": "FP_Pipes",
+      "discipline": "FP",
+      "category": "FireProtection",
+      "transferable": true,
+      "systemBased": true,
+      "description": "Fire protection piping — uses System Classification filter for FP systems",
+      "filter": {
+        "conditionOperator": "and",
+        "conditions": [
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "Category", "operator": "equals", "value": "Pipes" },
+              { "property": "Category", "operator": "equals", "value": "Pipe Fittings" }
+            ]
+          },
+          {
+            "conditionOperator": "or",
+            "conditions": [
+              { "property": "System Classification", "operator": "equals", "value": "Fire Protection Wet" },
+              { "property": "System Classification", "operator": "equals", "value": "Fire Protection Dry" },
+              { "property": "System Classification", "operator": "equals", "value": "Fire Protection Pre-Action" },
+              { "property": "System Classification", "operator": "equals", "value": "Fire Protection Other" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ss-fp-all",
+      "name": "FP_All",
+      "discipline": "FP",
+      "category": "FireProtection",
+      "transferable": true,
+      "systemBased": false,
+      "description": "All fire protection elements (sprinklers + FP pipes combined)",
+      "filter": {
+        "conditionOperator": "or",
+        "conditions": [
+          { "property": "Category", "operator": "equals", "value": "Sprinklers" },
+          { "property": "Category", "operator": "equals", "value": "Fire Protection Equipment" }
+        ]
+      }
+    }
+  ],
+  "searchSetGroups": {
+    "ARCH": ["ss-arch-walls", "ss-arch-floors", "ss-arch-ceilings", "ss-arch-roofs", "ss-arch-openings"],
+    "STRUCT": ["ss-struct-columns", "ss-struct-framing", "ss-struct-foundations", "ss-struct-slabs", "ss-struct-walls"],
+    "MECH": ["ss-mech-ducts-supply", "ss-mech-ducts-return", "ss-mech-ducts-exhaust", "ss-mech-ducts-oa", "ss-mech-ducts-all", "ss-mech-equipment"],
+    "PLUMB": ["ss-plumb-dcw", "ss-plumb-dhw", "ss-plumb-sanitary", "ss-plumb-vent", "ss-plumb-storm", "ss-plumb-hydronic", "ss-plumb-all"],
+    "ELEC": ["ss-elec-cabletrays", "ss-elec-conduits", "ss-elec-equipment", "ss-elec-lighting"],
+    "FP": ["ss-fp-sprinklers", "ss-fp-pipes", "ss-fp-all"]
+  }
+}

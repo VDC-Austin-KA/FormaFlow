@@ -1,0 +1,372 @@
+{
+  "$schema": "../schemas/discipline-rules.schema.json",
+  "version": "1.0.0",
+  "description": "Rules for automatically classifying uploaded models into BIM disciplines based on file naming, Revit categories, system classifications, and property signatures",
+  "disciplines": {
+    "ARCH": {
+      "label": "Architecture",
+      "abbreviation": "ARCH",
+      "color": "#E8A838",
+      "priority": 10,
+      "fileNamePatterns": [
+        "^ARCH[_\\-]",
+        "^A[_\\-]",
+        "\\-ARCH[_\\-\\.]",
+        "_ARCH\\.",
+        "ARCHITECTURAL",
+        "ARCHITECTURE"
+      ],
+      "revitCategories": [
+        "Walls",
+        "Floors",
+        "Ceilings",
+        "Roofs",
+        "Doors",
+        "Windows",
+        "Stairs",
+        "Railings",
+        "Ramps",
+        "Curtain Walls",
+        "Curtain Panels",
+        "Curtain Wall Mullions",
+        "Generic Models",
+        "Casework",
+        "Furniture",
+        "Furniture Systems",
+        "Specialty Equipment",
+        "Rooms"
+      ],
+      "dominantCategoryThreshold": 0.35,
+      "requiredCategories": ["Walls", "Floors"],
+      "excludeCategories": ["Structural Columns", "Structural Framing", "Structural Foundations"],
+      "propertySignatures": [
+        { "property": "Category", "operator": "in", "values": ["Walls", "Floors", "Ceilings", "Roofs"] },
+        { "property": "Discipline", "operator": "equals", "value": "Architecture" },
+        { "property": "Phase Created", "operator": "exists" }
+      ]
+    },
+    "STRUCT": {
+      "label": "Structure",
+      "abbreviation": "STRUCT",
+      "color": "#5B8DB8",
+      "priority": 9,
+      "fileNamePatterns": [
+        "^STRUCT[_\\-]",
+        "^STR[_\\-]",
+        "^S[_\\-]",
+        "\\-STRUCT[_\\-\\.]",
+        "_STRUCT\\.",
+        "STRUCTURAL",
+        "STRUCTURE"
+      ],
+      "revitCategories": [
+        "Structural Columns",
+        "Structural Framing",
+        "Structural Foundations",
+        "Structural Walls",
+        "Structural Floors",
+        "Structural Beam Systems",
+        "Structural Connections",
+        "Structural Stiffeners",
+        "Structural Trusses",
+        "Structural Path Reinforcement",
+        "Structural Rebar"
+      ],
+      "dominantCategoryThreshold": 0.30,
+      "requiredCategories": ["Structural Columns", "Structural Framing"],
+      "excludeCategories": [],
+      "propertySignatures": [
+        { "property": "Category", "operator": "in", "values": ["Structural Columns", "Structural Framing", "Structural Foundations"] },
+        { "property": "Structural Material", "operator": "exists" },
+        { "property": "Discipline", "operator": "equals", "value": "Structural" }
+      ]
+    },
+    "MECH": {
+      "label": "Mechanical (HVAC)",
+      "abbreviation": "MECH",
+      "color": "#4CAF50",
+      "priority": 8,
+      "fileNamePatterns": [
+        "^MECH[_\\-]",
+        "^MEP[_\\-]DUCT[_\\-]",
+        "^MEP[_\\-]MECH[_\\-]",
+        "^HVAC[_\\-]",
+        "^M[_\\-]",
+        "\\-MECH[_\\-\\.]",
+        "MECHANICAL",
+        "HVAC"
+      ],
+      "revitCategories": [
+        "Ducts",
+        "Duct Fittings",
+        "Duct Accessories",
+        "Duct Insulation",
+        "Duct Linings",
+        "Flex Ducts",
+        "Air Terminals",
+        "Mechanical Equipment",
+        "HVAC Zones"
+      ],
+      "systemClassifications": [
+        "Supply Air",
+        "Return Air",
+        "Exhaust Air",
+        "Outside Air",
+        "Transfer Air",
+        "HVAC",
+        "Pressurization"
+      ],
+      "systemTypePatterns": [
+        "SA\\s*-",
+        "RA\\s*-",
+        "EA\\s*-",
+        "OA\\s*-",
+        "SUPPLY",
+        "RETURN",
+        "EXHAUST",
+        "FRESH AIR",
+        "TRANSFER"
+      ],
+      "dominantCategoryThreshold": 0.40,
+      "requiredCategories": ["Ducts"],
+      "propertySignatures": [
+        { "property": "Category", "operator": "in", "values": ["Ducts", "Duct Fittings", "Air Terminals", "Flex Ducts"] },
+        { "property": "System Classification", "operator": "in", "values": ["Supply Air", "Return Air", "Exhaust Air", "Outside Air"] },
+        { "property": "System Type", "operator": "contains", "value": "Air" }
+      ]
+    },
+    "PLUMB": {
+      "label": "Plumbing",
+      "abbreviation": "PLUMB",
+      "color": "#2196F3",
+      "priority": 7,
+      "fileNamePatterns": [
+        "^PLUMB[_\\-]",
+        "^PL[_\\-]",
+        "^MEP[_\\-]PLUMB[_\\-]",
+        "^P[_\\-]",
+        "\\-PLUMB[_\\-\\.]",
+        "PLUMBING"
+      ],
+      "revitCategories": [
+        "Pipes",
+        "Pipe Fittings",
+        "Pipe Accessories",
+        "Pipe Insulation",
+        "Flex Pipes",
+        "Plumbing Fixtures",
+        "Plumbing Equipment",
+        "Sprinklers"
+      ],
+      "systemClassifications": [
+        "Domestic Cold Water",
+        "Domestic Hot Water",
+        "Domestic Hot Water Return",
+        "Sanitary",
+        "Vent",
+        "Storm",
+        "Other",
+        "Hydronic Supply",
+        "Hydronic Return",
+        "Chilled Water Supply",
+        "Chilled Water Return",
+        "Condenser Water Supply",
+        "Condenser Water Return"
+      ],
+      "systemTypePatterns": [
+        "DCW",
+        "DHW",
+        "DHWR",
+        "SAN",
+        "VNT",
+        "STM",
+        "HWS",
+        "HWR",
+        "CWS",
+        "CWR",
+        "COLD WATER",
+        "HOT WATER",
+        "SANITARY",
+        "STORM"
+      ],
+      "dominantCategoryThreshold": 0.40,
+      "requiredCategories": ["Pipes"],
+      "propertySignatures": [
+        { "property": "Category", "operator": "in", "values": ["Pipes", "Pipe Fittings", "Plumbing Fixtures", "Pipe Accessories"] },
+        { "property": "System Classification", "operator": "in", "values": ["Domestic Cold Water", "Domestic Hot Water", "Sanitary", "Vent", "Storm"] }
+      ]
+    },
+    "ELEC": {
+      "label": "Electrical",
+      "abbreviation": "ELEC",
+      "color": "#FFC107",
+      "priority": 6,
+      "fileNamePatterns": [
+        "^ELEC[_\\-]",
+        "^EL[_\\-]",
+        "^E[_\\-]",
+        "^MEP[_\\-]ELEC[_\\-]",
+        "\\-ELEC[_\\-\\.]",
+        "ELECTRICAL"
+      ],
+      "revitCategories": [
+        "Cable Trays",
+        "Cable Tray Fittings",
+        "Conduits",
+        "Conduit Fittings",
+        "Electrical Equipment",
+        "Electrical Fixtures",
+        "Communication Devices",
+        "Fire Alarm Devices",
+        "Security Devices",
+        "Lighting Fixtures",
+        "Lighting Devices",
+        "Nurse Call Devices",
+        "Telephone Devices",
+        "Data Devices",
+        "Switch System"
+      ],
+      "systemClassifications": [
+        "Power",
+        "Lighting",
+        "Data",
+        "Communications",
+        "Security",
+        "Fire Alarm",
+        "Nurse Call"
+      ],
+      "dominantCategoryThreshold": 0.35,
+      "requiredCategories": ["Cable Trays", "Conduits"],
+      "propertySignatures": [
+        { "property": "Category", "operator": "in", "values": ["Cable Trays", "Conduits", "Electrical Equipment", "Lighting Fixtures"] },
+        { "property": "Voltage", "operator": "exists" }
+      ]
+    },
+    "FP": {
+      "label": "Fire Protection",
+      "abbreviation": "FP",
+      "color": "#F44336",
+      "priority": 5,
+      "fileNamePatterns": [
+        "^FP[_\\-]",
+        "^FIRE[_\\-]",
+        "^MEP[_\\-]FP[_\\-]",
+        "\\-FP[_\\-\\.]",
+        "FIRE.PROTECTION",
+        "FIRE.SPRINKLER"
+      ],
+      "revitCategories": [
+        "Sprinklers",
+        "Pipes",
+        "Pipe Fittings",
+        "Pipe Accessories",
+        "Pipe Insulation",
+        "Fire Protection Equipment",
+        "Mechanical Equipment"
+      ],
+      "systemClassifications": [
+        "Fire Protection Wet",
+        "Fire Protection Dry",
+        "Fire Protection Pre-Action",
+        "Fire Protection Other"
+      ],
+      "systemTypePatterns": [
+        "FP\\s*-",
+        "FIRE",
+        "SPRINKLER",
+        "SUPPRESSION"
+      ],
+      "dominantCategoryThreshold": 0.50,
+      "requiredCategories": ["Sprinklers"],
+      "propertySignatures": [
+        { "property": "Category", "operator": "in", "values": ["Sprinklers"] },
+        { "property": "System Classification", "operator": "in", "values": ["Fire Protection Wet", "Fire Protection Dry", "Fire Protection Pre-Action"] }
+      ]
+    },
+    "CIVIL": {
+      "label": "Civil / Site",
+      "abbreviation": "CIVIL",
+      "color": "#795548",
+      "priority": 4,
+      "fileNamePatterns": [
+        "^CIVIL[_\\-]",
+        "^SITE[_\\-]",
+        "^C[_\\-]",
+        "\\-CIVIL[_\\-\\.]",
+        "CIVIL",
+        "SITE.WORK",
+        "LANDSCAPE"
+      ],
+      "revitCategories": [
+        "Topography",
+        "Site",
+        "Parking",
+        "Roads",
+        "Planting"
+      ],
+      "dominantCategoryThreshold": 0.30,
+      "requiredCategories": [],
+      "propertySignatures": [
+        { "property": "Category", "operator": "in", "values": ["Topography", "Site"] }
+      ]
+    },
+    "INTERIORS": {
+      "label": "Interiors",
+      "abbreviation": "INT",
+      "color": "#9C27B0",
+      "priority": 3,
+      "fileNamePatterns": [
+        "^INT[_\\-]",
+        "^INTERIOR[_\\-]",
+        "\\-INT[_\\-\\.]",
+        "INTERIORS",
+        "INTERIOR.DESIGN",
+        "FF&E"
+      ],
+      "revitCategories": [
+        "Furniture",
+        "Furniture Systems",
+        "Casework",
+        "Specialty Equipment",
+        "Generic Models"
+      ],
+      "dominantCategoryThreshold": 0.50,
+      "requiredCategories": [],
+      "propertySignatures": [
+        { "property": "Category", "operator": "in", "values": ["Furniture", "Furniture Systems", "Casework"] }
+      ]
+    },
+    "UNKNOWN": {
+      "label": "Unknown / Unclassified",
+      "abbreviation": "UNK",
+      "color": "#9E9E9E",
+      "priority": 0,
+      "fileNamePatterns": [],
+      "revitCategories": [],
+      "dominantCategoryThreshold": 0,
+      "requiredCategories": [],
+      "propertySignatures": []
+    }
+  },
+  "classificationStrategy": {
+    "order": ["fileName", "requiredCategories", "systemClassification", "propertySignature", "dominantCategory", "fallback"],
+    "minimumConfidence": 0.60,
+    "ambiguityThreshold": 0.15,
+    "allowMultipleDisciplines": false,
+    "fallbackDiscipline": "UNKNOWN"
+  },
+  "modelNamingConventions": {
+    "separator": "_",
+    "prefixPosition": 0,
+    "examples": [
+      "ARCH_Building-A_L01.rvt",
+      "STRUCT_Tower-Core.rvt",
+      "MECH_HVAC_Level1.rvt",
+      "PLUMB_Sanitary.rvt",
+      "ELEC_LV_CableTray.rvt",
+      "FP_Sprinkler.rvt",
+      "MEP_DUCT_Supply.rvt",
+      "MEP_PLUMB_DCW.rvt"
+    ]
+  }
+}
