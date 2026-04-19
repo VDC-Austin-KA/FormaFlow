@@ -36,7 +36,7 @@ export class APSClient {
 
     // Build the SDK Manager (shared across all @aps_sdk/* packages)
     this._sdkManager = SdkManagerBuilder.create().build();
-    this._authClient = new AuthenticationClient(this._sdkManager);
+    this._authClient = new AuthenticationClient({ sdkManager: this._sdkManager });
   }
 
   /**

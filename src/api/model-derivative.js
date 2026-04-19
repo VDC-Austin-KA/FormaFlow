@@ -1,9 +1,9 @@
 /**
  * Model Derivative Client
  *
- * Uses the official @aps_sdk/model-derivative package to extract model
- * properties (categories, system classifications, family names, etc.) needed
- * for automatic discipline identification.
+ * Uses the official @aps_sdk/model-derivative package (ModelDerivativeClient)
+ * to extract model properties (categories, system classifications, family names,
+ * etc.) needed for automatic discipline identification.
  *
  * SDK Reference:
  *   https://github.com/autodesk-platform-services/aps-sdk-node/tree/main/modelderivative
@@ -11,7 +11,7 @@
  *   https://aps.autodesk.com/en/docs/model-derivative/v2/reference/
  */
 
-import { DerivativesApi, ObjectsApi } from '@aps_sdk/model-derivative';
+import { ModelDerivativeClient } from '@aps_sdk/model-derivative';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('ModelDerivative');
@@ -29,13 +29,13 @@ const DISCIPLINE_PROPERTIES = [
   'Phase Created'
 ];
 
-export class ModelDerivativeClient {
+export class ModelDerivativeClientWrapper {
   /**
    * @param {import('./aps-client.js').APSClient} apsClient
    */
   constructor(apsClient) {
     this._client = apsClient;
-    this._derivativesApi = new DerivativesApi(apsClient.sdkManager);
+    this._derivative = new ModelDerivativeClient({ sdkManager: apsClient.sdkManager });
   }
 
   /**
@@ -50,14 +50,16 @@ export class ModelDerivativeClient {
     logger.info('Extracting properties from: %s', fileName);
 
     try {
-      const metadata = await this._getMetadata(urn);
-      const guid = metadata?.data?.metadata?.[0]?.guid;
+      const accessToken = await this._client.getToken();
+      const views = await this._derivative.getModelViews(urn, { accessToken });
+      const guid = views?.data?.metadata?.[0]?.guid;
+
       if (!guid) {
         logger.warn('No viewable GUID found for %s — using filename only', fileName);
         return this._fallbackDescriptor(urn, fileName);
       }
 
-      const props = await this._getProperties(urn, guid);
+      const props = await this._derivative.getAllProperties(urn, guid, { accessToken });
       return this._buildDescriptor(urn, fileName, props);
     } catch (err) {
       logger.warn('Property extraction failed for %s: %s — using filename only', fileName, err.message);
@@ -69,16 +71,6 @@ export class ModelDerivativeClient {
   // Private helpers
   // ─────────────────────────────────────────────────────────────────────────
 
-  async _getMetadata(urn) {
-    return this._derivativesApi.getMetadata(urn, { xAdsForce: false });
-  }
-
-  async _getProperties(urn, guid) {
-    return this._derivativesApi.getAllProperties(urn, guid, {
-      objectid: 1  // root node
-    });
-  }
-
   _buildDescriptor(urn, fileName, rawProps) {
     const categories = new Set();
     const systemClassifications = new Set();
@@ -88,7 +80,8 @@ export class ModelDerivativeClient {
     const collection = rawProps?.data?.collection ?? [];
     for (const obj of collection) {
       const props = obj.properties ?? {};
-      for (const [groupName, groupProps] of Object.entries(props)) {
+      for (const [, groupProps] of Object.entries(props)) {
+        if (!groupProps || typeof groupProps !== 'object') continue;
         for (const [propName, propValue] of Object.entries(groupProps)) {
           const cleanName = propName.trim();
           const cleanValue = String(propValue).trim();
@@ -126,6 +119,9 @@ export class ModelDerivativeClient {
     };
   }
 }
+
+// Keep the original class name as an alias so existing imports keep working
+export { ModelDerivativeClientWrapper as ModelDerivativeClient };
 
 /**
  * @typedef {Object} ModelDescriptor

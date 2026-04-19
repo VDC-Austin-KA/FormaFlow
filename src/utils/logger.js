@@ -1,6 +1,6 @@
 import { createLogger as winstonCreateLogger, format, transports } from 'winston';
 
-const { combine, timestamp, printf, colorize, errors } = format;
+const { combine, timestamp, printf, colorize, errors, splat } = format;
 
 const lineFormat = printf(({ level, message, label, timestamp: ts, stack }) => {
   const tag = label ? `[${label}] ` : '';
@@ -15,6 +15,7 @@ export function createLogger(label = 'FormaFlow') {
       timestamp({ format: 'HH:mm:ss' }),
       errors({ stack: true }),
       format.label({ label }),
+      splat(),
       lineFormat
     ),
     transports: [new transports.Console()]
