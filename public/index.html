@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FormaFlow — Model Coordination</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { DEFAULT: '#2563eb', dark: '#1d4ed8', light: '#3b82f6' },
+            surface: '#f8fafc',
+            sidebar: '#0f172a',
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body class="bg-surface text-slate-800 antialiased flex h-screen overflow-hidden">
+
+<!-- ══════════════════════════════════════════════════════ SIDEBAR ═══════ -->
+<aside id="sidebar" class="w-60 bg-sidebar flex flex-col flex-shrink-0 z-20">
+
+  <!-- Logo -->
+  <div class="px-5 pt-6 pb-5 border-b border-slate-700/60">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 bg-brand rounded-lg flex items-center justify-center flex-shrink-0">
+        <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="text-white font-semibold text-sm leading-tight">FormaFlow</h1>
+        <p class="text-slate-400 text-xs">Model Coordination</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Nav -->
+  <nav class="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
+    <button class="nav-item active" data-tab="connect">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
+          d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+      </svg>
+      Connect
+    </button>
+    <button class="nav-item" data-tab="models">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
+          d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+      </svg>
+      Models
+      <span id="badge-models" class="nav-badge hidden"></span>
+    </button>
+    <button class="nav-item" data-tab="searchsets">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
+          d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L13 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 017 21v-7.586L3.293 6.707A1 1 0 013 6V4z"/>
+      </svg>
+      Search Sets
+    </button>
+    <button class="nav-item" data-tab="clashtests">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
+          d="M13 10V3L4 14h7v7l9-11h-7z"/>
+      </svg>
+      Clash Tests
+    </button>
+    <button class="nav-item" data-tab="settings">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
+          d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+      </svg>
+      Settings
+    </button>
+
+    <div class="my-3 border-t border-slate-700/60"></div>
+
+    <button class="nav-item nav-run" data-tab="run">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
+          d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      Run Workflow
+    </button>
+  </nav>
+
+  <!-- Connection status footer -->
+  <div class="px-4 pb-4 pt-3 border-t border-slate-700/60">
+    <div class="flex items-center gap-2">
+      <div id="conn-dot" class="w-2 h-2 rounded-full bg-slate-500 flex-shrink-0"></div>
+      <span id="conn-label" class="text-xs text-slate-400">Not connected</span>
+    </div>
+  </div>
+</aside>
+
+<!-- ════════════════════════════════════════════════════════ MAIN ══════════ -->
+<main class="flex-1 flex flex-col overflow-hidden">
+
+  <!-- Top header -->
+  <header class="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between flex-shrink-0">
+    <div>
+      <h2 id="tab-title" class="text-lg font-semibold text-slate-800">Connect</h2>
+      <p id="tab-sub" class="text-sm text-slate-500 mt-0.5">Configure APS credentials and ACC project</p>
+    </div>
+    <div id="header-actions" class="flex items-center gap-3"></div>
+  </header>
+
+  <!-- Scrollable content -->
+  <div class="flex-1 overflow-y-auto bg-surface">
+
+    <!-- ══════════════════════════════ TAB: CONNECT ══════════════════════ -->
+    <div id="tab-connect" class="tab-panel p-8 max-w-3xl">
+
+      <!-- APS Credentials -->
+      <section class="card mb-6">
+        <div class="card-header">
+          <h3 class="card-title">APS Credentials</h3>
+          <p class="card-sub">Your Autodesk Platform Services application keys</p>
+        </div>
+        <div class="card-body space-y-4">
+          <div class="field-row">
+            <label class="field-label">Client ID</label>
+            <input id="inp-client-id" type="text" class="field-input" placeholder="2qEvoAw…" autocomplete="off" />
+          </div>
+          <div class="field-row">
+            <label class="field-label">Client Secret</label>
+            <div class="flex gap-2">
+              <input id="inp-client-secret" type="password" class="field-input flex-1" placeholder="••••••••••••••" autocomplete="new-password"/>
+              <button id="btn-toggle-secret" class="icon-btn" title="Show/hide">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 pt-1">
+            <button id="btn-test-conn" class="btn-primary">Test Connection</button>
+            <span id="conn-status-badge" class="hidden"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ACC Project -->
+      <section class="card mb-6">
+        <div class="card-header">
+          <h3 class="card-title">ACC Project</h3>
+          <p class="card-sub">Find these IDs in your ACC project URL: <code class="url-hint">acc.autodesk.com/accounts/<strong>[ACCOUNT_ID]</strong>/projects/<strong>[PROJECT_ID]</strong></code></p>
+        </div>
+        <div class="card-body space-y-4">
+          <div class="field-row">
+            <label class="field-label">Account ID</label>
+            <input id="inp-account-id" type="text" class="field-input" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"/>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Project ID</label>
+            <input id="inp-project-id" type="text" class="field-input" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"/>
+          </div>
+          <div class="field-row">
+            <label class="field-label">MC Container ID</label>
+            <div class="flex gap-2">
+              <input id="inp-container-id" type="text" class="field-input flex-1" placeholder="Auto-detect or paste manually"/>
+              <button id="btn-detect-container" class="btn-secondary text-sm">Detect</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Target Folder</label>
+            <div class="flex gap-2">
+              <select id="sel-folder" class="field-input flex-1">
+                <option value="">— load folders first —</option>
+              </select>
+              <button id="btn-load-folders" class="btn-secondary text-sm">Load</button>
+            </div>
+          </div>
+          <div id="folder-urn-row" class="field-row hidden">
+            <label class="field-label text-slate-400">Folder URN</label>
+            <input id="inp-folder-urn" type="text" class="field-input text-xs text-slate-500" readonly/>
+          </div>
+        </div>
+      </section>
+
+      <div class="flex gap-3">
+        <button id="btn-save-env" class="btn-primary">Save Configuration</button>
+        <span id="save-status" class="hidden text-sm text-emerald-600 flex items-center gap-1">
+          ✓ Saved
+        </span>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════ TAB: MODELS ═══════════════════════ -->
+    <div id="tab-models" class="tab-panel hidden p-8">
+      <div id="models-empty" class="empty-state">
+        <svg class="w-12 h-12 text-slate-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+        </svg>
+        <p class="text-slate-500 font-medium">No models loaded yet</p>
+        <p class="text-slate-400 text-sm mt-1">Go to <strong>Run Workflow</strong> to scan your model set, or save your project config first.</p>
+      </div>
+      <div id="models-list" class="hidden"></div>
+    </div>
+
+    <!-- ══════════════════════════════ TAB: SEARCH SETS ═════════════════ -->
+    <div id="tab-searchsets" class="tab-panel hidden p-8">
+      <!-- Discipline filter pills -->
+      <div class="flex flex-wrap gap-2 mb-6">
+        <button class="disc-pill active" data-disc="ALL">All</button>
+        <button class="disc-pill" data-disc="ARCH" style="--dc:#f59e0b">Architecture</button>
+        <button class="disc-pill" data-disc="STRUCT" style="--dc:#3b82f6">Structure</button>
+        <button class="disc-pill" data-disc="MECH" style="--dc:#10b981">Mechanical</button>
+        <button class="disc-pill" data-disc="PLUMB" style="--dc:#06b6d4">Plumbing</button>
+        <button class="disc-pill" data-disc="ELEC" style="--dc:#f97316">Electrical</button>
+        <button class="disc-pill" data-disc="FP" style="--dc:#ef4444">Fire Protection</button>
+      </div>
+      <div id="ss-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+    </div>
+
+    <!-- ══════════════════════════════ TAB: CLASH TESTS ═════════════════ -->
+    <div id="tab-clashtests" class="tab-panel hidden p-8">
+      <div class="card overflow-hidden">
+        <div class="card-header flex items-center justify-between">
+          <div>
+            <h3 class="card-title">Clash Test Configuration</h3>
+            <p class="card-sub">Toggle tests, set tolerance, and expand sub-tests</p>
+          </div>
+          <div class="flex gap-2">
+            <button id="btn-enable-all" class="btn-secondary text-xs">Enable All</button>
+            <button id="btn-disable-all" class="btn-secondary text-xs">Disable All</button>
+          </div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="clash-table">
+            <thead>
+              <tr>
+                <th class="w-8">#</th>
+                <th>Test Name</th>
+                <th>Disciplines</th>
+                <th>Type</th>
+                <th class="w-28">Tolerance (m)</th>
+                <th class="w-20">Sub-tests</th>
+                <th class="w-20">Enabled</th>
+              </tr>
+            </thead>
+            <tbody id="clash-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tolerance defaults -->
+      <section class="card mt-6">
+        <div class="card-header">
+          <h3 class="card-title">Default Tolerances</h3>
+          <p class="card-sub">Applied when creating new clash tests</p>
+        </div>
+        <div class="card-body flex flex-wrap gap-6">
+          <div class="field-row" style="width:180px">
+            <label class="field-label">Hard Clash (m)</label>
+            <input id="tol-hard" type="number" step="0.001" min="0" class="field-input" value="0.01"/>
+          </div>
+          <div class="field-row" style="width:180px">
+            <label class="field-label">Clearance (m)</label>
+            <input id="tol-clearance" type="number" step="0.001" min="0" class="field-input" value="0.05"/>
+          </div>
+        </div>
+      </section>
+      <div class="mt-4">
+        <button id="btn-save-clashes" class="btn-primary">Save Clash Config</button>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════ TAB: SETTINGS ════════════════════ -->
+    <div id="tab-settings" class="tab-panel hidden p-8 max-w-2xl space-y-6">
+
+      <!-- Project -->
+      <section class="card">
+        <div class="card-header"><h3 class="card-title">Project Info</h3></div>
+        <div class="card-body space-y-4">
+          <div class="field-row">
+            <label class="field-label">Project Code <span class="text-slate-400 font-normal">(used in clash test names)</span></label>
+            <input id="set-proj-code" type="text" class="field-input" maxlength="10" placeholder="PROJ"/>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Project Name</label>
+            <input id="set-proj-name" type="text" class="field-input" placeholder="My Project"/>
+          </div>
+        </div>
+      </section>
+
+      <!-- Naming -->
+      <section class="card">
+        <div class="card-header"><h3 class="card-title">Clash Group Naming</h3></div>
+        <div class="card-body space-y-3">
+          <div class="field-row">
+            <label class="field-label">Format</label>
+            <input id="set-naming-format" type="text" class="field-input font-mono text-sm"/>
+          </div>
+          <div class="text-xs text-slate-400">
+            Tokens: <code>[Level]</code>&nbsp;<code>[TestName]</code>&nbsp;<code>[SearchSetA]</code>&nbsp;<code>[SearchSetB]</code>&nbsp;<code>[Sequence]</code>
+          </div>
+          <div class="bg-slate-50 rounded-lg px-4 py-3 border border-slate-200">
+            <p class="text-xs text-slate-400 mb-1">Preview</p>
+            <code id="naming-preview" class="text-sm text-slate-700">L03_ARCH_vs_STRUCT_001</code>
+          </div>
+        </div>
+      </section>
+
+      <!-- Grouping -->
+      <section class="card">
+        <div class="card-header"><h3 class="card-title">Result Grouping</h3></div>
+        <div class="card-body space-y-3">
+          <div class="toggle-row">
+            <div>
+              <p class="toggle-label">Group by Level</p>
+              <p class="toggle-sub">Split clash results by building level</p>
+            </div>
+            <label class="toggle-switch"><input id="tog-group-level" type="checkbox" checked/><span class="toggle-knob"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <p class="toggle-label">Group by System Classification</p>
+              <p class="toggle-sub">Further sub-group by MEP system (Supply Air, DCW, etc.)</p>
+            </div>
+            <label class="toggle-switch"><input id="tog-group-system" type="checkbox" checked/><span class="toggle-knob"></span></label>
+          </div>
+        </div>
+      </section>
+
+      <!-- Workflow -->
+      <section class="card">
+        <div class="card-header"><h3 class="card-title">Workflow Options</h3></div>
+        <div class="card-body space-y-3">
+          <div class="toggle-row">
+            <div>
+              <p class="toggle-label">Stop on Unknown Discipline</p>
+              <p class="toggle-sub">Halt workflow if any model cannot be classified</p>
+            </div>
+            <label class="toggle-switch"><input id="tog-stop-unknown" type="checkbox"/><span class="toggle-knob"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <p class="toggle-label">Create System-Based Search Sets</p>
+              <p class="toggle-sub">Create sets filtered by System Classification (requires consistent Revit data)</p>
+            </div>
+            <label class="toggle-switch"><input id="tog-sys-sets" type="checkbox" checked/><span class="toggle-knob"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <p class="toggle-label">Create Sub-Tests</p>
+              <p class="toggle-sub">Run granular sub-tests (e.g. Floors vs Framing) in addition to main tests</p>
+            </div>
+            <label class="toggle-switch"><input id="tog-subtests" type="checkbox" checked/><span class="toggle-knob"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <p class="toggle-label">Overwrite Existing Search Sets</p>
+              <p class="toggle-sub">Re-create sets that already exist in the model set</p>
+            </div>
+            <label class="toggle-switch"><input id="tog-overwrite" type="checkbox"/><span class="toggle-knob"></span></label>
+          </div>
+        </div>
+      </section>
+
+      <!-- Output -->
+      <section class="card">
+        <div class="card-header"><h3 class="card-title">Output</h3></div>
+        <div class="card-body space-y-4">
+          <div class="field-row">
+            <label class="field-label">Export Path</label>
+            <input id="set-export-path" type="text" class="field-input font-mono text-sm" placeholder="./output/clash-results"/>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Log Level</label>
+            <select id="set-log-level" class="field-input" style="max-width:200px">
+              <option value="error">Error</option>
+              <option value="warn">Warn</option>
+              <option value="info" selected>Info</option>
+              <option value="debug">Debug</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <button id="btn-save-settings" class="btn-primary">Save Settings</button>
+    </div>
+
+    <!-- ══════════════════════════════ TAB: RUN ══════════════════════════ -->
+    <div id="tab-run" class="tab-panel hidden p-8">
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+
+        <!-- Left column — controls -->
+        <div class="xl:col-span-1 space-y-5">
+
+          <!-- Run options -->
+          <section class="card">
+            <div class="card-header"><h3 class="card-title">Run Options</h3></div>
+            <div class="card-body">
+              <div class="toggle-row">
+                <div>
+                  <p class="toggle-label">Dry Run</p>
+                  <p class="toggle-sub">Plan actions without writing to ACC</p>
+                </div>
+                <label class="toggle-switch"><input id="tog-dry-run" type="checkbox"/><span class="toggle-knob"></span></label>
+              </div>
+            </div>
+          </section>
+
+          <!-- Progress steps -->
+          <section class="card">
+            <div class="card-header"><h3 class="card-title">Progress</h3></div>
+            <div class="card-body">
+              <ol id="progress-steps" class="space-y-3">
+                <li class="step" data-step="auth">Authenticate with APS</li>
+                <li class="step" data-step="modelset">Fetch model set</li>
+                <li class="step" data-step="identify">Identify disciplines</li>
+                <li class="step" data-step="searchsets">Create Search Sets</li>
+                <li class="step" data-step="clashtests">Configure Clash Tests</li>
+                <li class="step" data-step="results">Process Results</li>
+              </ol>
+            </div>
+          </section>
+
+          <!-- Results summary (shown after run) -->
+          <section id="run-summary" class="card hidden">
+            <div class="card-header"><h3 class="card-title">Summary</h3></div>
+            <div id="run-summary-body" class="card-body space-y-2 text-sm"></div>
+          </section>
+        </div>
+
+        <!-- Right column — log + run button -->
+        <div class="xl:col-span-2 flex flex-col gap-5">
+          <button id="btn-run" class="run-btn">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <span id="run-btn-label">Run Workflow</span>
+          </button>
+
+          <!-- Terminal log -->
+          <div class="card flex-1 overflow-hidden flex flex-col">
+            <div class="flex items-center justify-between px-4 py-2.5 border-b border-slate-100 bg-slate-50 rounded-t-xl">
+              <span class="text-xs font-medium text-slate-500">Live Log</span>
+              <button id="btn-clear-log" class="text-xs text-slate-400 hover:text-slate-600">Clear</button>
+            </div>
+            <div id="log-output" class="terminal flex-1 overflow-y-auto p-4 font-mono text-xs space-y-0.5"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /scrollable content -->
+</main>
+
+<!-- ═════════════════════════════════════════════════ TOAST ══════════════ -->
+<div id="toast" class="toast hidden"></div>
+
+<script src="/js/app.js"></script>
+</body>
+</html>
