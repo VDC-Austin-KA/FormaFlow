@@ -231,6 +231,29 @@ async function saveEnv() {
 // Search Sets tab
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Operators offered in the editor. Symbol is for read-only preview cards.
+const SS_OPERATORS = [
+  { value: 'equals',      label: 'equals',           symbol: '=' },
+  { value: 'notEquals',   label: 'does not equal',   symbol: '≠' },
+  { value: 'contains',    label: 'contains',         symbol: '⊃' },
+  { value: 'notContains', label: 'does not contain', symbol: '⊅' },
+  { value: 'startsWith',  label: 'starts with',      symbol: '▸' },
+  { value: 'endsWith',    label: 'ends with',        symbol: '◂' },
+  { value: 'in',          label: 'is one of',        symbol: 'in' },
+  { value: 'exists',      label: 'exists',           symbol: '∃' },
+  { value: 'greaterThan', label: 'greater than',     symbol: '>' },
+  { value: 'lessThan',    label: 'less than',        symbol: '<' }
+];
+const OP_SYMBOL = Object.fromEntries(SS_OPERATORS.map(o => [o.value, o.symbol]));
+
+// In-memory editor state
+const SSEditor = {
+  mode: 'edit',        // 'edit' | 'create'
+  originalId: null,
+  draft: null,         // the set being edited (deep-copied from library)
+  properties: []       // pulled from model; name → values[]
+};
+
 function renderSearchSets(library, filter = 'ALL') {
   const grid = el('ss-grid');
   grid.innerHTML = '';
@@ -245,11 +268,11 @@ function renderSearchSets(library, filter = 'ALL') {
     card.className = `ss-card${ss._disabled ? ' disabled' : ''}`;
     card.dataset.id = ss.id;
 
-    // Build filter preview tags
+    // Build filter preview tags (respect chosen operator symbol)
     const conditions = ss.filter?.conditions ?? [];
     const tags = conditions.slice(0, 3).map(c => {
       if (c.conditionOperator) return `<span class="ss-filter-tag">(nested group)</span>`;
-      const op = c.operator === 'equals' ? '=' : c.operator === 'in' ? 'in' : c.operator;
+      const op = OP_SYMBOL[c.operator] ?? c.operator;
       const val = Array.isArray(c.value) ? c.value.join(', ') : (c.value ?? '…');
       return `<span class="ss-filter-tag">${c.property} ${op} ${String(val).slice(0, 28)}</span>`;
     }).join('');
@@ -268,6 +291,7 @@ function renderSearchSets(library, filter = 'ALL') {
           <span class="toggle-knob"></span>
         </label>
       </div>
+      <button class="ss-card-edit" data-edit-id="${ss.id}">Edit</button>
       <p class="ss-card-desc">${ss.description || ''}</p>
       <div class="flex flex-wrap">${tags}</div>
     `;
@@ -276,6 +300,8 @@ function renderSearchSets(library, filter = 'ALL') {
       ss._disabled = !e.target.checked;
       card.classList.toggle('disabled', ss._disabled);
     });
+
+    card.querySelector('.ss-card-edit').addEventListener('click', () => openSSEditor(ss.id));
 
     grid.appendChild(card);
   }
@@ -292,6 +318,398 @@ async function saveSearchSets() {
   } catch (err) {
     toast('Save failed: ' + err.message, 'error');
   }
+}
+
+// ───────────────── Search Set editor modal ─────────────────
+
+function openSSEditor(ssId) {
+  const lib = State.config.searchSets;
+  const existing = (lib.searchSets ?? []).find(s => s.id === ssId);
+  if (!existing) { toast('Search Set not found', 'error'); return; }
+  SSEditor.mode = 'edit';
+  SSEditor.originalId = existing.id;
+  SSEditor.draft = deepClone(existing);
+  el('ss-modal-title').textContent = 'Edit Search Set';
+  el('btn-ss-delete').classList.remove('hidden');
+  populateSSEditor();
+  el('ss-modal').classList.remove('hidden');
+}
+
+function openSSCreator(prefill) {
+  SSEditor.mode = 'create';
+  SSEditor.originalId = null;
+  SSEditor.draft = prefill ? deepClone(prefill) : {
+    id: `ss-custom-${Date.now().toString(36)}`,
+    name: '',
+    discipline: 'UNKNOWN',
+    category: '',
+    transferable: true,
+    systemBased: false,
+    description: '',
+    filter: { conditionOperator: 'or', conditions: [{ property: 'Category', operator: 'equals', value: '' }] }
+  };
+  el('ss-modal-title').textContent = prefill ? 'Import Search Set' : 'New Search Set';
+  el('btn-ss-delete').classList.add('hidden');
+  populateSSEditor();
+  el('ss-modal').classList.remove('hidden');
+}
+
+function populateSSEditor() {
+  const d = SSEditor.draft;
+  el('ss-edit-id').value           = d.id;
+  el('ss-edit-name').value         = d.name || '';
+  el('ss-edit-discipline').value   = d.discipline || 'UNKNOWN';
+  el('ss-edit-category').value     = d.category || '';
+  el('ss-edit-description').value  = d.description || '';
+  el('ss-edit-transferable').checked = !!d.transferable;
+  el('ss-edit-system-based').checked = !!d.systemBased;
+  el('ss-edit-join').value         = d.filter?.conditionOperator || 'or';
+  el('ss-edit-join-label').textContent = (el('ss-edit-join').value || 'or').toUpperCase();
+  renderConditionRows();
+  updatePropHint();
+}
+
+function renderConditionRows() {
+  const host = el('ss-conditions');
+  host.innerHTML = '';
+  const conditions = SSEditor.draft.filter.conditions;
+  conditions.forEach((c, idx) => host.appendChild(buildConditionRow(c, idx)));
+}
+
+function buildConditionRow(cond, idx) {
+  const row = document.createElement('div');
+  row.className = 'cond-row';
+  row.dataset.idx = idx;
+
+  const propList = SSEditor.properties.map(p => p.name);
+  const datalistId = `ss-prop-list`;
+
+  const propInput = document.createElement('input');
+  propInput.type = 'text';
+  propInput.value = cond.property || '';
+  propInput.placeholder = 'Property (e.g. Category)';
+  propInput.setAttribute('list', datalistId);
+  propInput.addEventListener('input', () => {
+    SSEditor.draft.filter.conditions[idx].property = propInput.value;
+    refreshValueSuggestions(valueInput, propInput.value);
+  });
+
+  const opSelect = document.createElement('select');
+  for (const o of SS_OPERATORS) {
+    const opt = new Option(o.label, o.value);
+    opSelect.add(opt);
+  }
+  opSelect.value = cond.operator || 'equals';
+  opSelect.addEventListener('change', () => {
+    SSEditor.draft.filter.conditions[idx].operator = opSelect.value;
+    valueInput.disabled = opSelect.value === 'exists';
+    if (opSelect.value === 'exists') valueInput.value = '';
+  });
+
+  const valueInput = document.createElement('input');
+  valueInput.type = 'text';
+  valueInput.value = Array.isArray(cond.value) ? cond.value.join(', ') : (cond.value ?? '');
+  valueInput.placeholder = opSelect.value === 'in' ? 'comma-separated values' : 'Value';
+  valueInput.setAttribute('list', `${datalistId}-values-${idx}`);
+  valueInput.disabled = opSelect.value === 'exists';
+  valueInput.addEventListener('input', () => {
+    const v = valueInput.value;
+    if (opSelect.value === 'in') {
+      SSEditor.draft.filter.conditions[idx].value = v.split(',').map(s => s.trim()).filter(Boolean);
+    } else {
+      SSEditor.draft.filter.conditions[idx].value = v;
+    }
+  });
+
+  // Values datalist (populated per-row from live model props)
+  const valuesList = document.createElement('datalist');
+  valuesList.id = `${datalistId}-values-${idx}`;
+  row.appendChild(valuesList);
+
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'cond-remove';
+  removeBtn.innerHTML = '×';
+  removeBtn.title = 'Remove condition';
+  removeBtn.addEventListener('click', () => {
+    SSEditor.draft.filter.conditions.splice(idx, 1);
+    renderConditionRows();
+  });
+
+  row.appendChild(propInput);
+  row.appendChild(opSelect);
+  row.appendChild(valueInput);
+  row.appendChild(removeBtn);
+
+  refreshValueSuggestions(valueInput, propInput.value);
+  return row;
+}
+
+function refreshValueSuggestions(inputEl, propName) {
+  const listId = inputEl.getAttribute('list');
+  const list = listId ? document.getElementById(listId) : null;
+  if (!list) return;
+  list.innerHTML = '';
+  const match = SSEditor.properties.find(p => p.name === propName);
+  if (!match) return;
+  for (const v of match.values.slice(0, 200)) {
+    list.appendChild(new Option(v, v));
+  }
+}
+
+// Shared properties datalist at document level so every property field can use it
+function ensureSharedPropsList() {
+  let list = document.getElementById('ss-prop-list');
+  if (!list) {
+    list = document.createElement('datalist');
+    list.id = 'ss-prop-list';
+    document.body.appendChild(list);
+  }
+  list.innerHTML = '';
+  for (const p of SSEditor.properties) list.appendChild(new Option(p.name, p.name));
+}
+
+function updatePropHint() {
+  const hint = el('ss-prop-hint');
+  if (SSEditor.properties.length) {
+    hint.textContent = `✓ ${SSEditor.properties.length} propertie(s) loaded from model — start typing in any Property field for autocomplete.`;
+    hint.classList.remove('hidden');
+  } else {
+    hint.classList.add('hidden');
+  }
+}
+
+function closeSSEditor() {
+  el('ss-modal').classList.add('hidden');
+  SSEditor.draft = null;
+}
+
+function commitSSEditor() {
+  const d = SSEditor.draft;
+  d.name        = el('ss-edit-name').value.trim();
+  d.discipline  = el('ss-edit-discipline').value;
+  d.category    = el('ss-edit-category').value.trim();
+  d.description = el('ss-edit-description').value.trim();
+  d.transferable = el('ss-edit-transferable').checked;
+  d.systemBased  = el('ss-edit-system-based').checked;
+  d.filter.conditionOperator = el('ss-edit-join').value;
+
+  if (!d.name) { toast('Name is required', 'error'); return; }
+  if (!d.filter.conditions.length) { toast('Add at least one condition', 'error'); return; }
+
+  const lib = State.config.searchSets;
+  lib.searchSets = lib.searchSets ?? [];
+
+  if (SSEditor.mode === 'edit') {
+    const idx = lib.searchSets.findIndex(s => s.id === SSEditor.originalId);
+    if (idx >= 0) lib.searchSets[idx] = d;
+  } else {
+    // Ensure ID uniqueness
+    let base = d.id;
+    let n = 2;
+    while (lib.searchSets.some(s => s.id === d.id)) d.id = `${base}-${n++}`;
+    lib.searchSets.push(d);
+
+    // Add to the matching discipline group so the workflow picks it up
+    lib.searchSetGroups = lib.searchSetGroups ?? {};
+    lib.searchSetGroups[d.discipline] = lib.searchSetGroups[d.discipline] ?? [];
+    if (!lib.searchSetGroups[d.discipline].includes(d.id)) {
+      lib.searchSetGroups[d.discipline].push(d.id);
+    }
+  }
+
+  closeSSEditor();
+  renderSearchSets(lib, State.ssFilter);
+  toast('Saved to local library — click "Save Library" to persist', 'success');
+}
+
+function deleteCurrentSS() {
+  if (SSEditor.mode !== 'edit' || !SSEditor.originalId) return;
+  if (!confirm(`Delete "${SSEditor.draft.name}" from the library?`)) return;
+  const lib = State.config.searchSets;
+  lib.searchSets = (lib.searchSets ?? []).filter(s => s.id !== SSEditor.originalId);
+  for (const group of Object.values(lib.searchSetGroups ?? {})) {
+    const idx = group.indexOf(SSEditor.originalId);
+    if (idx >= 0) group.splice(idx, 1);
+  }
+  closeSSEditor();
+  renderSearchSets(lib, State.ssFilter);
+  toast('Deleted — click "Save Library" to persist', 'success');
+}
+
+function deepClone(o) { return JSON.parse(JSON.stringify(o)); }
+
+// ───────────────── Model property picker ─────────────────
+
+async function openModelPicker() {
+  el('ss-model-modal').classList.remove('hidden');
+  const status = el('ss-model-status');
+  status.textContent = 'Loading folders…';
+
+  const accountId = State.config.env.ACC_ACCOUNT_ID;
+  const projectId = State.config.env.ACC_PROJECT_ID;
+  if (!accountId || !projectId) {
+    status.textContent = 'Set ACC Account ID and Project ID on the Connect tab first.';
+    return;
+  }
+
+  try {
+    const data = await api('GET', `/api/project/folders?accountId=${encodeURIComponent(accountId)}&projectId=${encodeURIComponent(projectId)}`);
+    const sel = el('ss-model-folder');
+    sel.innerHTML = '<option value="">— select a folder —</option>';
+    for (const f of (data?.data ?? [])) {
+      sel.add(new Option(f.attributes?.name || f.id, f.id));
+    }
+    status.textContent = '';
+  } catch (err) {
+    status.textContent = 'Could not load folders: ' + err.message;
+  }
+}
+
+async function loadFolderModels(folderUrn) {
+  const sel = el('ss-model-pick');
+  const status = el('ss-model-status');
+  const pullBtn = el('btn-model-pull');
+  sel.innerHTML = '<option value="">— loading —</option>';
+  sel.disabled = true;
+  pullBtn.disabled = true;
+
+  const projectId = State.config.env.ACC_PROJECT_ID;
+  if (!projectId) { status.textContent = 'Set Project ID first.'; return; }
+
+  try {
+    const res = await api('GET', `/api/project/folder-contents?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderUrn)}`);
+    const items = (res?.items ?? []).filter(it => it.type === 'items');
+    sel.innerHTML = items.length ? '<option value="">— pick a model —</option>' : '<option value="">— no models in folder —</option>';
+    for (const it of items) {
+      const opt = new Option(it.name, it.id);
+      opt.dataset.deriv = it.derivativeUrn || '';
+      sel.add(opt);
+    }
+    sel.disabled = !items.length;
+    status.textContent = items.length ? `${items.length} model(s) found.` : '';
+  } catch (err) {
+    status.textContent = 'Could not load folder contents: ' + err.message;
+    sel.innerHTML = '<option value="">— error —</option>';
+  }
+}
+
+async function pullModelProperties() {
+  const pick = el('ss-model-pick');
+  const itemId = pick.value;
+  if (!itemId) return;
+  const status = el('ss-model-status');
+  status.innerHTML = 'Extracting properties <span class="spinner-dot"></span><span class="spinner-dot"></span><span class="spinner-dot"></span>';
+
+  const projectId = State.config.env.ACC_PROJECT_ID;
+  try {
+    const data = await api('GET', `/api/models/properties?projectId=${encodeURIComponent(projectId)}&itemId=${encodeURIComponent(itemId)}`);
+    SSEditor.properties = data?.properties ?? [];
+    ensureSharedPropsList();
+    updatePropHint();
+    status.textContent = `✓ ${SSEditor.properties.length} propertie(s) loaded from ${pick.options[pick.selectedIndex].text}.`;
+    setTimeout(() => { el('ss-model-modal').classList.add('hidden'); }, 900);
+    // Refresh current condition rows to pick up new value suggestions
+    if (!el('ss-modal').classList.contains('hidden')) renderConditionRows();
+  } catch (err) {
+    status.textContent = 'Extraction failed: ' + err.message;
+  }
+}
+
+// ───────────────── Navisworks XML import ─────────────────
+
+async function handleNavisworksFile(file) {
+  const disciplineSel = el('ss-import-discipline');
+  const defaultDisc = disciplineSel ? disciplineSel.value : 'UNKNOWN';
+  let xml;
+  try {
+    xml = await file.text();
+  } catch (err) {
+    toast('Could not read file: ' + err.message, 'error');
+    return;
+  }
+  let parsed;
+  try {
+    const res = await fetch(`/api/search-sets/import-navisworks?discipline=${encodeURIComponent(defaultDisc)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/xml' },
+      body: xml
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+    parsed = await res.json();
+  } catch (err) {
+    toast('Import parse failed: ' + err.message, 'error');
+    return;
+  }
+  showImportPreview(parsed);
+}
+
+function showImportPreview(parsed) {
+  const listHost = el('ss-import-list');
+  const warnHost = el('ss-import-warnings');
+  listHost.innerHTML = '';
+  warnHost.innerHTML = '';
+
+  if (parsed.warnings?.length) {
+    warnHost.classList.remove('hidden');
+    for (const w of parsed.warnings) {
+      const line = document.createElement('div');
+      line.textContent = '⚠ ' + w;
+      warnHost.appendChild(line);
+    }
+  } else {
+    warnHost.classList.add('hidden');
+  }
+
+  if (!parsed.sets?.length) {
+    listHost.innerHTML = '<p class="text-sm text-slate-500 p-4 text-center">No parseable sets found.</p>';
+    el('btn-import-confirm').disabled = true;
+  } else {
+    el('btn-import-confirm').disabled = false;
+    for (const s of parsed.sets) {
+      const item = document.createElement('div');
+      item.className = 'imp-item';
+      item.innerHTML = `
+        <input type="checkbox" checked data-id="${s.id}"/>
+        <div>
+          <div class="imp-name">${s.name}</div>
+          <div class="imp-meta">${s.filter.conditionOperator.toUpperCase()} · ${s.filter.conditions.length} condition(s) · ${s.discipline}</div>
+        </div>
+        <span class="imp-meta">${s.filter.conditions.slice(0, 2).map(c => `${c.property} ${OP_SYMBOL[c.operator] || c.operator} ${Array.isArray(c.value) ? c.value.join('/') : c.value}`).join(' · ')}</span>
+      `;
+      listHost.appendChild(item);
+    }
+  }
+  State._pendingImport = parsed;
+  el('ss-import-modal').classList.remove('hidden');
+}
+
+function mergeImportedSets() {
+  const parsed = State._pendingImport;
+  if (!parsed?.sets?.length) return;
+
+  const checked = new Set([...document.querySelectorAll('#ss-import-list input[type=checkbox]')].filter(c => c.checked).map(c => c.dataset.id));
+  const toAdd = parsed.sets.filter(s => checked.has(s.id));
+
+  const lib = State.config.searchSets;
+  lib.searchSets = lib.searchSets ?? [];
+  lib.searchSetGroups = lib.searchSetGroups ?? {};
+
+  let added = 0;
+  for (const s of toAdd) {
+    // Resolve ID collisions
+    let base = s.id, n = 2;
+    while (lib.searchSets.some(x => x.id === s.id)) s.id = `${base}-${n++}`;
+    lib.searchSets.push(s);
+
+    const group = lib.searchSetGroups[s.discipline] = lib.searchSetGroups[s.discipline] ?? [];
+    if (!group.includes(s.id)) group.push(s.id);
+    added++;
+  }
+
+  el('ss-import-modal').classList.add('hidden');
+  State._pendingImport = null;
+  renderSearchSets(lib, State.ssFilter);
+  toast(`Imported ${added} set(s) — click "Save Library" to persist`, 'success');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -639,6 +1057,42 @@ async function init() {
       renderSearchSets(State.config.searchSets, State.ssFilter);
     });
   });
+
+  // Search Sets tab — toolbar
+  el('btn-ss-new').addEventListener('click', () => openSSCreator());
+  el('btn-ss-save').addEventListener('click', saveSearchSets);
+  el('btn-ss-import').addEventListener('click', () => el('ss-import-file').click());
+  el('ss-import-file').addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (file) handleNavisworksFile(file);
+    e.target.value = ''; // allow re-selecting the same file
+  });
+
+  // Editor modal
+  el('ss-modal-close').addEventListener('click', closeSSEditor);
+  el('btn-ss-cancel').addEventListener('click', closeSSEditor);
+  el('btn-ss-save-modal').addEventListener('click', commitSSEditor);
+  el('btn-ss-delete').addEventListener('click', deleteCurrentSS);
+  el('btn-ss-add-cond').addEventListener('click', () => {
+    SSEditor.draft.filter.conditions.push({ property: '', operator: 'equals', value: '' });
+    renderConditionRows();
+  });
+  el('ss-edit-join').addEventListener('change', (e) => {
+    el('ss-edit-join-label').textContent = (e.target.value || 'or').toUpperCase();
+  });
+  el('btn-ss-pull-props').addEventListener('click', openModelPicker);
+
+  // Import preview modal
+  el('ss-import-close').addEventListener('click', () => el('ss-import-modal').classList.add('hidden'));
+  el('btn-import-cancel').addEventListener('click', () => el('ss-import-modal').classList.add('hidden'));
+  el('btn-import-confirm').addEventListener('click', mergeImportedSets);
+
+  // Model picker modal
+  el('ss-model-close').addEventListener('click', () => el('ss-model-modal').classList.add('hidden'));
+  el('btn-model-cancel').addEventListener('click', () => el('ss-model-modal').classList.add('hidden'));
+  el('ss-model-folder').addEventListener('change', (e) => { if (e.target.value) loadFolderModels(e.target.value); });
+  el('ss-model-pick').addEventListener('change', (e) => { el('btn-model-pull').disabled = !e.target.value; });
+  el('btn-model-pull').addEventListener('click', pullModelProperties);
 
   // Clash Tests tab
   el('btn-enable-all').addEventListener('click',  () => setAllClashTests(true));

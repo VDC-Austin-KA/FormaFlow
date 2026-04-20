@@ -151,6 +151,27 @@ app.put('/api/config/search-sets', (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes — Search Set extras (Navisworks import)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Accept raw XML text up to 10 MB
+const textXml = express.text({ type: ['text/xml', 'application/xml', 'text/plain'], limit: '10mb' });
+
+/** Parse a Navisworks XML export into FormaFlow search-set objects. */
+app.post('/api/search-sets/import-navisworks', textXml, async (req, res) => {
+  try {
+    const xml = typeof req.body === 'string' ? req.body : '';
+    if (!xml.trim()) return res.status(400).json({ error: 'Empty XML body — POST the file contents as text/xml.' });
+    const { parseNavisworksXml } = await import('./src/search-sets/navisworks-importer.js');
+    const discipline = req.query.discipline ? String(req.query.discipline) : 'UNKNOWN';
+    const result = parseNavisworksXml(xml, { defaultDiscipline: discipline });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.put('/api/config/clash-tests', (req, res) => {
   try { writeConfig('clash-test-templates.json', req.body); res.json({ ok: true }); }
   catch (err) { res.status(500).json({ error: err.message }); }
@@ -209,6 +230,92 @@ app.get('/api/project/containers', async (req, res) => {
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+/** List items (subfolders + models) inside a Docs folder */
+app.get('/api/project/folder-contents', async (req, res) => {
+  try {
+    const { projectId, folderUrn } = req.query;
+    if (!projectId || !folderUrn) return res.status(400).json({ error: 'projectId and folderUrn required' });
+    const client = await makeAPSClient();
+    const data = await client.get(
+      `https://developer.api.autodesk.com/data/v1/projects/${projectId}/folders/${encodeURIComponent(folderUrn)}/contents`
+    );
+    // Trim to essentials the UI needs to render a picker
+    const items = (data?.data ?? []).map(it => ({
+      id: it.id,
+      type: it.type,                                // 'folders' | 'items'
+      name: it.attributes?.displayName ?? it.attributes?.name ?? it.id,
+      extension: it.attributes?.extension?.type ?? null,
+      derivativeUrn: it.relationships?.tip?.data?.id ?? null
+    }));
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message, details: err.body });
+  }
+});
+
+/**
+ * Extract available properties (names + distinct sample values) from a model.
+ * Used by the Search Set editor to offer autocompletion against live model data.
+ */
+app.get('/api/models/properties', async (req, res) => {
+  try {
+    const { projectId, itemId, urn } = req.query;
+    if (!urn && !(projectId && itemId)) {
+      return res.status(400).json({ error: 'Provide urn OR projectId + itemId' });
+    }
+    const client = await makeAPSClient();
+
+    // Resolve a base64-encoded derivative URN if we were given a DM item id
+    let derivUrn = urn ? String(urn) : null;
+    if (!derivUrn) {
+      const versions = await client.get(
+        `https://developer.api.autodesk.com/data/v1/projects/${projectId}/items/${encodeURIComponent(itemId)}/versions`
+      );
+      const tip = versions?.data?.[0];
+      const rawUrn = tip?.relationships?.derivatives?.data?.id ?? tip?.id;
+      if (!rawUrn) return res.status(404).json({ error: 'No derivative found on tip version' });
+      derivUrn = Buffer.from(rawUrn).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+    }
+
+    const { ModelDerivativeClient } = await import('./src/api/model-derivative.js');
+    const md = new ModelDerivativeClient(client);
+    const token = await client.getToken();
+    const views = await md._derivative.getModelViews(derivUrn, { accessToken: token });
+    const guid = views?.data?.metadata?.[0]?.guid;
+    if (!guid) return res.status(404).json({ error: 'No viewable GUID — model may still be translating' });
+
+    const raw = await md._derivative.getAllProperties(derivUrn, guid, { accessToken: token });
+    const collection = raw?.data?.collection ?? [];
+
+    // Collect unique property names + up to N distinct values per property
+    const MAX_VALUES = 50;
+    const props = new Map();   // name → { group, values: Set }
+    for (const obj of collection) {
+      const groups = obj.properties ?? {};
+      for (const [groupName, bag] of Object.entries(groups)) {
+        if (!bag || typeof bag !== 'object') continue;
+        for (const [pName, pValue] of Object.entries(bag)) {
+          const key = pName.trim();
+          if (!key) continue;
+          if (!props.has(key)) props.set(key, { group: groupName, values: new Set() });
+          const slot = props.get(key);
+          if (slot.values.size < MAX_VALUES && pValue !== undefined && pValue !== null && pValue !== '') {
+            slot.values.add(String(pValue));
+          }
+        }
+      }
+    }
+
+    const properties = [...props.entries()]
+      .map(([name, { group, values }]) => ({ name, group, values: [...values].sort() }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json({ properties, totalObjects: collection.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message, details: err.body });
   }
 });
 

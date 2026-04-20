@@ -434,3 +434,113 @@ code { font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace; }
 }
 .status-badge.ok    { background: #dcfce7; color: #15803d; }
 .status-badge.error { background: #fee2e2; color: #b91c1c; }
+
+/* ── Danger button ─────────────────────────────────────── */
+.btn-danger {
+  padding: 8px 14px;
+  background: #ef4444;
+  color: #fff;
+  border-radius: 8px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-danger:hover { background: #dc2626; }
+
+/* ── Modal overlay ─────────────────────────────────────── */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+  padding: 24px;
+  animation: fadeIn 0.15s ease-out;
+}
+.modal-panel {
+  background: #fff;
+  border-radius: 12px;
+  width: 100%; max-width: 760px; max-height: 90vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: slideUp 0.2s ease-out;
+}
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.modal-body { padding: 18px 20px; overflow-y: auto; flex: 1; }
+.modal-footer {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 12px 20px;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+  border-radius: 0 0 12px 12px;
+}
+.modal-close {
+  background: none; border: none;
+  font-size: 22px; line-height: 1;
+  color: #94a3b8; cursor: pointer;
+  padding: 4px 8px; border-radius: 6px;
+}
+.modal-close:hover { background: #f1f5f9; color: #334155; }
+
+@keyframes fadeIn  { from { opacity: 0;} to { opacity: 1;} }
+@keyframes slideUp { from { opacity: 0; transform: translateY(12px);} to { opacity: 1; transform: none;} }
+
+/* ── Condition row editor ──────────────────────────────── */
+.cond-row {
+  display: grid;
+  grid-template-columns: 1fr 140px 1fr 32px;
+  gap: 6px;
+  align-items: center;
+}
+.cond-row input, .cond-row select {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 13px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+}
+.cond-row input:focus, .cond-row select:focus {
+  outline: none; border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+.cond-row .cond-remove {
+  background: none; border: 1px solid #fecaca;
+  color: #ef4444; border-radius: 6px; cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 4px 0;
+}
+.cond-row .cond-remove:hover { background: #fee2e2; }
+
+/* ── Search Set card Edit button ───────────────────────── */
+.ss-card-edit {
+  position: absolute; top: 10px; right: 52px;
+  background: #f1f5f9; color: #475569;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 2px 8px; font-size: 11px; font-weight: 500;
+  cursor: pointer; transition: all 0.12s;
+}
+.ss-card-edit:hover { background: #e2e8f0; color: #1e293b; }
+.ss-card { position: relative; }
+
+/* ── Import preview item ───────────────────────────────── */
+.imp-item {
+  display: grid; grid-template-columns: 24px 1fr auto; gap: 8px;
+  padding: 8px 12px; font-size: 13px; align-items: center;
+}
+.imp-item input[type=checkbox] { accent-color: #2563eb; }
+.imp-item .imp-name { font-family: ui-monospace, monospace; font-size: 12px; }
+.imp-item .imp-meta { font-size: 11px; color: #94a3b8; }
+
+/* ── Model picker status ──────────────────────────────── */
+.spinner-dot {
+  display: inline-block; width: 6px; height: 6px; margin: 0 2px;
+  background: #64748b; border-radius: 50%;
+  animation: dotPulse 1.2s infinite ease-in-out;
+}
+.spinner-dot:nth-child(2) { animation-delay: 0.15s; }
+.spinner-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes dotPulse { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }

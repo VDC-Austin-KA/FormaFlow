@@ -211,17 +211,163 @@
 
     <!-- ══════════════════════════════ TAB: SEARCH SETS ═════════════════ -->
     <div id="tab-searchsets" class="tab-panel hidden p-8">
-      <!-- Discipline filter pills -->
-      <div class="flex flex-wrap gap-2 mb-6">
-        <button class="disc-pill active" data-disc="ALL">All</button>
-        <button class="disc-pill" data-disc="ARCH" style="--dc:#f59e0b">Architecture</button>
-        <button class="disc-pill" data-disc="STRUCT" style="--dc:#3b82f6">Structure</button>
-        <button class="disc-pill" data-disc="MECH" style="--dc:#10b981">Mechanical</button>
-        <button class="disc-pill" data-disc="PLUMB" style="--dc:#06b6d4">Plumbing</button>
-        <button class="disc-pill" data-disc="ELEC" style="--dc:#f97316">Electrical</button>
-        <button class="disc-pill" data-disc="FP" style="--dc:#ef4444">Fire Protection</button>
+      <!-- Toolbar -->
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div class="flex flex-wrap gap-2">
+          <button class="disc-pill active" data-disc="ALL">All</button>
+          <button class="disc-pill" data-disc="ARCH" style="--dc:#f59e0b">Architecture</button>
+          <button class="disc-pill" data-disc="STRUCT" style="--dc:#3b82f6">Structure</button>
+          <button class="disc-pill" data-disc="MECH" style="--dc:#10b981">Mechanical</button>
+          <button class="disc-pill" data-disc="PLUMB" style="--dc:#06b6d4">Plumbing</button>
+          <button class="disc-pill" data-disc="ELEC" style="--dc:#f97316">Electrical</button>
+          <button class="disc-pill" data-disc="FP" style="--dc:#ef4444">Fire Protection</button>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button id="btn-ss-new"     class="btn-secondary text-xs">+ New Search Set</button>
+          <button id="btn-ss-import"  class="btn-secondary text-xs">Import Navisworks XML…</button>
+          <input id="ss-import-file" type="file" accept=".xml" class="hidden"/>
+          <button id="btn-ss-save"    class="btn-primary text-xs">Save Library</button>
+        </div>
       </div>
       <div id="ss-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+    </div>
+
+    <!-- ══════════════════════════════ MODAL: SEARCH SET EDITOR ═════════ -->
+    <div id="ss-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <h3 id="ss-modal-title" class="card-title">Edit Search Set</h3>
+          <button id="ss-modal-close" class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body space-y-4">
+          <div class="grid grid-cols-2 gap-3">
+            <div class="field-row">
+              <label class="field-label">ID <span class="text-slate-400 font-normal">(auto)</span></label>
+              <input id="ss-edit-id" type="text" class="field-input font-mono text-xs" readonly/>
+            </div>
+            <div class="field-row">
+              <label class="field-label">Name</label>
+              <input id="ss-edit-name" type="text" class="field-input font-mono text-sm" placeholder="ARCH_MyCustomSet"/>
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="field-row">
+              <label class="field-label">Discipline</label>
+              <select id="ss-edit-discipline" class="field-input">
+                <option value="ARCH">Architecture</option>
+                <option value="STRUCT">Structure</option>
+                <option value="MECH">Mechanical</option>
+                <option value="PLUMB">Plumbing</option>
+                <option value="ELEC">Electrical</option>
+                <option value="FP">Fire Protection</option>
+                <option value="CIVIL">Civil</option>
+                <option value="INT">Interiors</option>
+                <option value="UNKNOWN">Unknown / Other</option>
+              </select>
+            </div>
+            <div class="field-row">
+              <label class="field-label">Category</label>
+              <input id="ss-edit-category" type="text" class="field-input" placeholder="Architecture"/>
+            </div>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Description</label>
+            <input id="ss-edit-description" type="text" class="field-input" placeholder="Short description"/>
+          </div>
+          <div class="flex gap-4 text-sm">
+            <label class="flex items-center gap-2"><input id="ss-edit-transferable" type="checkbox"/> Transferable</label>
+            <label class="flex items-center gap-2"><input id="ss-edit-system-based" type="checkbox"/> System-Based</label>
+          </div>
+
+          <div class="border-t border-slate-200 pt-3">
+            <div class="flex items-center justify-between mb-2">
+              <div>
+                <p class="font-medium text-sm">Conditions</p>
+                <p class="text-xs text-slate-400">Join conditions with <strong id="ss-edit-join-label">OR</strong> — every row is tested against the model.</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <label class="text-xs text-slate-500">Join:</label>
+                <select id="ss-edit-join" class="field-input" style="width:80px;padding:4px 8px;font-size:12px">
+                  <option value="or">OR</option>
+                  <option value="and">AND</option>
+                </select>
+                <button id="btn-ss-pull-props" class="btn-secondary text-xs" title="Pull available properties from a live model">⤓ From Model</button>
+                <button id="btn-ss-add-cond" class="btn-secondary text-xs">+ Add Condition</button>
+              </div>
+            </div>
+            <div id="ss-conditions" class="space-y-2"></div>
+            <p id="ss-prop-hint" class="text-xs text-emerald-600 mt-2 hidden"></p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-ss-delete" class="btn-danger text-xs mr-auto hidden">Delete Set</button>
+          <button id="btn-ss-cancel" class="btn-secondary text-xs">Cancel</button>
+          <button id="btn-ss-save-modal" class="btn-primary text-xs">Save Changes</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════ MODAL: IMPORT PREVIEW ════════════ -->
+    <div id="ss-import-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <h3 class="card-title">Navisworks Import Preview</h3>
+          <button id="ss-import-close" class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body space-y-3">
+          <div class="field-row">
+            <label class="field-label">Default Discipline for Imported Sets</label>
+            <select id="ss-import-discipline" class="field-input">
+              <option value="UNKNOWN" selected>Unknown / Other</option>
+              <option value="ARCH">Architecture</option>
+              <option value="STRUCT">Structure</option>
+              <option value="MECH">Mechanical</option>
+              <option value="PLUMB">Plumbing</option>
+              <option value="ELEC">Electrical</option>
+              <option value="FP">Fire Protection</option>
+              <option value="CIVIL">Civil</option>
+              <option value="INT">Interiors</option>
+            </select>
+          </div>
+          <div id="ss-import-warnings" class="hidden bg-amber-50 border border-amber-200 rounded-md p-3 text-xs text-amber-800 space-y-1"></div>
+          <p class="text-xs text-slate-500">The following sets will be added to your library (you can edit any of them afterwards):</p>
+          <div id="ss-import-list" class="max-h-80 overflow-y-auto border border-slate-200 rounded-md divide-y divide-slate-100"></div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-import-cancel" class="btn-secondary text-xs">Cancel</button>
+          <button id="btn-import-confirm" class="btn-primary text-xs">Add Selected to Library</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════ MODAL: MODEL PICKER ══════════════ -->
+    <div id="ss-model-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-panel" style="max-width:560px">
+        <div class="modal-header">
+          <h3 class="card-title">Pull Properties From Model</h3>
+          <button id="ss-model-close" class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body space-y-3">
+          <p class="text-xs text-slate-500">Pick a model from your ACC folder — FormaFlow will extract every parameter it exposes, and the editor will offer them for autocomplete.</p>
+          <div class="field-row">
+            <label class="field-label">Folder</label>
+            <select id="ss-model-folder" class="field-input">
+              <option value="">— loading folders —</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Models in Folder</label>
+            <select id="ss-model-pick" class="field-input" disabled>
+              <option value="">— select a folder first —</option>
+            </select>
+          </div>
+          <div id="ss-model-status" class="text-xs text-slate-500"></div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-model-cancel" class="btn-secondary text-xs">Cancel</button>
+          <button id="btn-model-pull" class="btn-primary text-xs" disabled>Pull Properties</button>
+        </div>
+      </div>
     </div>
 
     <!-- ══════════════════════════════ TAB: CLASH TESTS ═════════════════ -->
