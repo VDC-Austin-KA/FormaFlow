@@ -219,15 +219,37 @@ app.get('/api/project/folders', async (req, res) => {
   }
 });
 
-/** List MC containers for an account */
+/**
+ * "Detect Container" — In Model Coordination v3 the containerId IS the ACC
+ * project UUID; there is no /accounts/{id}/containers endpoint. We verify
+ * access by listing modelsets on the project, and return the project ID
+ * as the container ID if authorized.
+ */
 app.get('/api/project/containers', async (req, res) => {
   try {
-    const { accountId } = req.query;
+    const { accountId, projectId: rawProjectId } = req.query;
+    const projectId = (rawProjectId || process.env.ACC_PROJECT_ID || '').replace(/^b\./, '');
+    if (!projectId) return res.status(400).json({ error: 'projectId required (paste Project ID on the Connect tab first)' });
     if (!accountId) return res.status(400).json({ error: 'accountId required' });
+
     const client = await makeAPSClient();
-    const base = process.env.MC_MODELSET_API_BASE ?? 'https://developer.api.autodesk.com/bim360/modelcoordination/modelset/v3';
-    const data = await client.get(`${base}/accounts/${accountId}/containers`);
-    res.json(data);
+    // Probe the MC API to verify the app has access to this project's container
+    try {
+      await client.get(`https://developer.api.autodesk.com/bim360/modelcoordination/v3/containers/${projectId}/modelsets`);
+    } catch (probeErr) {
+      const status = probeErr.status || 0;
+      if (status === 403 || status === 404) {
+        return res.status(403).json({
+          error: 'APS app is not provisioned for this account yet.',
+          hint: 'An ACC Account Admin must add this Client ID in Account Admin → Custom Integrations, with Model Coordination enabled.',
+          accountId,
+          projectId,
+        });
+      }
+      throw probeErr;
+    }
+    // Mimic the shape the UI expects: { data: [{ id }] }
+    res.json({ data: [{ id: projectId }] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

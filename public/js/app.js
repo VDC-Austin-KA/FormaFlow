@@ -176,14 +176,17 @@ async function loadFolders() {
 
 async function detectContainer() {
   const accountId = el('inp-account-id').value.trim();
+  const projectId = el('inp-project-id').value.trim();
   if (!accountId) { toast('Enter Account ID first', 'error'); return; }
+  if (!projectId) { toast('Enter Project ID first — Model Coordination uses the project UUID as its container ID', 'error'); return; }
 
   const btn = el('btn-detect-container');
   btn.disabled = true;
   btn.textContent = '…';
 
   try {
-    const data = await api('GET', `/api/project/containers?accountId=${encodeURIComponent(accountId)}`);
+    const data = await api('GET',
+      `/api/project/containers?accountId=${encodeURIComponent(accountId)}&projectId=${encodeURIComponent(projectId)}`);
     const containers = data?.data ?? data ?? [];
     if (containers.length > 0) {
       el('inp-container-id').value = containers[0].id ?? containers[0];
@@ -192,7 +195,8 @@ async function detectContainer() {
       toast('No containers found — ensure your app is provisioned in ACC Admin', 'error');
     }
   } catch (err) {
-    toast('Container detection failed: ' + err.message, 'error');
+    // Surface the server's provisioning hint verbatim when available
+    toast(err.message || 'Container detection failed', 'error');
   } finally {
     btn.disabled = false;
     btn.textContent = 'Detect';
