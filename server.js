@@ -29,17 +29,44 @@ app.use(express.static(resolve(__dirname, 'public')));
 // .env helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Canonical keys FormaFlow uses
+const ENV_KEYS = [
+  'APS_CLIENT_ID', 'APS_CLIENT_SECRET',
+  'ACC_ACCOUNT_ID', 'ACC_PROJECT_ID',
+  'MC_CONTAINER_ID', 'TARGET_FOLDER_URN',
+  'LOG_LEVEL', 'DRY_RUN',
+];
+
+// process.env aliases → canonical key (applied when canonical is absent)
+const ENV_ALIASES = { APS_HUB_ID: 'ACC_ACCOUNT_ID' };
+
 function readEnv() {
-  const path = resolve(__dirname, '.env');
-  if (!existsSync(path)) return {};
-  const out = {};
-  for (const raw of readFileSync(path, 'utf8').split('\n')) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq < 0) continue;
-    out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+  // Read the .env file first (explicit file values win over injected env)
+  const filePath = resolve(__dirname, '.env');
+  const fileValues = {};
+  if (existsSync(filePath)) {
+    for (const raw of readFileSync(filePath, 'utf8').split('\n')) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const eq = line.indexOf('=');
+      if (eq < 0) continue;
+      fileValues[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+    }
   }
+
+  // Merge: .env file value → process.env value → empty string
+  const out = {};
+  for (const key of ENV_KEYS) {
+    out[key] = fileValues[key] ?? process.env[key] ?? '';
+  }
+
+  // Apply aliases: if canonical key is still empty, check the alias name
+  for (const [alias, canonical] of Object.entries(ENV_ALIASES)) {
+    if (!out[canonical] && process.env[alias]?.trim()) {
+      out[canonical] = process.env[alias].trim();
+    }
+  }
+
   return out;
 }
 
@@ -141,6 +168,17 @@ app.post('/api/config/env', (req, res) => {
     }
     writeEnv(toSave);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Return a full capability analysis based on current environment */
+app.get('/api/capabilities', async (_req, res) => {
+  try {
+    const { detectCapabilities } = await import('./src/utils/capability-detector.js');
+    const result = detectCapabilities();
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
