@@ -258,38 +258,83 @@ app.get('/api/project/folders', async (req, res) => {
 });
 
 /**
- * "Detect Container" — In Model Coordination v3 the containerId IS the ACC
- * project UUID; there is no /accounts/{id}/containers endpoint. We verify
- * access by listing modelsets on the project, and return the project ID
- * as the container ID if authorized.
+ * "Detect Container" — Resolves the Model Coordination container ID for a project.
+ *
+ * Strategy (tried in order):
+ *  1. ACC / BIM360 v3 — containerId = projectId (most common for ACC projects)
+ *  2. BIM360 legacy   — containerId fetched from the HQ admin API
+ *
+ * A 403 from Autodesk means the APS app is not provisioned in this account.
+ * A 404 means Model Coordination is not enabled for the project, or the project
+ * is a legacy BIM360 project whose container ID differs from the project ID.
  */
 app.get('/api/project/containers', async (req, res) => {
   try {
     const { accountId, projectId: rawProjectId } = req.query;
     const projectId = (rawProjectId || process.env.ACC_PROJECT_ID || '').replace(/^b\./, '');
-    if (!projectId) return res.status(400).json({ error: 'projectId required (paste Project ID on the Connect tab first)' });
+    if (!projectId) return res.status(400).json({ error: 'projectId required — paste your ACC Project ID on the Connect tab first' });
     if (!accountId) return res.status(400).json({ error: 'accountId required' });
 
     const client = await makeAPSClient();
-    // Probe the MC API to verify the app has access to this project's container
+    const MC_MODELSET_BASE = process.env.MC_MODELSET_API_BASE
+      ?? 'https://developer.api.autodesk.com/bim360/modelcoordination/modelset/v3';
+
+    // ── Strategy 1: ACC v3 — containerId = projectId ──────────────────────
     try {
-      await client.get(`https://developer.api.autodesk.com/bim360/modelcoordination/v3/containers/${projectId}/modelsets`);
-    } catch (probeErr) {
-      const status = probeErr.status || 0;
-      if (status === 403 || status === 404) {
+      await client.get(`${MC_MODELSET_BASE}/containers/${projectId}/modelsets`);
+      return res.json({ data: [{ id: projectId }] });
+    } catch (e1) {
+      const s1 = e1.status || 0;
+
+      if (s1 === 403) {
         return res.status(403).json({
-          error: 'APS app is not provisioned for this account yet.',
-          hint: 'An ACC Account Admin must add this Client ID in Account Admin → Custom Integrations, with Model Coordination enabled.',
+          error: 'APS app is not authorised for this ACC account.',
+          hint: 'An ACC Account Admin must go to Account Admin → Custom Integrations, add this Client ID, and enable Model Coordination.',
           accountId,
           projectId,
+          apsStatus: 403,
         });
       }
-      throw probeErr;
+
+      // 404 → project exists but MC not on v3 path — fall through to legacy lookup
+      if (s1 !== 404) throw e1;
     }
-    // Mimic the shape the UI expects: { data: [{ id }] }
-    res.json({ data: [{ id: projectId }] });
+
+    // ── Strategy 2: BIM360 legacy — fetch real containerId from HQ API ────
+    let legacyContainerId = null;
+    try {
+      const accountIdClean = accountId.replace(/^b\./, '');
+      const hqProject = await client.get(
+        `https://developer.api.autodesk.com/hq/v1/accounts/${accountIdClean}/projects/${projectId}`
+      );
+      // BIM 360 returns the MC container under relationships.docs
+      legacyContainerId = hqProject?.data?.relationships?.docs?.data?.id
+        ?? hqProject?.relationships?.docs?.data?.id
+        ?? null;
+    } catch (_) {
+      // HQ API unavailable or not a BIM360 project — continue to error
+    }
+
+    if (legacyContainerId) {
+      // Verify the legacy container ID works
+      try {
+        await client.get(`${MC_MODELSET_BASE}/containers/${legacyContainerId}/modelsets`);
+        return res.json({ data: [{ id: legacyContainerId }] });
+      } catch (_) {
+        // Legacy container found but still no MC access — fall through to error
+      }
+    }
+
+    // ── Neither strategy succeeded ─────────────────────────────────────────
+    return res.status(404).json({
+      error: 'Model Coordination is not enabled for this project.',
+      hint: 'In ACC, open the project → Settings → Products & Services and confirm "Model Coordination" is active. If this is a BIM360 project, ensure Model Coordination was set up when the project was created.',
+      accountId,
+      projectId,
+    });
+
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, details: err.body });
   }
 });
 
