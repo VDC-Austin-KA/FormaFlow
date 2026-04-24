@@ -203,6 +203,105 @@ async function detectContainer() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Capabilities panel
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TIER_LABELS = {
+  0: 'Local — No API Required',
+  1: 'Authentication',
+  2: 'Hub Context',
+  3: 'Project Context',
+  4: 'Model Coordination',
+};
+
+async function loadCapabilities() {
+  try {
+    const data = await api('GET', '/api/capabilities');
+    renderCapabilities(data);
+  } catch (e) {
+    el('caps-grid').innerHTML = '<p class="text-xs text-slate-400">Could not load capabilities.</p>';
+  }
+}
+
+function renderCapabilities(data) {
+  const { capabilities, nextStep, summary } = data;
+
+  // Summary badge
+  const summaryEl = el('caps-summary');
+  if (summaryEl) {
+    summaryEl.textContent = `${summary.available} / ${summary.total} available`;
+  }
+
+  // Next-step callout
+  const callout = el('caps-next-step');
+  if (nextStep) {
+    el('caps-next-action').textContent = `Next step: ${nextStep.action}`;
+    el('caps-next-detail').textContent = nextStep.detail;
+    callout.classList.remove('hidden');
+  } else {
+    callout.classList.add('hidden');
+  }
+
+  // Group capabilities by tier
+  const byTier = {};
+  for (const cap of capabilities) {
+    (byTier[cap.tier] = byTier[cap.tier] || []).push(cap);
+  }
+
+  const grid = el('caps-grid');
+  grid.innerHTML = '';
+
+  for (const [tier, caps] of Object.entries(byTier).sort(([a], [b]) => +a - +b)) {
+    const group = document.createElement('div');
+
+    const label = document.createElement('p');
+    label.className = 'text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2';
+    label.textContent = TIER_LABELS[+tier] || `Tier ${tier}`;
+    group.appendChild(label);
+
+    const rows = document.createElement('div');
+    rows.className = 'space-y-1.5';
+
+    for (const cap of caps) {
+      const row = document.createElement('div');
+      row.className = [
+        'flex items-start gap-3 px-3 py-2.5 rounded-lg border',
+        cap.available
+          ? 'bg-emerald-50 border-emerald-100'
+          : 'bg-slate-50 border-slate-200 opacity-75',
+      ].join(' ');
+
+      const checkSvg = `<svg class="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+      </svg>`;
+      const lockSvg = `<svg class="w-4 h-4 text-slate-300 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+      </svg>`;
+
+      const missingHtml = (!cap.available && cap.missing.length)
+        ? `<p class="text-xs text-slate-400 mt-0.5">Needs: <code class="font-mono bg-slate-100 px-1 rounded">${cap.missing.join(', ')}</code></p>`
+        : '';
+      const noteHtml = (cap.available && cap.note)
+        ? `<p class="text-xs text-emerald-600 mt-0.5 font-mono">${cap.note}</p>`
+        : '';
+
+      row.innerHTML = `
+        ${cap.available ? checkSvg : lockSvg}
+        <div class="min-w-0 flex-1">
+          <p class="text-xs font-semibold leading-snug ${cap.available ? 'text-emerald-800' : 'text-slate-500'}">${cap.name}</p>
+          <p class="text-xs leading-relaxed mt-0.5 ${cap.available ? 'text-emerald-700' : 'text-slate-400'}">${cap.description}</p>
+          ${noteHtml}${missingHtml}
+        </div>
+      `;
+      rows.appendChild(row);
+    }
+
+    group.appendChild(rows);
+    grid.appendChild(group);
+  }
+}
+
 async function saveEnv() {
   const folderSel = el('sel-folder');
   const folderUrn = folderSel.value || el('inp-folder-urn').value;
@@ -1029,6 +1128,9 @@ async function init() {
     el('conn-label').textContent = 'Credentials loaded';
   }
 
+  // Load capabilities panel
+  loadCapabilities();
+
   // ── Event listeners ──────────────────────────────────────
 
   // Nav
@@ -1041,6 +1143,7 @@ async function init() {
   el('btn-load-folders').addEventListener('click', loadFolders);
   el('btn-detect-container').addEventListener('click', detectContainer);
   el('btn-save-env').addEventListener('click', saveEnv);
+  el('btn-refresh-caps').addEventListener('click', loadCapabilities);
   el('btn-toggle-secret').addEventListener('click', () => {
     const inp = el('inp-client-secret');
     inp.type = inp.type === 'password' ? 'text' : 'password';
