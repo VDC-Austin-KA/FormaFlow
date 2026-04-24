@@ -247,9 +247,11 @@ app.get('/api/project/folders', async (req, res) => {
     const { accountId, projectId } = req.query;
     if (!accountId || !projectId) return res.status(400).json({ error: 'accountId and projectId required' });
     const client = await makeAPSClient();
-    const hubId = accountId.startsWith('b.') ? accountId : `b.${accountId}`;
+    // Data Management API requires b. prefix on both hub and project IDs
+    const hubId  = accountId.startsWith('b.') ? accountId : `b.${accountId}`;
+    const projId = projectId.startsWith('b.')  ? projectId : `b.${projectId}`;
     const data = await client.get(
-      `https://developer.api.autodesk.com/project/v1/hubs/${hubId}/projects/${projectId}/topFolders`
+      `https://developer.api.autodesk.com/project/v1/hubs/${hubId}/projects/${projId}/topFolders`
     );
     res.json(data);
   } catch (err) {
@@ -344,8 +346,9 @@ app.get('/api/project/folder-contents', async (req, res) => {
     const { projectId, folderUrn } = req.query;
     if (!projectId || !folderUrn) return res.status(400).json({ error: 'projectId and folderUrn required' });
     const client = await makeAPSClient();
+    const projId = projectId.startsWith('b.') ? projectId : `b.${projectId}`;
     const data = await client.get(
-      `https://developer.api.autodesk.com/data/v1/projects/${projectId}/folders/${encodeURIComponent(folderUrn)}/contents`
+      `https://developer.api.autodesk.com/data/v1/projects/${projId}/folders/${encodeURIComponent(folderUrn)}/contents`
     );
     // Trim to essentials the UI needs to render a picker
     const items = (data?.data ?? []).map(it => ({
@@ -376,8 +379,9 @@ app.get('/api/models/properties', async (req, res) => {
     // Resolve a base64-encoded derivative URN if we were given a DM item id
     let derivUrn = urn ? String(urn) : null;
     if (!derivUrn) {
+      const projId = projectId.startsWith('b.') ? projectId : `b.${projectId}`;
       const versions = await client.get(
-        `https://developer.api.autodesk.com/data/v1/projects/${projectId}/items/${encodeURIComponent(itemId)}/versions`
+        `https://developer.api.autodesk.com/data/v1/projects/${projId}/items/${encodeURIComponent(itemId)}/versions`
       );
       const tip = versions?.data?.[0];
       const rawUrn = tip?.relationships?.derivatives?.data?.id ?? tip?.id;
