@@ -752,3 +752,106 @@ code { font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace; }
   display: flex;
   gap: 0.5rem;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Folder Tree Browser
+   ═══════════════════════════════════════════════════════════ */
+
+.folder-tree-node {
+  user-select: none;
+}
+
+.folder-node-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  transition: background 0.1s;
+  font-size: 0.8125rem;
+  color: #334155;
+}
+.folder-node-row:hover { background: #f1f5f9; }
+
+.folder-tree-node.selected > .folder-node-row {
+  background: rgba(59,130,246,0.1);
+  color: #1d4ed8;
+}
+.folder-tree-node.selected > .folder-node-row svg { color: #3b82f6; }
+
+.folder-node-row.folder-node-system { color: #94a3b8; }
+.folder-node-row.folder-node-system:hover { background: #f8fafc; }
+
+.folder-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  flex-shrink: 0;
+  font-size: 0.6rem;
+  color: #94a3b8;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.1s, color 0.1s;
+  padding: 0;
+}
+.folder-expand-btn:hover { background: #e2e8f0; color: #334155; }
+.folder-expand-btn.expanded { color: #3b82f6; }
+.folder-expand-btn:disabled { opacity: 0.5; cursor: default; }
+
+.folder-node-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-system-badge {
+  font-size: 0.6rem;
+  font-weight: 500;
+  color: #94a3b8;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+  padding: 1px 4px;
+  flex-shrink: 0;
+}
+
+.folder-node-children {
+  padding-left: 1.25rem;
+  border-left: 1px dashed #e2e8f0;
+  margin-left: 0.875rem;
+}
+
+.folder-leaf-msg {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  padding: 0.25rem 0.5rem;
+  font-style: italic;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Viewer — NWC badge & model items
+   ═══════════════════════════════════════════════════════════ */
+
+.viewer-model-item.nwc-only {
+  opacity: 0.75;
+  cursor: default;
+}
+.viewer-model-item.nwc-only:hover { background: transparent; }
+
+.nwc-badge {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #f59e0b;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 3px;
+  padding: 1px 4px;
+  flex-shrink: 0;
+}

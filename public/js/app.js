@@ -117,13 +117,6 @@ function populateConnect(cfg) {
   el('inp-folder-urn').value    = cfg.env.TARGET_FOLDER_URN || '';
   if (cfg.env.TARGET_FOLDER_URN) {
     el('folder-urn-row').classList.remove('hidden');
-    // Try to pre-populate the select
-    const sel = el('sel-folder');
-    if (sel.options.length <= 1) {
-      const opt = new Option(cfg.env.TARGET_FOLDER_URN.split(':').pop(), cfg.env.TARGET_FOLDER_URN);
-      sel.add(opt);
-      sel.value = cfg.env.TARGET_FOLDER_URN;
-    }
   }
 }
 
@@ -169,110 +162,123 @@ async function loadFolders() {
   if (!accountId || !projectId) { toast('Enter Account ID and Project ID first', 'error'); return; }
 
   const btn = el('btn-load-folders');
-  btn.disabled = true;
-  btn.textContent = 'Loading…';
+  btn.disabled = true; btn.textContent = 'Loading…';
 
   try {
     const data = await api('GET', `/api/project/folders?accountId=${encodeURIComponent(accountId)}&projectId=${encodeURIComponent(projectId)}`);
     const folders = data?.data ?? [];
-    const sel = el('sel-folder');
-    sel.innerHTML = '<option value="">— select a folder —</option>';
-
-    // Group: user folders first, system folders at bottom
     const userFolders   = folders.filter(f => f._category !== 'system');
     const systemFolders = folders.filter(f => f._category === 'system');
 
-    if (userFolders.length) {
-      const grp = document.createElement('optgroup');
-      grp.label = 'Project Folders';
-      for (const f of userFolders) {
-        const opt = new Option(f.attributes?.name || f.id, f.id);
-        grp.appendChild(opt);
-      }
-      sel.add(grp);
-    }
-    if (systemFolders.length) {
-      const grp = document.createElement('optgroup');
-      grp.label = 'System Folders (ACC modules — skip these)';
-      for (const f of systemFolders) {
-        const opt = new Option(f.attributes?.name || f.id, f.id);
-        opt.style.color = '#6b7280';
-        grp.appendChild(opt);
-      }
-      sel.add(grp);
+    const tree = el('folder-tree');
+    tree.innerHTML = '';
+
+    // User folders first, system folders dimmed at the bottom
+    for (const f of [...userFolders, ...systemFolders]) {
+      tree.appendChild(buildFolderNode(
+        f.id, f.attributes?.name ?? f.id, f._category === 'system'
+      ));
     }
 
+    el('folder-tree-container').classList.remove('hidden');
     if (!folders.length) toast('No folders found — check account/project IDs', 'error');
     else toast(`Loaded ${userFolders.length} project folder(s)`);
   } catch (err) {
     toast('Failed to load folders: ' + err.message, 'error');
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Load';
+    btn.disabled = false; btn.textContent = 'Load Folders';
   }
 }
 
-// Folder path stack for breadcrumb drill-down: [{id, name}]
-let _folderStack = [];
+function buildFolderNode(folderId, folderName, isSystem = false) {
+  const node = document.createElement('div');
+  node.className = 'folder-tree-node';
+  node.dataset.folderId = folderId;
+  node.dataset.loaded   = 'false';
 
-async function browseSubfolder(folderId, folderName) {
+  node.innerHTML = `
+    <div class="folder-node-row ${isSystem ? 'folder-node-system' : ''}">
+      <button class="folder-expand-btn" title="Expand subfolders">▶</button>
+      <svg class="w-3.5 h-3.5 flex-shrink-0 ${isSystem ? 'text-slate-400' : 'text-amber-500'}" fill="currentColor" viewBox="0 0 24 24">
+        <path d="M10 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2h-8l-2-2z"/>
+      </svg>
+      <span class="folder-node-name" title="${folderName}">${folderName}</span>
+      ${isSystem ? '<span class="folder-system-badge">system</span>' : ''}
+    </div>
+    <div class="folder-node-children hidden"></div>
+  `;
+
+  const expandBtn  = node.querySelector('.folder-expand-btn');
+  const nameLabel  = node.querySelector('.folder-node-name');
+  const childrenEl = node.querySelector('.folder-node-children');
+
+  // Expand / collapse
+  expandBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!childrenEl.classList.contains('hidden')) {
+      childrenEl.classList.add('hidden');
+      expandBtn.textContent = '▶';
+      expandBtn.classList.remove('expanded');
+      return;
+    }
+    if (node.dataset.loaded === 'false') {
+      await populateFolderChildren(folderId, childrenEl, expandBtn, node);
+    }
+    childrenEl.classList.remove('hidden');
+    expandBtn.textContent = '▼';
+    expandBtn.classList.add('expanded');
+  });
+
+  // Select on name click
+  nameLabel.addEventListener('click', () => selectFolderNode(folderId, folderName, node));
+
+  return node;
+}
+
+async function populateFolderChildren(folderId, childrenEl, expandBtn, parentNode) {
   const projectId = el('inp-project-id').value.trim();
-  if (!projectId) { toast('Project ID required', 'error'); return; }
-
-  const btn = el('btn-browse-subfolder');
-  btn.disabled = true;
-  btn.textContent = '…';
+  expandBtn.textContent = '⋯';
+  expandBtn.disabled = true;
 
   try {
     const data = await api('GET',
       `/api/project/folder-contents?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderId)}`);
     const subfolders = (data?.items ?? []).filter(i => i.type === 'folders');
 
+    parentNode.dataset.loaded = 'true';
+
     if (!subfolders.length) {
-      toast('No subfolders in this folder — you can use it as-is', 'info');
+      childrenEl.innerHTML = '<div class="folder-leaf-msg">No subfolders</div>';
+      expandBtn.textContent = '—';
       return;
     }
-
-    _folderStack.push({ id: folderId, name: folderName });
-    renderFolderBreadcrumb();
-
-    const sub = el('sel-subfolder');
-    sub.innerHTML = '<option value="">— select subfolder —</option>';
-    for (const f of subfolders) {
-      sub.add(new Option(f.name, f.id));
-    }
-    el('subfolder-row').classList.remove('hidden');
+    subfolders.forEach(f => childrenEl.appendChild(buildFolderNode(f.id, f.name, false)));
+    expandBtn.textContent = '▼';
   } catch (err) {
-    toast('Failed to browse subfolder: ' + err.message, 'error');
+    childrenEl.innerHTML = '<div class="folder-leaf-msg text-red-400">Failed to load</div>';
+    expandBtn.textContent = '▶';
+    parentNode.dataset.loaded = 'false';
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Browse';
+    expandBtn.disabled = false;
   }
 }
 
-function renderFolderBreadcrumb() {
-  const bc = el('folder-breadcrumb');
-  bc.innerHTML = '';
-  bc.classList.remove('hidden');
-  _folderStack.forEach((crumb, i) => {
-    if (i > 0) {
-      const sep = document.createElement('span');
-      sep.textContent = '›';
-      bc.appendChild(sep);
-    }
-    const span = document.createElement('span');
-    span.textContent = crumb.name;
-    span.className = 'cursor-pointer text-blue-400 hover:underline';
-    span.addEventListener('click', () => {
-      // Navigate back to this crumb
-      _folderStack = _folderStack.slice(0, i);
-      el('inp-folder-urn').value = crumb.id;
-      el('folder-urn-row').classList.remove('hidden');
-      browseSubfolder(crumb.id, crumb.name);
-    });
-    bc.appendChild(span);
-  });
+function selectFolderNode(folderId, folderName, nodeEl) {
+  // Deselect all
+  document.querySelectorAll('.folder-tree-node.selected').forEach(n => n.classList.remove('selected'));
+  nodeEl.classList.add('selected');
+
+  // Update display + URN fields
+  const nameSpan = el('selected-folder-name');
+  nameSpan.textContent = folderName;
+  nameSpan.className = 'text-sm text-slate-800 font-medium flex-1 truncate';
+
+  el('inp-folder-urn').value = folderId;
+  el('folder-urn-row').classList.remove('hidden');
+
+  toast(`Folder selected: ${folderName}`);
 }
+
 
 async function detectContainer() {
   const accountId = el('inp-account-id').value.trim();
@@ -428,8 +434,7 @@ function renderCapabilities(data) {
 }
 
 async function saveEnv() {
-  const folderSel = el('sel-folder');
-  const folderUrn = folderSel.value || el('inp-folder-urn').value;
+  const folderUrn = el('inp-folder-urn').value;
 
   const payload = {
     APS_CLIENT_ID:     el('inp-client-id').value,
@@ -1308,7 +1313,14 @@ async function loadViewerModels() {
   try {
     const data = await api('GET',
       `/api/project/folder-contents?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderUrn)}`);
-    const models = (data.items ?? []).filter(i => i.type === 'items' && i.viewerUrn);
+    const isNwcFile = name => /\.(nwc|nwd)$/i.test(name ?? '');
+    const allItems = data.items ?? [];
+    const models = allItems.filter(i => {
+      if (i.type !== 'items') return false;
+      if (i.viewerUrn) return true;           // RVT/DWG already translated
+      if (isNwcFile(i.name)) return true;      // NWC/NWD — include even without viewerUrn
+      return false;
+    });
 
     const list = el('viewer-model-list');
     list.innerHTML = '';
@@ -1324,22 +1336,30 @@ async function loadViewerModels() {
       m.discipline = disc;
       if (disc) disciplines.add(disc);
 
+      const nwcOnly = !m.viewerUrn && isNwcFile(m.name);
       const item = document.createElement('div');
-      item.className = 'viewer-model-item';
-      item.dataset.urn = m.viewerUrn;
+      item.className = `viewer-model-item${nwcOnly ? ' nwc-only' : ''}`;
+      item.dataset.urn = m.viewerUrn ?? '';
       item.dataset.name = m.name;
       item.dataset.disc = disc;
+      item.title = nwcOnly ? 'NWC file — not yet translated to SVF2; load into a Navisworks model set to enable 3D viewing' : '';
       item.innerHTML = `
         <div class="disc-dot" style="background:${DISC_COLORS_HEX[disc] ?? '#9ca3af'}"></div>
         <span class="model-name" title="${m.name}">${m.name}</span>
-        <span class="model-status">▶</span>
+        ${nwcOnly
+          ? '<span class="nwc-badge">NWC</span>'
+          : '<span class="model-status">▶</span>'}
       `;
-      item.addEventListener('click', () => toggleViewerModel(item, m));
+      if (!nwcOnly) {
+        item.addEventListener('click', () => toggleViewerModel(item, m));
+      }
       list.appendChild(item);
     });
 
+    const nwcCount = models.filter(m => !m.viewerUrn && isNwcFile(m.name)).length;
+    const viewableCount = models.length - nwcCount;
     renderDiscToggles([...disciplines]);
-    toast(`Found ${models.length} viewable model(s)`);
+    toast(`Found ${viewableCount} viewable + ${nwcCount} NWC coordination model(s)`);
   } catch (err) {
     toast('Failed to list models: ' + err.message, 'error');
   } finally {
@@ -1349,13 +1369,21 @@ async function loadViewerModels() {
 
 function guessDiscFromName(name = '') {
   const n = name.toUpperCase();
-  if (/ARCH|ARCHITECTURAL/.test(n)) return 'ARCH';
-  if (/STRUCT|STR[_\-]/.test(n))   return 'STRUCT';
-  if (/MECH|HVAC|DUCT/.test(n))    return 'MECH';
-  if (/PLUMB|PLMB|SANIT/.test(n))  return 'PLUMB';
-  if (/ELEC|ELE[_\-]|POWER/.test(n)) return 'ELEC';
-  if (/FIRE|SPRINK|FP[_\-]/.test(n)) return 'FP';
-  if (/CIVIL|SITE|GRADING/.test(n))  return 'CIVIL';
+  // Architecture — ARCH, A_, AR_, ARCHITECTURAL, INTERIOR, INT
+  if (/\bARCH\b|_A_|_AR_|ARCHITECTURAL|INTERIOR/.test(n)) return 'ARCH';
+  if (/\bINT\b|_INT_|INT[-_]/.test(n))                    return 'INT';
+  // Structure — STRUCT, S_, STR_, STRUCTURAL, FOUNDATION, CONCRETE, STEEL
+  if (/\bSTRUCT\b|_S_|_STR_|STRUCTURAL|FOUNDATION|CONCRETE|STEEL[-_]/.test(n)) return 'STRUCT';
+  // Mechanical / HVAC — MECH, M_, HVAC, DUCT, MECHANICAL, PIPING (non-plumbing)
+  if (/\bMECH\b|_M_|HVAC|DUCT|MECHANICAL|CHILLED[-_ ]?WATER|AIR[-_ ]?HAND/.test(n)) return 'MECH';
+  // Plumbing — PLUMB, P_, PLMB, SANIT, SANITARY, DOMESTIC
+  if (/\bPLUMB\b|_P_|PLMB|SANIT|SANITARY|DOMESTIC[-_ ]?WATER/.test(n)) return 'PLUMB';
+  // Electrical — ELEC, E_, ELE_, ELECTRICAL, POWER, LIGHTING, LOW[-_]VOLTAGE
+  if (/\bELEC\b|_E_|ELE[-_]|ELECTRICAL|POWER|LIGHTING|LOW[-_]VOLTAGE/.test(n)) return 'ELEC';
+  // Fire Protection — FIRE, FP_, SPRINK, SUPPRESSION
+  if (/\bFP\b|FP[-_]|FIRE[-_ ]?PROTECTION|SPRINK|SUPPRESSION/.test(n)) return 'FP';
+  // Civil / Site — CIVIL, SITE, GRADING, SURVEY, TOPO, INFRASTRUCTURE
+  if (/\bCIVIL\b|SITE[-_]|GRADING|SURVEY|TOPO|INFRASTRUCTURE/.test(n)) return 'CIVIL';
   return 'UNKNOWN';
 }
 
@@ -1628,8 +1656,13 @@ function switchHubProject(projectId, projectName) {
   // Reset container + folder since they're project-specific
   el('inp-container-id').value = '';
   el('inp-folder-urn').value   = '';
-  el('sel-folder').innerHTML   = '<option value="">— load folders first —</option>';
   el('folder-urn-row').classList.add('hidden');
+  // Reset the folder tree
+  const folderTree = el('folder-tree');
+  if (folderTree) folderTree.innerHTML = '';
+  el('folder-tree-container')?.classList.add('hidden');
+  const nameSpan = el('selected-folder-name');
+  if (nameSpan) { nameSpan.textContent = 'No folder selected'; nameSpan.className = 'text-sm text-slate-500 flex-1 truncate'; }
   el('hub-stat-active').textContent = projectName;
 
   // Re-render cards to update active state
@@ -1700,39 +1733,6 @@ async function init() {
   el('btn-toggle-secret').addEventListener('click', () => {
     const inp = el('inp-client-secret');
     inp.type = inp.type === 'password' ? 'text' : 'password';
-  });
-
-  el('sel-folder').addEventListener('change', (e) => {
-    const urn = e.target.value;
-    const name = e.target.options[e.target.selectedIndex]?.text || urn;
-    el('inp-folder-urn').value = urn;
-    el('folder-urn-row').classList.toggle('hidden', !urn);
-    // Reset subfolder state when top-level changes
-    _folderStack = [];
-    el('subfolder-row').classList.add('hidden');
-    el('folder-breadcrumb').classList.add('hidden');
-    el('folder-breadcrumb').innerHTML = '';
-    if (urn) {
-      el('subfolder-row').classList.remove('hidden');
-      el('sel-subfolder').innerHTML = '<option value="">— select subfolder (optional) —</option>';
-    }
-  });
-
-  el('btn-browse-subfolder').addEventListener('click', () => {
-    const folderId = el('sel-subfolder').value || el('sel-folder').value;
-    const name = el('sel-subfolder').value
-      ? el('sel-subfolder').options[el('sel-subfolder').selectedIndex]?.text
-      : el('sel-folder').options[el('sel-folder').selectedIndex]?.text;
-    if (!folderId) { toast('Select a folder to browse first', 'error'); return; }
-    browseSubfolder(folderId, name);
-  });
-
-  el('sel-subfolder').addEventListener('change', (e) => {
-    const urn = e.target.value;
-    if (urn) {
-      el('inp-folder-urn').value = urn;
-      el('folder-urn-row').classList.remove('hidden');
-    }
   });
 
   // Search Sets tab — discipline filter pills
