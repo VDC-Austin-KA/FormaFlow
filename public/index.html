@@ -182,6 +182,15 @@
               </select>
               <button id="btn-load-folders" class="btn-secondary text-sm">Load</button>
             </div>
+            <!-- breadcrumb + subfolder drill-down -->
+            <div id="folder-breadcrumb" class="hidden mt-2 text-xs text-gray-400 flex items-center gap-1 flex-wrap"></div>
+            <div id="subfolder-row" class="hidden mt-2 flex gap-2">
+              <select id="sel-subfolder" class="field-input flex-1 text-sm">
+                <option value="">— select subfolder (optional) —</option>
+              </select>
+              <button id="btn-browse-subfolder" class="btn-secondary text-sm">Browse</button>
+            </div>
+            <p class="text-xs text-gray-400 mt-1">Select <strong class="text-gray-300">Project Files</strong> then Browse to drill into your Revit model subfolder.</p>
           </div>
           <div id="folder-urn-row" class="field-row hidden">
             <label class="field-label text-slate-400">Folder URN</label>
