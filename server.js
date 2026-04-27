@@ -290,11 +290,12 @@ app.get('/api/project/containers', async (req, res) => {
 
       if (s1 === 403) {
         return res.status(403).json({
-          error: 'APS app is not authorised for this ACC account.',
-          hint: 'An ACC Account Admin must go to Account Admin → Custom Integrations, add this Client ID, and enable Model Coordination.',
+          error: 'APS app is not authorised for this ACC account (403).',
+          hint: 'An ACC Account Admin must open acc.autodesk.com → Account Admin → Custom Integrations → Add Integration, paste in your Client ID, and tick "Model Coordination". This is separate from the APS developer portal.',
           accountId,
           projectId,
           apsStatus: 403,
+          apsBody: e1.body ?? null,
         });
       }
 

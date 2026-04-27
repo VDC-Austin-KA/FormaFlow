@@ -37,7 +37,11 @@ async function api(method, path, body) {
   const res = await fetch(path, opts);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    const e = new Error(err.error || res.statusText);
+    e.hint    = err.hint    || null;
+    e.apsBody = err.apsBody || null;
+    e.status  = res.status;
+    throw e;
   }
   return res.json().catch(() => null);
 }
@@ -177,25 +181,42 @@ async function loadFolders() {
 async function detectContainer() {
   const accountId = el('inp-account-id').value.trim();
   const projectId = el('inp-project-id').value.trim();
+  const errPanel  = el('container-error');
+
   if (!accountId) { toast('Enter Account ID first', 'error'); return; }
-  if (!projectId) { toast('Enter Project ID first — Model Coordination uses the project UUID as its container ID', 'error'); return; }
+  if (!projectId) { toast('Enter Project ID first', 'error'); return; }
 
   const btn = el('btn-detect-container');
   btn.disabled = true;
   btn.textContent = '…';
+  errPanel.classList.add('hidden');
+  errPanel.textContent = '';
 
   try {
     const data = await api('GET',
       `/api/project/containers?accountId=${encodeURIComponent(accountId)}&projectId=${encodeURIComponent(projectId)}`);
     const containers = data?.data ?? data ?? [];
     if (containers.length > 0) {
-      el('inp-container-id').value = containers[0].id ?? containers[0];
-      toast(`Container detected: ${containers[0].id ?? containers[0]}`);
+      const id = containers[0].id ?? containers[0];
+      el('inp-container-id').value = id;
+      errPanel.classList.add('hidden');
+      toast(`Container detected: ${id}`);
     } else {
       toast('No containers found — ensure your app is provisioned in ACC Admin', 'error');
     }
   } catch (err) {
-    // Surface the server's provisioning hint verbatim when available
+    // Build a persistent, readable error panel
+    const lines = [err.message || 'Container detection failed'];
+    if (err.hint)    lines.push(`\n💡 ${err.hint}`);
+    if (err.apsBody) lines.push(`\nAutodesk response: ${err.apsBody}`);
+
+    // For 403/404: auto-suggest pasting the project ID
+    if (err.status === 403 || err.status === 404) {
+      lines.push(`\n➤ You can paste your Project ID (${projectId}) into the MC Container ID field directly — for ACC v3 projects they are the same value.`);
+    }
+
+    errPanel.textContent = lines.join('');
+    errPanel.classList.remove('hidden');
     toast(err.message || 'Container detection failed', 'error');
   } finally {
     btn.disabled = false;
