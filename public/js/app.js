@@ -161,21 +161,101 @@ async function loadFolders() {
     const folders = data?.data ?? [];
     const sel = el('sel-folder');
     sel.innerHTML = '<option value="">— select a folder —</option>';
-    for (const f of folders) {
-      const name = f.attributes?.name || f.id;
-      const urn  = f.links?.webView?.href || f.id;
-      const opt  = new Option(name, f.id);
-      opt.dataset.urn = f.id;
-      sel.add(opt);
+
+    // Group: user folders first, system folders at bottom
+    const userFolders   = folders.filter(f => f._category !== 'system');
+    const systemFolders = folders.filter(f => f._category === 'system');
+
+    if (userFolders.length) {
+      const grp = document.createElement('optgroup');
+      grp.label = 'Project Folders';
+      for (const f of userFolders) {
+        const opt = new Option(f.attributes?.name || f.id, f.id);
+        grp.appendChild(opt);
+      }
+      sel.add(grp);
     }
+    if (systemFolders.length) {
+      const grp = document.createElement('optgroup');
+      grp.label = 'System Folders (ACC modules — skip these)';
+      for (const f of systemFolders) {
+        const opt = new Option(f.attributes?.name || f.id, f.id);
+        opt.style.color = '#6b7280';
+        grp.appendChild(opt);
+      }
+      sel.add(grp);
+    }
+
     if (!folders.length) toast('No folders found — check account/project IDs', 'error');
-    else toast(`Loaded ${folders.length} folder(s)`);
+    else toast(`Loaded ${userFolders.length} project folder(s)`);
   } catch (err) {
     toast('Failed to load folders: ' + err.message, 'error');
   } finally {
     btn.disabled = false;
     btn.textContent = 'Load';
   }
+}
+
+// Folder path stack for breadcrumb drill-down: [{id, name}]
+let _folderStack = [];
+
+async function browseSubfolder(folderId, folderName) {
+  const projectId = el('inp-project-id').value.trim();
+  if (!projectId) { toast('Project ID required', 'error'); return; }
+
+  const btn = el('btn-browse-subfolder');
+  btn.disabled = true;
+  btn.textContent = '…';
+
+  try {
+    const data = await api('GET',
+      `/api/project/folder-contents?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderId)}`);
+    const subfolders = (data?.items ?? []).filter(i => i.type === 'folders');
+
+    if (!subfolders.length) {
+      toast('No subfolders in this folder — you can use it as-is', 'info');
+      return;
+    }
+
+    _folderStack.push({ id: folderId, name: folderName });
+    renderFolderBreadcrumb();
+
+    const sub = el('sel-subfolder');
+    sub.innerHTML = '<option value="">— select subfolder —</option>';
+    for (const f of subfolders) {
+      sub.add(new Option(f.name, f.id));
+    }
+    el('subfolder-row').classList.remove('hidden');
+  } catch (err) {
+    toast('Failed to browse subfolder: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Browse';
+  }
+}
+
+function renderFolderBreadcrumb() {
+  const bc = el('folder-breadcrumb');
+  bc.innerHTML = '';
+  bc.classList.remove('hidden');
+  _folderStack.forEach((crumb, i) => {
+    if (i > 0) {
+      const sep = document.createElement('span');
+      sep.textContent = '›';
+      bc.appendChild(sep);
+    }
+    const span = document.createElement('span');
+    span.textContent = crumb.name;
+    span.className = 'cursor-pointer text-blue-400 hover:underline';
+    span.addEventListener('click', () => {
+      // Navigate back to this crumb
+      _folderStack = _folderStack.slice(0, i);
+      el('inp-folder-urn').value = crumb.id;
+      el('folder-urn-row').classList.remove('hidden');
+      browseSubfolder(crumb.id, crumb.name);
+    });
+    bc.appendChild(span);
+  });
 }
 
 async function detectContainer() {
@@ -196,11 +276,21 @@ async function detectContainer() {
     const data = await api('GET',
       `/api/project/containers?accountId=${encodeURIComponent(accountId)}&projectId=${encodeURIComponent(projectId)}`);
     const containers = data?.data ?? data ?? [];
+
     if (containers.length > 0) {
       const id = containers[0].id ?? containers[0];
       el('inp-container-id').value = id;
-      errPanel.classList.add('hidden');
-      toast(`Container detected: ${id}`);
+
+      if (data.warning) {
+        // Inferred (not verified) — show amber warning, not red error
+        errPanel.className = 'mt-2 p-3 rounded text-sm bg-amber-900/40 border border-amber-700 text-amber-200';
+        errPanel.textContent = `⚠ ${data.warning}`;
+        errPanel.classList.remove('hidden');
+        toast(`Container ID filled in (unverified — see warning below)`, 'error');
+      } else {
+        errPanel.classList.add('hidden');
+        toast(`Container detected: ${id}`);
+      }
     } else {
       toast('No containers found — ensure your app is provisioned in ACC Admin', 'error');
     }
@@ -209,12 +299,10 @@ async function detectContainer() {
     const lines = [err.message || 'Container detection failed'];
     if (err.hint)    lines.push(`\n💡 ${err.hint}`);
     if (err.apsBody) lines.push(`\nAutodesk response: ${err.apsBody}`);
-
-    // For 403/404: auto-suggest pasting the project ID
     if (err.status === 403 || err.status === 404) {
       lines.push(`\n➤ You can paste your Project ID (${projectId}) into the MC Container ID field directly — for ACC v3 projects they are the same value.`);
     }
-
+    errPanel.className = 'mt-2 p-3 rounded text-sm bg-red-900/40 border border-red-700 text-red-200';
     errPanel.textContent = lines.join('');
     errPanel.classList.remove('hidden');
     toast(err.message || 'Container detection failed', 'error');
@@ -1172,8 +1260,35 @@ async function init() {
 
   el('sel-folder').addEventListener('change', (e) => {
     const urn = e.target.value;
+    const name = e.target.options[e.target.selectedIndex]?.text || urn;
     el('inp-folder-urn').value = urn;
     el('folder-urn-row').classList.toggle('hidden', !urn);
+    // Reset subfolder state when top-level changes
+    _folderStack = [];
+    el('subfolder-row').classList.add('hidden');
+    el('folder-breadcrumb').classList.add('hidden');
+    el('folder-breadcrumb').innerHTML = '';
+    if (urn) {
+      el('subfolder-row').classList.remove('hidden');
+      el('sel-subfolder').innerHTML = '<option value="">— select subfolder (optional) —</option>';
+    }
+  });
+
+  el('btn-browse-subfolder').addEventListener('click', () => {
+    const folderId = el('sel-subfolder').value || el('sel-folder').value;
+    const name = el('sel-subfolder').value
+      ? el('sel-subfolder').options[el('sel-subfolder').selectedIndex]?.text
+      : el('sel-folder').options[el('sel-folder').selectedIndex]?.text;
+    if (!folderId) { toast('Select a folder to browse first', 'error'); return; }
+    browseSubfolder(folderId, name);
+  });
+
+  el('sel-subfolder').addEventListener('change', (e) => {
+    const urn = e.target.value;
+    if (urn) {
+      el('inp-folder-urn').value = urn;
+      el('folder-urn-row').classList.remove('hidden');
+    }
   });
 
   // Search Sets tab — discipline filter pills

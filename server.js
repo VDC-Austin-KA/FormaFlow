@@ -242,18 +242,40 @@ app.post('/api/auth/test', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** List top-level folders for a given project */
+// Folder names that are ACC system/module folders — not useful for coordination
+const SYSTEM_FOLDER_PREFIXES = [
+  'submittals-', 'quantification_', 'issue_', 'correspondence-project-',
+  'meetings-project-', 'checklists-project-', 'rfis-project-', 'photos_',
+  'b0', 'b1',
+];
+const SYSTEM_FOLDER_EXACT = new Set([
+  'VIRTUAL_ROOT_FOLDER', 'Photos', 'ProjectTb',
+]);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function classifyFolder(name = '') {
+  if (SYSTEM_FOLDER_EXACT.has(name)) return 'system';
+  if (UUID_RE.test(name))            return 'system';
+  if (SYSTEM_FOLDER_PREFIXES.some(p => name.startsWith(p))) return 'system';
+  return 'user';
+}
+
 app.get('/api/project/folders', async (req, res) => {
   try {
     const { accountId, projectId } = req.query;
     if (!accountId || !projectId) return res.status(400).json({ error: 'accountId and projectId required' });
     const client = await makeAPSClient();
-    // Data Management API requires b. prefix on both hub and project IDs
     const hubId  = accountId.startsWith('b.') ? accountId : `b.${accountId}`;
     const projId = projectId.startsWith('b.')  ? projectId : `b.${projectId}`;
     const data = await client.get(
       `https://developer.api.autodesk.com/project/v1/hubs/${hubId}/projects/${projId}/topFolders`
     );
-    res.json(data);
+    // Annotate each folder with a category so the UI can group them
+    const folders = (data?.data ?? []).map(f => ({
+      ...f,
+      _category: classifyFolder(f.attributes?.name ?? f.id),
+    }));
+    res.json({ ...data, data: folders });
   } catch (err) {
     res.status(500).json({ error: err.message, details: err.body });
   }
@@ -281,57 +303,66 @@ app.get('/api/project/containers', async (req, res) => {
     const MC_MODELSET_BASE = process.env.MC_MODELSET_API_BASE
       ?? 'https://developer.api.autodesk.com/bim360/modelcoordination/modelset/v3';
 
-    // ── Strategy 1: ACC v3 — containerId = projectId ──────────────────────
-    try {
-      await client.get(`${MC_MODELSET_BASE}/containers/${projectId}/modelsets`);
-      return res.json({ data: [{ id: projectId }] });
-    } catch (e1) {
-      const s1 = e1.status || 0;
-
-      if (s1 === 403) {
-        return res.status(403).json({
-          error: 'APS app is not authorised for this ACC account (403).',
-          hint: 'An ACC Account Admin must open acc.autodesk.com → Account Admin → Custom Integrations → Add Integration, paste in your Client ID, and tick "Model Coordination". This is separate from the APS developer portal.',
-          accountId,
-          projectId,
-          apsStatus: 403,
-          apsBody: e1.body ?? null,
-        });
-      }
-
-      // 404 → project exists but MC not on v3 path — fall through to legacy lookup
-      if (s1 !== 404) throw e1;
-    }
-
-    // ── Strategy 2: BIM360 legacy — fetch real containerId from HQ API ────
-    let legacyContainerId = null;
+    // ── Strategy 0: HQ Admin API — works independently of MC provisioning ────
+    // Pull the container ID from the BIM360/ACC project record. This succeeds
+    // even when the APS app hasn't been added as a Custom Integration yet.
+    let hqContainerId = null;
     try {
       const accountIdClean = accountId.replace(/^b\./, '');
       const hqProject = await client.get(
         `https://developer.api.autodesk.com/hq/v1/accounts/${accountIdClean}/projects/${projectId}`
       );
-      // BIM 360 returns the MC container under relationships.docs
-      legacyContainerId = hqProject?.data?.relationships?.docs?.data?.id
+      hqContainerId = hqProject?.data?.relationships?.docs?.data?.id
         ?? hqProject?.relationships?.docs?.data?.id
         ?? null;
-    } catch (_) {
-      // HQ API unavailable or not a BIM360 project — continue to error
+    } catch (_) { /* HQ API unavailable — continue */ }
+
+    // ── Strategy 1: ACC v3 — containerId = projectId ──────────────────────
+    let mcStatus1 = null;
+    let mcBody1   = null;
+    try {
+      await client.get(`${MC_MODELSET_BASE}/containers/${projectId}/modelsets`);
+      // Verified: MC API accepts projectId as containerId
+      return res.json({ data: [{ id: projectId }] });
+    } catch (e1) {
+      mcStatus1 = e1.status || 0;
+      mcBody1   = e1.body ?? null;
+      if (mcStatus1 !== 403 && mcStatus1 !== 404) throw e1;
     }
 
-    if (legacyContainerId) {
-      // Verify the legacy container ID works
+    // ── Strategy 2: verify HQ-derived containerId against MC API ──────────
+    if (hqContainerId && hqContainerId !== projectId) {
       try {
-        await client.get(`${MC_MODELSET_BASE}/containers/${legacyContainerId}/modelsets`);
-        return res.json({ data: [{ id: legacyContainerId }] });
-      } catch (_) {
-        // Legacy container found but still no MC access — fall through to error
-      }
+        await client.get(`${MC_MODELSET_BASE}/containers/${hqContainerId}/modelsets`);
+        return res.json({ data: [{ id: hqContainerId }] });
+      } catch (_) { /* fall through */ }
     }
 
-    // ── Neither strategy succeeded ─────────────────────────────────────────
+    // ── Fallback: return best-guess containerId with a warning ────────────
+    // For ACC v3, containerId always equals projectId even when the MC API
+    // returns 403 (app not yet provisioned). Return it unverified so the UI
+    // can pre-fill the field — the user can save and proceed once provisioned.
+    const inferredId = hqContainerId ?? projectId;
+
+    if (mcStatus1 === 403) {
+      return res.json({
+        data: [{ id: inferredId }],
+        warning: 'MC API returned 403 — container ID is inferred (not verified). To verify, an ACC Account Admin must add this app as a Custom Integration: acc.autodesk.com → Account Admin → Custom Integrations → Add Integration → paste Client ID → enable Model Coordination.',
+        apsBody: mcBody1,
+      });
+    }
+
+    // 404 from MC API after exhausting all strategies
+    if (inferredId) {
+      return res.json({
+        data: [{ id: inferredId }],
+        warning: 'Model Coordination could not be verified for this project (404). Container ID is inferred. Confirm MC is active in ACC → Settings → Products & Services.',
+      });
+    }
+
     return res.status(404).json({
-      error: 'Model Coordination is not enabled for this project.',
-      hint: 'In ACC, open the project → Settings → Products & Services and confirm "Model Coordination" is active. If this is a BIM360 project, ensure Model Coordination was set up when the project was created.',
+      error: 'Could not determine a Model Coordination container ID.',
+      hint: 'In ACC, confirm Model Coordination is active under project Settings → Products & Services.',
       accountId,
       projectId,
     });
