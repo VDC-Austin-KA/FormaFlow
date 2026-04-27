@@ -65,23 +65,39 @@ function formatTime(iso) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TAB_META = {
-  connect:    { title: 'Connect',      sub: 'Configure APS credentials and ACC project' },
-  models:     { title: 'Models',       sub: 'View and override automatically identified disciplines' },
-  searchsets: { title: 'Search Sets',  sub: 'Toggle and preview reusable property-based filters' },
-  clashtests: { title: 'Clash Tests',  sub: 'Enable, disable, and fine-tune clash test pairs' },
-  settings:   { title: 'Settings',     sub: 'Workflow options, naming conventions, and output' },
-  run:        { title: 'Run Workflow', sub: 'Execute the full automated coordination workflow' },
+  connect:    { title: 'Connect',       sub: 'Configure APS credentials and ACC project' },
+  hub:        { title: 'Hub Projects',  sub: 'Browse and switch between all projects in your ACC hub' },
+  viewer:     { title: '3D Viewer',     sub: 'Visualize models and clash results in an interactive 3D view' },
+  models:     { title: 'Models',        sub: 'View and override automatically identified disciplines' },
+  searchsets: { title: 'Search Sets',   sub: 'Toggle and preview reusable property-based filters' },
+  clashtests: { title: 'Clash Tests',   sub: 'Enable, disable, and fine-tune clash test pairs' },
+  settings:   { title: 'Settings',      sub: 'Workflow options, naming conventions, and output' },
+  run:        { title: 'Run Workflow',   sub: 'Execute the full automated coordination workflow' },
 };
+
+// Tabs that need flex layout (not block/overflow-y-auto)
+const FLEX_TABS = new Set(['viewer']);
 
 function navigate(tab) {
   State.currentTab = tab;
   document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('hidden', p.id !== `tab-${tab}`));
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    const isActive = p.id === `tab-${tab}`;
+    if (FLEX_TABS.has(tab) && isActive) {
+      p.classList.remove('hidden');
+    } else if (FLEX_TABS.has(p.id.replace('tab-', '')) && !isActive) {
+      p.classList.add('hidden');
+    } else {
+      p.classList.toggle('hidden', !isActive);
+    }
+  });
   const meta = TAB_META[tab] || {};
   el('tab-title').textContent = meta.title || tab;
   el('tab-sub').textContent = meta.sub || '';
   el('header-actions').innerHTML = '';
   if (tab === 'clashtests' || tab === 'searchsets' || tab === 'settings') renderSaveBtn(tab);
+  // Lazy-init viewer on first open
+  if (tab === 'viewer' && !_viewerState.sdkLoaded) initViewerTab();
 }
 
 function renderSaveBtn(tab) {
@@ -1214,6 +1230,415 @@ function showRunSummary(data) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 3D Viewer
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DISC_COLORS_HEX = {
+  ARCH:'#f59e0b', STRUCT:'#3b82f6', MECH:'#10b981', PLUMB:'#06b6d4',
+  ELEC:'#f97316', FP:'#ef4444',    CIVIL:'#78716c', INT:'#8b5cf6', UNKNOWN:'#9ca3af',
+};
+
+const _viewerState = {
+  sdkLoaded: false,
+  viewer: null,
+  loadedModels: [],   // { urn, name, discipline, model }
+  clashGroups: [],
+  activeGroup: null,
+};
+
+async function loadViewerSDK() {
+  if (_viewerState.sdkLoaded) return;
+  return new Promise((resolve, reject) => {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.type = 'text/css';
+    link.href = 'https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/style.min.css';
+    document.head.appendChild(link);
+
+    const script = document.createElement('script');
+    script.src = 'https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/viewer3D.min.js';
+    script.onload = () => { _viewerState.sdkLoaded = true; resolve(); };
+    script.onerror = () => reject(new Error('Failed to load APS Viewer SDK'));
+    document.head.appendChild(script);
+  });
+}
+
+async function initViewerTab() {
+  el('viewer-status-text').textContent = 'Loading viewer SDK…';
+  try {
+    await loadViewerSDK();
+    await new Promise((resolve, reject) => {
+      Autodesk.Viewing.Initializer({
+        env: 'AutodeskProduction2',
+        api: 'streamingV2',
+        getAccessToken: async (onToken) => {
+          try {
+            const data = await api('GET', '/api/viewer/token');
+            onToken(data.access_token, data.expires_in ?? 3600);
+          } catch (e) {
+            toast('Viewer auth failed: ' + e.message, 'error');
+          }
+        },
+      }, () => {
+        const container = el('viewer-container');
+        el('viewer-placeholder').style.display = 'none';
+        _viewerState.viewer = new Autodesk.Viewing.GuiViewer3D(container, {
+          disabledExtensions: { bimwalk: true },
+        });
+        _viewerState.viewer.start();
+        el('viewer-status-text').textContent = 'Viewer ready';
+        resolve();
+      });
+    });
+  } catch (err) {
+    el('viewer-status-text').textContent = 'Viewer failed to load';
+    toast('Viewer SDK error: ' + err.message, 'error');
+  }
+}
+
+async function loadViewerModels() {
+  const projectId = el('inp-project-id').value.trim();
+  const folderUrn = el('inp-folder-urn').value.trim();
+  if (!projectId) { toast('Set Project ID on the Connect tab first', 'error'); return; }
+  if (!folderUrn) { toast('Select a Target Folder on the Connect tab first', 'error'); return; }
+
+  const btn = el('btn-load-viewer-models');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  try {
+    const data = await api('GET',
+      `/api/project/folder-contents?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderUrn)}`);
+    const models = (data.items ?? []).filter(i => i.type === 'items' && i.viewerUrn);
+
+    const list = el('viewer-model-list');
+    list.innerHTML = '';
+
+    if (!models.length) {
+      list.innerHTML = '<p class="text-xs text-slate-600 px-2 py-3">No viewable models in this folder</p>';
+      return;
+    }
+
+    const disciplines = new Set();
+    models.forEach(m => {
+      const disc = guessDiscFromName(m.name);
+      m.discipline = disc;
+      if (disc) disciplines.add(disc);
+
+      const item = document.createElement('div');
+      item.className = 'viewer-model-item';
+      item.dataset.urn = m.viewerUrn;
+      item.dataset.name = m.name;
+      item.dataset.disc = disc;
+      item.innerHTML = `
+        <div class="disc-dot" style="background:${DISC_COLORS_HEX[disc] ?? '#9ca3af'}"></div>
+        <span class="model-name" title="${m.name}">${m.name}</span>
+        <span class="model-status">▶</span>
+      `;
+      item.addEventListener('click', () => toggleViewerModel(item, m));
+      list.appendChild(item);
+    });
+
+    renderDiscToggles([...disciplines]);
+    toast(`Found ${models.length} viewable model(s)`);
+  } catch (err) {
+    toast('Failed to list models: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Load Models from Folder';
+  }
+}
+
+function guessDiscFromName(name = '') {
+  const n = name.toUpperCase();
+  if (/ARCH|ARCHITECTURAL/.test(n)) return 'ARCH';
+  if (/STRUCT|STR[_\-]/.test(n))   return 'STRUCT';
+  if (/MECH|HVAC|DUCT/.test(n))    return 'MECH';
+  if (/PLUMB|PLMB|SANIT/.test(n))  return 'PLUMB';
+  if (/ELEC|ELE[_\-]|POWER/.test(n)) return 'ELEC';
+  if (/FIRE|SPRINK|FP[_\-]/.test(n)) return 'FP';
+  if (/CIVIL|SITE|GRADING/.test(n))  return 'CIVIL';
+  return 'UNKNOWN';
+}
+
+async function toggleViewerModel(itemEl, modelDef) {
+  if (!_viewerState.viewer) {
+    toast('Viewer not initialized — open the 3D Viewer tab first', 'error');
+    return;
+  }
+
+  const existing = _viewerState.loadedModels.find(m => m.urn === modelDef.viewerUrn);
+  if (existing) {
+    _viewerState.viewer.unloadModel(existing.model);
+    _viewerState.loadedModels = _viewerState.loadedModels.filter(m => m.urn !== modelDef.viewerUrn);
+    itemEl.classList.remove('loaded');
+    itemEl.querySelector('.model-status').textContent = '▶';
+    updateViewerModelCounter();
+    return;
+  }
+
+  itemEl.classList.add('loading');
+  itemEl.querySelector('.model-status').textContent = '⋯';
+  el('viewer-status-text').textContent = `Loading ${modelDef.name}…`;
+
+  try {
+    await new Promise((resolve, reject) => {
+      Autodesk.Viewing.Document.load(
+        `urn:${modelDef.viewerUrn}`,
+        async (doc) => {
+          const geometry = doc.getRoot().getDefaultGeometry();
+          const model = await _viewerState.viewer.loadDocumentNode(doc, geometry, {
+            keepCurrentModels: true,
+            loadAsHidden: false,
+          });
+          _viewerState.loadedModels.push({ urn: modelDef.viewerUrn, name: modelDef.name,
+            discipline: modelDef.discipline, model });
+          itemEl.classList.remove('loading'); itemEl.classList.add('loaded');
+          itemEl.querySelector('.model-status').textContent = '✓';
+          el('viewer-status-text').textContent = `${modelDef.name} loaded`;
+          updateViewerModelCounter();
+          resolve();
+        },
+        (code, msg) => reject(new Error(`Viewer load error ${code}: ${msg}`))
+      );
+    });
+  } catch (err) {
+    itemEl.classList.remove('loading'); itemEl.classList.add('error');
+    itemEl.querySelector('.model-status').textContent = '✗';
+    toast('Load failed: ' + err.message, 'error');
+  }
+}
+
+function updateViewerModelCounter() {
+  const n = _viewerState.loadedModels.length;
+  el('viewer-model-count').textContent = n;
+  el('viewer-model-counter').classList.toggle('hidden', n === 0);
+}
+
+function renderDiscToggles(disciplines) {
+  const container = el('viewer-disc-toggles');
+  container.innerHTML = '';
+  disciplines.forEach(disc => {
+    const color = DISC_COLORS_HEX[disc] ?? '#9ca3af';
+    const row = document.createElement('div');
+    row.className = 'disc-toggle-row';
+    row.innerHTML = `
+      <div class="disc-swatch" style="background:${color}"></div>
+      <span class="flex-1">${disc}</span>
+      <input type="checkbox" checked class="accent-blue-500" data-disc="${disc}"/>
+    `;
+    row.querySelector('input').addEventListener('change', (e) => {
+      toggleDisciplineVisibility(disc, e.target.checked);
+    });
+    container.appendChild(row);
+  });
+}
+
+function toggleDisciplineVisibility(disc, visible) {
+  if (!_viewerState.viewer) return;
+  _viewerState.loadedModels
+    .filter(m => m.discipline === disc)
+    .forEach(m => {
+      if (visible) _viewerState.viewer.showModel(m.model, false);
+      else         _viewerState.viewer.hideModel(m.model);
+    });
+}
+
+async function loadClashResultsForViewer() {
+  try {
+    const data = await api('GET', '/api/clash/results');
+    const groups = data?.groups ?? data?.clashGroups ?? [];
+    if (!groups.length) { toast('No clash results found — run the workflow first', 'error'); return; }
+    _viewerState.clashGroups = groups;
+    renderClashGroups(groups);
+    toast(`Loaded ${groups.length} clash group(s)`);
+  } catch (err) {
+    toast('Failed to load clash results: ' + err.message, 'error');
+  }
+}
+
+function renderClashGroups(groups) {
+  const list = el('viewer-clash-list');
+  const filter = (el('inp-clash-filter').value ?? '').toLowerCase();
+  const filtered = filter ? groups.filter(g => g.name?.toLowerCase().includes(filter)) : groups;
+
+  list.innerHTML = '';
+  if (!filtered.length) {
+    list.innerHTML = '<div class="p-4 text-xs text-slate-600 text-center">No groups match the filter</div>';
+    return;
+  }
+
+  // Build discipline summary chips
+  const discCounts = {};
+  filtered.forEach(g => {
+    const d = g.disciplines?.[0] ?? 'UNKNOWN';
+    discCounts[d] = (discCounts[d] ?? 0) + (g.clashes?.length ?? g.count ?? 0);
+  });
+  const chips = el('clash-disc-chips');
+  chips.innerHTML = Object.entries(discCounts).map(([d, n]) =>
+    `<span class="clash-disc-chip" style="background:${DISC_COLORS_HEX[d] ?? '#9ca3af'}" data-disc="${d}">${d} ${n}</span>`
+  ).join('');
+  chips.classList.remove('hidden');
+
+  let totalClashes = 0;
+  filtered.forEach(g => {
+    const count = g.clashes?.length ?? g.count ?? 0;
+    totalClashes += count;
+    const div = document.createElement('div');
+    div.className = 'clash-group-item';
+    div.innerHTML = `
+      <div class="flex items-center justify-between">
+        <span class="cg-name" title="${g.name ?? ''}">${g.name ?? 'Unnamed Group'}</span>
+        <span class="cg-count">${count}</span>
+      </div>
+      <div class="cg-meta">
+        <span>${g.level ?? ''}</span>
+        <span>${g.testName ?? ''}</span>
+      </div>
+    `;
+    div.addEventListener('click', () => selectClashGroup(div, g));
+    list.appendChild(div);
+  });
+
+  el('footer-group-count').textContent = `${filtered.length} groups`;
+  el('footer-clash-count').textContent = `${totalClashes} clashes`;
+  el('clash-results-footer').classList.remove('hidden');
+}
+
+function selectClashGroup(itemEl, group) {
+  document.querySelectorAll('.clash-group-item').forEach(el => el.classList.remove('active'));
+  itemEl.classList.add('active');
+  _viewerState.activeGroup = group;
+  showClashMarkersForGroup(group);
+}
+
+function showClashMarkersForGroup(group) {
+  if (!_viewerState.viewer) return;
+  const THREE = Autodesk.Viewing.Private.THREE;
+  const SCENE = 'clash-markers';
+
+  if (_viewerState.viewer.overlays.hasScene(SCENE)) {
+    _viewerState.viewer.overlays.clearScene(SCENE);
+  } else {
+    _viewerState.viewer.overlays.addScene(SCENE);
+  }
+
+  const clashes = group.clashes ?? [];
+  let hasPoints = false;
+  const positions = [];
+
+  clashes.forEach(clash => {
+    if (!clash.point) return;
+    hasPoints = true;
+    positions.push(new THREE.Vector3(clash.point.x, clash.point.y, clash.point.z));
+    const geo = new THREE.SphereGeometry(0.2, 8, 8);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true, opacity: 0.85 });
+    const sphere = new THREE.Mesh(geo, mat);
+    sphere.position.set(clash.point.x, clash.point.y, clash.point.z);
+    _viewerState.viewer.overlays.addMesh(sphere, SCENE);
+  });
+
+  if (hasPoints && positions.length) {
+    // Fly camera to the bounding box of this clash group
+    const box = new THREE.Box3().setFromPoints(positions);
+    _viewerState.viewer.navigation.fitBounds(false, box, true);
+  }
+  toast(`Showing ${clashes.length} clash(es) for: ${group.name ?? 'group'}`);
+}
+
+function clearClashMarkers() {
+  if (!_viewerState.viewer) return;
+  if (_viewerState.viewer.overlays.hasScene('clash-markers')) {
+    _viewerState.viewer.overlays.clearScene('clash-markers');
+  }
+}
+
+function showAllClashMarkers() {
+  if (!_viewerState.clashGroups.length) { toast('Load clash results first', 'error'); return; }
+  _viewerState.clashGroups.forEach(g => showClashMarkersForGroup(g));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hub — multi-project manager
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _hubProjects = [];
+
+async function loadHubProjects() {
+  const btn = el('btn-load-hub-projects');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  try {
+    const data = await api('GET', '/api/hub/projects');
+    _hubProjects = data?.data ?? [];
+    renderHubProjects(_hubProjects);
+
+    // Stats
+    const accCount   = _hubProjects.filter(p => p.attributes?.projectType === 'ACC').length;
+    const otherCount = _hubProjects.length - accCount;
+    el('hub-stat-total').textContent = _hubProjects.length;
+    el('hub-stat-acc').textContent   = accCount;
+    el('hub-stat-other').textContent = otherCount;
+
+    const currentProjId = el('inp-project-id').value.trim();
+    const current = _hubProjects.find(p => p.id?.replace(/^b\./, '') === currentProjId);
+    el('hub-stat-active').textContent = current?.attributes?.name ?? 'None';
+
+    toast(`Loaded ${_hubProjects.length} project(s)`);
+  } catch (err) {
+    toast('Failed to load hub projects: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Load Projects';
+  }
+}
+
+function renderHubProjects(projects) {
+  const grid = el('hub-project-grid');
+  const filter = (el('inp-hub-search')?.value ?? '').toLowerCase();
+  const filtered = filter ? projects.filter(p =>
+    p.attributes?.name?.toLowerCase().includes(filter)
+  ) : projects;
+
+  if (!filtered.length) {
+    grid.innerHTML = '<div class="col-span-3 text-center text-slate-400 py-12">No projects match your search</div>';
+    return;
+  }
+
+  const currentProjId = el('inp-project-id').value.trim();
+
+  grid.innerHTML = filtered.map(p => {
+    const rawId = p.id?.replace(/^b\./, '') ?? '';
+    const isActive = rawId === currentProjId;
+    return `
+      <div class="hub-project-card ${isActive ? 'active-project' : ''}" data-project-id="${rawId}">
+        <div class="hpc-name" title="${p.attributes?.name ?? ''}">${p.attributes?.name ?? 'Unnamed Project'}</div>
+        <div class="hpc-type">${p.attributes?.projectType ?? 'ACC'} · ${p.attributes?.status ?? 'active'}</div>
+        <div class="hpc-id">${rawId}</div>
+        <div class="hpc-actions">
+          <button class="btn-primary text-xs py-1 px-3 ${isActive ? 'opacity-50 cursor-default' : ''}"
+            onclick="switchHubProject('${rawId}', '${(p.attributes?.name ?? '').replace(/'/g, '')}')"
+            ${isActive ? 'disabled' : ''}>
+            ${isActive ? '✓ Active' : 'Use This Project'}
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function switchHubProject(projectId, projectName) {
+  el('inp-project-id').value = projectId;
+  // Reset container + folder since they're project-specific
+  el('inp-container-id').value = '';
+  el('inp-folder-urn').value   = '';
+  el('sel-folder').innerHTML   = '<option value="">— load folders first —</option>';
+  el('folder-urn-row').classList.add('hidden');
+  el('hub-stat-active').textContent = projectName;
+
+  // Re-render cards to update active state
+  renderHubProjects(_hubProjects);
+
+  navigate('connect');
+  toast(`Switched to "${projectName}" — save credentials to persist`);
+}
+
 // Initialisation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1246,6 +1671,25 @@ async function init() {
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => navigate(btn.dataset.tab));
   });
+
+  // Viewer tab
+  el('btn-load-viewer-models').addEventListener('click', loadViewerModels);
+  el('btn-viewer-home').addEventListener('click', () => {
+    if (_viewerState.viewer) _viewerState.viewer.fitToView();
+  });
+  el('btn-viewer-explode').addEventListener('click', () => {
+    if (!_viewerState.viewer) return;
+    const current = _viewerState.viewer.getExplodeScale?.() ?? 0;
+    _viewerState.viewer.explode(current > 0 ? 0 : 0.5);
+  });
+  el('btn-show-clashes').addEventListener('click', showAllClashMarkers);
+  el('btn-clear-markers').addEventListener('click', clearClashMarkers);
+  el('btn-load-clash-results').addEventListener('click', loadClashResultsForViewer);
+  el('inp-clash-filter').addEventListener('input', () => renderClashGroups(_viewerState.clashGroups));
+
+  // Hub tab
+  el('btn-load-hub-projects').addEventListener('click', loadHubProjects);
+  el('inp-hub-search').addEventListener('input', () => renderHubProjects(_hubProjects));
 
   // Connect tab
   el('btn-test-conn').addEventListener('click', testConnection);
