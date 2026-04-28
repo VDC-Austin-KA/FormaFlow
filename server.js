@@ -994,12 +994,13 @@ app.put('/api/coordination/assignments', (req, res) => {
   try {
     const incoming = req.body ?? {};
     const merged = {
-      modelSetId:    incoming.modelSetId ?? '',
-      assignments:   incoming.assignments ?? {},
-      clashIncludes: Array.isArray(incoming.clashIncludes) ? incoming.clashIncludes : [],
-      alignments:    incoming.alignments ?? {},
-      alignSnap:     typeof incoming.alignSnap === 'number' ? incoming.alignSnap : 1.0,
-      lastSavedAt:   new Date().toISOString(),
+      modelSetId:       incoming.modelSetId ?? '',
+      assignments:      incoming.assignments ?? {},
+      clashIncludes:    Array.isArray(incoming.clashIncludes) ? incoming.clashIncludes : [],
+      alignments:       incoming.alignments ?? {},
+      alignSnap:        typeof incoming.alignSnap === 'number' ? incoming.alignSnap : 1.0,
+      modelDisciplines: incoming.modelDisciplines ?? {},
+      lastSavedAt:      new Date().toISOString(),
     };
     writeConfig('coordination-assignments.json', merged);
     res.json({ ok: true, lastSavedAt: merged.lastSavedAt });
