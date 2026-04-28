@@ -891,3 +891,74 @@ code { font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace; }
   max-width: 120px;
 }
 .model-disc-select:hover { border-color: #94a3b8; }
+
+/* ═══════════════════════════════════════════════════════════
+   Hub tab — filter pills + cards
+   ═══════════════════════════════════════════════════════════ */
+.hub-filter-pill {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.hub-filter-pill:hover { border-color: #94a3b8; color: #0f172a; }
+.hub-filter-pill.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.hpc-type-badge {
+  display: inline-block;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: #e0e7ff;
+  color: #3730a3;
+  border-radius: 4px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+}
+.hub-project-card .hpc-type {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Viewer — source toggle, recents
+   ═══════════════════════════════════════════════════════════ */
+.viewer-src-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.viewer-src-btn:hover { background: rgba(255,255,255,0.04); color: #cbd5e1; }
+.viewer-src-btn.active {
+  background: #1e40af;
+  color: #ffffff;
+}
+
+.viewer-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.viewer-recent-row:hover { background: rgba(59,130,246,0.12); color: #fff; }
+.viewer-recent-row.loaded { color: #6ee7b7; }
+.viewer-recent-row .model-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

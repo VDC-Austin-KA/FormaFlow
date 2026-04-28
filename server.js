@@ -33,7 +33,7 @@ app.use(express.static(resolve(__dirname, 'public')));
 const ENV_KEYS = [
   'APS_CLIENT_ID', 'APS_CLIENT_SECRET',
   'ACC_ACCOUNT_ID', 'ACC_PROJECT_ID',
-  'MC_CONTAINER_ID', 'TARGET_FOLDER_URN',
+  'MC_CONTAINER_ID', 'MC_MODEL_SET_ID', 'TARGET_FOLDER_URN',
   'LOG_LEVEL', 'DRY_RUN',
 ];
 
@@ -139,6 +139,7 @@ app.get('/api/config', (_req, res) => {
       ACC_ACCOUNT_ID:   env.ACC_ACCOUNT_ID   ?? '',
       ACC_PROJECT_ID:   env.ACC_PROJECT_ID   ?? '',
       MC_CONTAINER_ID:  env.MC_CONTAINER_ID  ?? '',
+      MC_MODEL_SET_ID:  env.MC_MODEL_SET_ID  ?? '',
       TARGET_FOLDER_URN: env.TARGET_FOLDER_URN ?? '',
       LOG_LEVEL: env.LOG_LEVEL ?? 'info',
       DRY_RUN:   env.DRY_RUN   ?? 'false',
@@ -158,7 +159,7 @@ app.post('/api/config/env', (req, res) => {
     const ALLOWED = [
       'APS_CLIENT_ID', 'APS_CLIENT_SECRET',
       'ACC_ACCOUNT_ID', 'ACC_PROJECT_ID',
-      'MC_CONTAINER_ID', 'TARGET_FOLDER_URN',
+      'MC_CONTAINER_ID', 'MC_MODEL_SET_ID', 'TARGET_FOLDER_URN',
       'LOG_LEVEL', 'DRY_RUN',
     ];
     const toSave = {};
@@ -628,7 +629,136 @@ app.get('/api/project/modelsets', async (req, res) => {
     const data = await mc.listModelSets();
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes — Model Coordination (active coordination space)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function buildMcClient(req) {
+  const containerId = req.query.containerId ?? process.env.MC_CONTAINER_ID;
+  if (!containerId) throw Object.assign(new Error('containerId required'), { status: 400 });
+  return import('./src/api/model-coordination.js').then(async ({ ModelCoordinationClient }) => {
+    const client = await makeAPSClient();
+    return new ModelCoordinationClient(client, containerId);
+  });
+}
+
+/** List documents (models) inside a coordination space's latest version */
+app.get('/api/mc/space-documents', async (req, res) => {
+  try {
+    const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
+    if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
+    const mc = await buildMcClient(req);
+
+    const versResp = await mc.getModelSetVersions(modelSetId);
+    const versions = versResp?.data ?? versResp ?? [];
+    const latest   = versions[versions.length - 1] ?? null;
+    const versionIndex = latest?.versionIndex ?? null;
+
+    if (!latest) return res.json({ versionIndex: null, documents: [] });
+
+    const docs = (latest.documents ?? []).map(d => {
+      const rawUrn = d.urn ?? d.derivativeUrn ?? null;
+      const viewerUrn = rawUrn
+        ? Buffer.from(rawUrn).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'')
+        : null;
+      const name = d.name ?? d.fileName ?? d.displayName ?? rawUrn ?? 'Unknown';
+      return {
+        id:           d.id ?? rawUrn,
+        name,
+        rawUrn,
+        viewerUrn,
+        size:         d.size ?? null,
+        lastModified: d.lastModifiedTime ?? d.modifiedAt ?? null,
+      };
+    });
+
+    res.json({ versionIndex, documentCount: docs.length, documents: docs });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** List clash tests for the latest version of a coordination space */
+app.get('/api/mc/clash-tests', async (req, res) => {
+  try {
+    const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
+    if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
+    const mc = await buildMcClient(req);
+
+    const versResp = await mc.getModelSetVersions(modelSetId);
+    const versions = versResp?.data ?? versResp ?? [];
+    const latest   = versions[versions.length - 1];
+    if (!latest) return res.json({ versionIndex: null, tests: [] });
+
+    const versionIndex = latest.versionIndex ?? 1;
+    const data = await mc.listClashTests(modelSetId, versionIndex);
+    res.json({ versionIndex, tests: data?.data ?? data ?? [] });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Get clash groups for a specific test */
+app.get('/api/mc/clash-groups', async (req, res) => {
+  try {
+    const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
+    const versionIndex = req.query.versionIndex;
+    const testId = req.query.testId;
+    if (!modelSetId || !versionIndex || !testId) {
+      return res.status(400).json({ error: 'modelSetId, versionIndex, testId required' });
+    }
+    const mc = await buildMcClient(req);
+    const data = await mc.getGroupedClashes(modelSetId, parseInt(versionIndex, 10), testId);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** List existing search sets for a coordination space */
+app.get('/api/mc/search-sets', async (req, res) => {
+  try {
+    const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
+    if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
+    const mc = await buildMcClient(req);
+    const data = await mc.listSearchSets(modelSetId);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/**
+ * List MC views for a coordination space.
+ * The MC v3 Views endpoint surfaces saved viewer states. If the endpoint
+ * returns 404 we report that gracefully so the client can fall back to
+ * local "FormaFlow Views" without surfacing a noisy error.
+ */
+app.get('/api/mc/views', async (req, res) => {
+  try {
+    const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
+    const containerId = req.query.containerId ?? process.env.MC_CONTAINER_ID;
+    if (!modelSetId || !containerId) {
+      return res.status(400).json({ error: 'modelSetId and containerId required' });
+    }
+    const client = await makeAPSClient();
+    const url = `https://developer.api.autodesk.com/bim360/modelset/v3/containers/${containerId}/modelsets/${modelSetId}/views`;
+    try {
+      const data = await client.get(url);
+      res.json({ supported: true, views: data?.data ?? data ?? [] });
+    } catch (e) {
+      if (e.status === 404) {
+        // Endpoint not enabled for this container — return supported:false
+        return res.json({ supported: false, views: [], reason: 'MC Views API not available for this container' });
+      }
+      throw e;
+    }
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
   }
 });
 
@@ -700,9 +830,17 @@ app.post('/api/workflow/run', async (req, res) => {
     const modelSets = setsResp?.data ?? setsResp ?? [];
     if (!modelSets.length) { emit('error', '✗ No model sets found — check MC_CONTAINER_ID'); return done(false); }
 
-    const ms = modelSets[0];
+    // Prefer the user-selected coordination space; fall back to first if none chosen.
+    const selectedId = process.env.MC_MODEL_SET_ID;
+    let ms = selectedId
+      ? modelSets.find(s => (s.id ?? s.modelSetId) === selectedId)
+      : null;
+    if (!ms && selectedId) {
+      emit('warn', `⚠ Selected coordination space not found (${selectedId}); falling back to first available`);
+    }
+    ms ??= modelSets[0];
     const modelSetId = ms.id ?? ms.modelSetId;
-    emit('info', `✓ Model set: ${ms.name ?? modelSetId}`);
+    emit('info', `✓ Coordination space: ${ms.name ?? modelSetId}`);
 
     const versResp = await mcClient.getModelSetVersions(modelSetId);
     const versions = versResp?.data ?? versResp ?? [];
