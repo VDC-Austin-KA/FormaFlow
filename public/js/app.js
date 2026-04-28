@@ -70,6 +70,7 @@ const TAB_META = {
   viewer:     { title: '3D Viewer',     sub: 'Visualize models and clash results in an interactive 3D view' },
   models:     { title: 'Models',        sub: 'View and override automatically identified disciplines' },
   coordination: { title: 'Coordination', sub: 'Assign disciplines, pick clash models, align to PBP / origin / survey / manual offsets' },
+  issues:     { title: 'Issues',         sub: 'View, filter, comment, and create ACC project issues' },
   searchsets: { title: 'Search Sets',   sub: 'Toggle and preview reusable property-based filters' },
   clashtests: { title: 'Clash Tests',   sub: 'Enable, disable, and fine-tune clash test pairs' },
   settings:   { title: 'Settings',      sub: 'Workflow options, naming conventions, and output' },
@@ -101,6 +102,8 @@ function navigate(tab) {
   if (tab === 'viewer' && !_viewerState.sdkLoaded) initViewerTab();
   // Lazy-load coordination data
   if (tab === 'coordination' && !_coordState.loaded) loadCoordinationData();
+  // Lazy-load issues + types
+  if (tab === 'issues' && !_issuesState.loaded) loadIssues();
 }
 
 function renderSaveBtn(tab) {
@@ -306,6 +309,7 @@ let _coordSpaces = [];
 
 async function loadCoordinationSpaces() {
   const containerId = el('inp-container-id').value.trim();
+  hideCoordSpaceError();
   if (!containerId) { toast('Set MC Container ID first (click Detect)', 'error'); return; }
 
   const btn = el('btn-load-coord-spaces');
@@ -332,17 +336,76 @@ async function loadCoordinationSpaces() {
     if (previousValue && sel.querySelector(`option[value="${previousValue}"]`)) sel.value = previousValue;
 
     if (!sets.length) {
-      showCoordSpaceInfo('No coordination spaces found — verify Container ID and ACC custom integration');
+      showCoordSpaceError(
+        'No coordination spaces returned',
+        'The container responded but contained no model sets. Possible reasons:',
+        [
+          'You haven\'t created any Coordination Spaces in this project yet — open ACC → Model Coordination → New Coordination Space',
+          'Your Container ID belongs to a different project',
+        ]
+      );
     } else {
       showCoordSpaceInfo(`${sets.length} coordination space(s) available`);
+      toast(`Loaded ${sets.length} coordination space(s)`);
     }
-    toast(sets.length ? `Loaded ${sets.length} coordination space(s)` : 'No coordination spaces found', sets.length ? '' : 'error');
   } catch (err) {
-    showCoordSpaceInfo(`Error: ${err.message}`);
-    toast('Failed to load coordination spaces: ' + err.message, 'error');
+    const clientId = el('inp-client-id').value.trim() || '(your APS Client ID)';
+    if (err.status === 403) {
+      showCoordSpaceError(
+        '403 Forbidden — APS app not authorized for Model Coordination on this container',
+        'This is the most common gotcha. An ACC Account Admin needs to authorize your APS app:',
+        [
+          'Go to ACC → Account Admin → Settings → Custom Integrations',
+          `Click "Add Custom Integration" and paste your APS Client ID:  ${clientId}`,
+          'Give it a name (e.g. "FormaFlow") and save',
+          'Wait ~30 seconds, then reload and click Load again',
+        ]
+      );
+    } else if (err.status === 404) {
+      showCoordSpaceError(
+        '404 Not Found — Container does not exist on the MC API',
+        'The Container ID resolved is not registered with Model Coordination. Possible reasons:',
+        [
+          'Your project hasn\'t been onboarded to ACC Model Coordination yet — open the MC app once in ACC web to enable',
+          'The Container ID is wrong — for ACC v3 projects it equals the Project ID (without the "b." prefix)',
+        ]
+      );
+    } else if (err.status === 401) {
+      showCoordSpaceError(
+        '401 Unauthorized — APS credentials rejected',
+        'Verify your APS Client ID and Client Secret on the Connect tab and click Test Connection.',
+        []
+      );
+    } else {
+      showCoordSpaceError(`Error: ${err.message}`, '', []);
+    }
+    toast('Failed to load coordination spaces — see details under the picker', 'error');
   } finally {
     btn.disabled = false; btn.textContent = 'Load';
   }
+}
+
+function showCoordSpaceError(msg, hint, steps) {
+  const box = el('coord-space-error');
+  el('coord-space-error-msg').textContent  = msg;
+  el('coord-space-error-hint').textContent = hint ?? '';
+  const stepsEl = el('coord-space-error-steps');
+  stepsEl.innerHTML = '';
+  if (steps?.length) {
+    for (const s of steps) {
+      const li = document.createElement('li');
+      li.textContent = s;
+      stepsEl.appendChild(li);
+    }
+    stepsEl.classList.remove('hidden');
+  } else {
+    stepsEl.classList.add('hidden');
+  }
+  box.classList.remove('hidden');
+}
+
+function hideCoordSpaceError() {
+  el('coord-space-error')?.classList.add('hidden');
 }
 
 async function onCoordSpaceChange() {
@@ -2600,6 +2663,274 @@ function maybeApplyAlignmentToViewer(itemId) {
   return false;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Issues tab — ACC Construction Issues v1
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _issuesState = {
+  loaded: false,
+  issues: [],
+  types: [],
+  selectedId: null,
+  filterStatus: 'open',
+  filterText: '',
+};
+
+const ISSUE_STATUS_COLOR = {
+  draft:    '#94a3b8',
+  open:     '#3b82f6',
+  answered: '#a855f7',
+  closed:   '#10b981',
+  void:     '#64748b',
+};
+
+async function loadIssues() {
+  const projectId = el('inp-project-id').value.trim();
+  if (!projectId) { toast('Set Project ID on the Connect tab first', 'error'); return; }
+
+  const list = el('issues-list');
+  el('issues-error').classList.add('hidden');
+  list.innerHTML = '<div class="p-6 text-center text-slate-400 text-sm">Loading…</div>';
+
+  try {
+    const qs = new URLSearchParams({ projectId });
+    if (_issuesState.filterStatus) qs.set('status', _issuesState.filterStatus);
+    const data = await api('GET', `/api/issues?${qs}`);
+    _issuesState.issues = data?.results ?? data?.data ?? data ?? [];
+
+    // Load types lazily (silent if it fails)
+    if (!_issuesState.types.length) {
+      try {
+        const tdata = await api('GET', `/api/issues/types?projectId=${encodeURIComponent(projectId)}`);
+        _issuesState.types = tdata?.results ?? tdata?.data ?? [];
+      } catch (_) {}
+    }
+
+    _issuesState.loaded = true;
+    renderIssuesList();
+    el('badge-issues').textContent = _issuesState.issues.length;
+    el('badge-issues').classList.toggle('hidden', !_issuesState.issues.length);
+  } catch (err) {
+    list.innerHTML = '';
+    const errBox = el('issues-error');
+    errBox.classList.remove('hidden');
+    el('issues-error-msg').textContent  = `Failed to load issues: ${err.message}`;
+    el('issues-error-hint').textContent = err.status === 403
+      ? 'Tip: APS app may not be authorized — add as Custom Integration in ACC Account Admin.'
+      : err.status === 404
+      ? 'Tip: Construction Issues service may not be enabled for this project.'
+      : err.status === 401
+      ? 'Tip: Verify APS Client ID/Secret on the Connect tab.'
+      : '';
+  }
+}
+
+function renderIssuesList() {
+  const list = el('issues-list');
+  let filtered = _issuesState.issues;
+  if (_issuesState.filterText) {
+    const q = _issuesState.filterText.toLowerCase();
+    filtered = filtered.filter(i =>
+      (i.title ?? '').toLowerCase().includes(q) ||
+      (i.description ?? '').toLowerCase().includes(q) ||
+      (i.identifier ?? '').toLowerCase().includes(q)
+    );
+  }
+
+  el('issues-count').textContent = `${filtered.length}${filtered.length !== _issuesState.issues.length ? ` of ${_issuesState.issues.length}` : ''}`;
+
+  if (!filtered.length) {
+    list.innerHTML = '<div class="p-6 text-center text-slate-400 text-sm">No issues match the current filter</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  for (const i of filtered) {
+    const status = (i.status ?? 'open').toLowerCase();
+    const ident  = i.identifier ?? `#${i.id?.slice(0, 6) ?? ''}`;
+    const title  = i.title ?? '(untitled)';
+    const due    = i.due_date ?? null;
+    const isSelected = i.id === _issuesState.selectedId;
+
+    const row = document.createElement('div');
+    row.className = `issue-row${isSelected ? ' selected' : ''}`;
+    row.dataset.id = i.id;
+    row.innerHTML = `
+      <div class="flex items-center gap-2">
+        <span class="issue-status-dot" style="background:${ISSUE_STATUS_COLOR[status] ?? '#94a3b8'}" title="${status}"></span>
+        <span class="text-xs font-mono text-slate-500">${ident}</span>
+        <span class="issue-status-badge" style="color:${ISSUE_STATUS_COLOR[status] ?? '#94a3b8'};border-color:${ISSUE_STATUS_COLOR[status] ?? '#94a3b8'}">${status}</span>
+      </div>
+      <div class="text-sm text-slate-800 font-medium mt-1 truncate" title="${title}">${title}</div>
+      <div class="flex items-center justify-between text-xs text-slate-500 mt-1">
+        <span>${i.assigned_to_name ?? i.created_by_name ?? '—'}</span>
+        ${due ? `<span class="${new Date(due) < new Date() && status !== 'closed' ? 'text-red-500' : ''}">due ${due.slice(0,10)}</span>` : ''}
+      </div>
+    `;
+    row.addEventListener('click', () => selectIssue(i.id));
+    list.appendChild(row);
+  }
+}
+
+async function selectIssue(issueId) {
+  _issuesState.selectedId = issueId;
+  document.querySelectorAll('.issue-row').forEach(r => r.classList.toggle('selected', r.dataset.id === issueId));
+
+  const detail = el('issue-detail');
+  el('issue-detail-empty').classList.add('hidden');
+  detail.classList.remove('hidden');
+  detail.innerHTML = '<p class="text-sm text-slate-400">Loading…</p>';
+
+  try {
+    const projectId = el('inp-project-id').value.trim();
+    const issue = await api('GET', `/api/issues/${encodeURIComponent(issueId)}?projectId=${encodeURIComponent(projectId)}`);
+    renderIssueDetail(issue);
+
+    // Comments — best-effort
+    try {
+      const c = await api('GET', `/api/issues/${encodeURIComponent(issueId)}/comments?projectId=${encodeURIComponent(projectId)}`);
+      const comments = c?.results ?? c?.data ?? [];
+      renderIssueComments(comments);
+    } catch (_) { /* comments may not exist */ }
+  } catch (err) {
+    detail.innerHTML = `<p class="text-sm text-red-500">Failed to load issue: ${err.message}</p>`;
+  }
+}
+
+function renderIssueDetail(issue) {
+  const status = (issue.status ?? 'open').toLowerCase();
+  const detail = el('issue-detail');
+  detail.innerHTML = `
+    <div class="flex items-start justify-between gap-3 mb-4">
+      <div class="flex-1">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="text-xs font-mono text-slate-500">${issue.identifier ?? '—'}</span>
+          <span class="issue-status-badge" style="color:${ISSUE_STATUS_COLOR[status] ?? '#94a3b8'};border-color:${ISSUE_STATUS_COLOR[status] ?? '#94a3b8'}">${status}</span>
+        </div>
+        <h3 class="text-base font-semibold text-slate-900">${issue.title ?? '(untitled)'}</h3>
+      </div>
+      <select id="sel-issue-status-change" class="field-input text-xs py-1 w-28" data-id="${issue.id}">
+        ${['draft','open','answered','closed','void'].map(s =>
+          `<option value="${s}"${status === s ? ' selected' : ''}>${s}</option>`
+        ).join('')}
+      </select>
+    </div>
+
+    <div class="grid grid-cols-2 gap-3 mb-4 text-xs">
+      <div><span class="text-slate-500">Assigned:</span> ${issue.assigned_to_name ?? '—'}</div>
+      <div><span class="text-slate-500">Owner:</span> ${issue.owner_name ?? '—'}</div>
+      <div><span class="text-slate-500">Created:</span> ${issue.created_at?.slice(0,10) ?? '—'}</div>
+      <div><span class="text-slate-500">Due:</span> ${issue.due_date?.slice(0,10) ?? '—'}</div>
+      <div><span class="text-slate-500">Type:</span> ${issue.issue_type ?? issue.issue_type_name ?? '—'}</div>
+      <div><span class="text-slate-500">Subtype:</span> ${issue.issue_subtype ?? issue.issue_subtype_name ?? '—'}</div>
+    </div>
+
+    ${issue.description ? `<div class="text-sm text-slate-700 mb-4 whitespace-pre-wrap">${escapeHtml(issue.description)}</div>` : ''}
+
+    <hr class="my-4 border-slate-200"/>
+    <h4 class="text-xs font-semibold text-slate-700 mb-2">Comments</h4>
+    <div id="issue-comments" class="space-y-2 mb-3"></div>
+
+    <div class="flex gap-2">
+      <input id="inp-issue-comment" class="field-input flex-1 text-sm" placeholder="Add a comment…"/>
+      <button id="btn-add-comment" class="btn-secondary text-sm">Send</button>
+    </div>
+  `;
+
+  el('sel-issue-status-change').addEventListener('change', async e => {
+    const newStatus = e.target.value;
+    try {
+      await api('PATCH', `/api/issues/${encodeURIComponent(issue.id)}?projectId=${encodeURIComponent(el('inp-project-id').value)}`, { status: newStatus });
+      toast(`Status → ${newStatus}`);
+      // Update list row
+      const obj = _issuesState.issues.find(x => x.id === issue.id);
+      if (obj) obj.status = newStatus;
+      renderIssuesList();
+    } catch (err) {
+      toast('Status update failed: ' + err.message, 'error');
+    }
+  });
+
+  el('btn-add-comment').addEventListener('click', async () => {
+    const body = el('inp-issue-comment').value.trim();
+    if (!body) return;
+    try {
+      await api('POST', `/api/issues/${encodeURIComponent(issue.id)}/comments?projectId=${encodeURIComponent(el('inp-project-id').value)}`, { body });
+      el('inp-issue-comment').value = '';
+      const data = await api('GET', `/api/issues/${encodeURIComponent(issue.id)}/comments?projectId=${encodeURIComponent(el('inp-project-id').value)}`);
+      renderIssueComments(data?.results ?? data?.data ?? []);
+    } catch (err) {
+      toast('Comment failed: ' + err.message, 'error');
+    }
+  });
+}
+
+function renderIssueComments(comments) {
+  const host = el('issue-comments');
+  if (!host) return;
+  if (!comments.length) {
+    host.innerHTML = '<p class="text-xs text-slate-400">No comments yet.</p>';
+    return;
+  }
+  host.innerHTML = comments.map(c => `
+    <div class="bg-slate-50 border border-slate-200 rounded p-2 text-xs">
+      <div class="flex items-center justify-between text-slate-500 mb-1">
+        <span>${c.created_by_name ?? c.author ?? '—'}</span>
+        <span>${(c.created_at ?? '').slice(0,16).replace('T', ' ')}</span>
+      </div>
+      <div class="text-slate-700 whitespace-pre-wrap">${escapeHtml(c.body ?? '')}</div>
+    </div>
+  `).join('');
+}
+
+function escapeHtml(s = '') {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function openNewIssueModal() {
+  const select = el('sel-issue-type');
+  const subSelect = el('sel-issue-subtype');
+  select.innerHTML = '<option value="">— select type —</option>';
+  subSelect.innerHTML = '<option value="">— select subtype —</option>';
+
+  const types = _issuesState.types ?? [];
+  for (const t of types) select.add(new Option(t.title ?? t.name ?? t.id, t.id));
+  select.onchange = () => {
+    const t = types.find(x => x.id === select.value);
+    subSelect.innerHTML = '<option value="">— select subtype —</option>';
+    for (const st of (t?.subtypes ?? [])) subSelect.add(new Option(st.title ?? st.name ?? st.id, st.id));
+  };
+
+  el('inp-issue-title').value = '';
+  el('inp-issue-desc').value  = '';
+  el('inp-issue-due').value   = '';
+  el('sel-issue-status').value = 'open';
+  el('issue-new-modal').classList.remove('hidden');
+}
+
+async function createIssue() {
+  const title = el('inp-issue-title').value.trim();
+  if (!title) { toast('Title required', 'error'); return; }
+  const issue = {
+    title,
+    description: el('inp-issue-desc').value.trim() || undefined,
+    issue_subtype_id: el('sel-issue-subtype').value || undefined,
+    due_date: el('inp-issue-due').value || undefined,
+    status: el('sel-issue-status').value || 'open',
+  };
+  try {
+    const projectId = el('inp-project-id').value.trim();
+    await api('POST', `/api/issues?projectId=${encodeURIComponent(projectId)}`, issue);
+    el('issue-new-modal').classList.add('hidden');
+    toast('Issue created');
+    loadIssues();
+  } catch (err) {
+    toast('Create failed: ' + err.message, 'error');
+  }
+}
+
 // Initialisation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2668,6 +2999,26 @@ async function init() {
   renderRecentModels();
   // Try to populate views list once (silent if unauthenticated)
   reloadViewsList().catch(() => {});
+
+  // Issues tab
+  el('btn-load-issues').addEventListener('click', loadIssues);
+  el('btn-new-issue').addEventListener('click', openNewIssueModal);
+  el('btn-issue-new-close').addEventListener('click', () => el('issue-new-modal').classList.add('hidden'));
+  el('btn-issue-cancel').addEventListener('click', () => el('issue-new-modal').classList.add('hidden'));
+  el('btn-issue-create').addEventListener('click', createIssue);
+  el('inp-issue-search').addEventListener('input', e => {
+    _issuesState.filterText = e.target.value;
+    renderIssuesList();
+  });
+  document.querySelectorAll('.issue-filter-pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      document.querySelectorAll('.issue-filter-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      _issuesState.filterStatus = pill.dataset.status;
+      _issuesState.loaded = false; // re-fetch with new filter
+      loadIssues();
+    });
+  });
 
   // Coordination tab
   el('btn-coord-refresh').addEventListener('click', () => {
