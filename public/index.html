@@ -79,6 +79,14 @@
       </svg>
       Coordination
     </button>
+    <button class="nav-item" data-tab="issues">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
+          d="M12 9v2m0 4h.01M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+      </svg>
+      Issues
+      <span id="badge-issues" class="nav-badge hidden"></span>
+    </button>
     <button class="nav-item" data-tab="searchsets">
       <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -208,6 +216,11 @@
             <div id="coord-space-info" class="hidden mt-1 text-xs text-slate-500 flex items-center gap-2">
               <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
               <span id="coord-space-info-text"></span>
+            </div>
+            <div id="coord-space-error" class="hidden mt-2 p-3 rounded text-sm bg-amber-50 border border-amber-300 text-amber-900">
+              <p id="coord-space-error-msg" class="font-medium"></p>
+              <p id="coord-space-error-hint" class="text-xs mt-1 text-amber-800"></p>
+              <ol id="coord-space-error-steps" class="hidden text-xs mt-2 list-decimal list-inside space-y-0.5 text-amber-900"></ol>
             </div>
             <p class="text-xs text-gray-400 mt-1">Active coordination space scopes the Models tab, 3D Viewer, clash tests, and search sets.</p>
           </div>
@@ -611,6 +624,110 @@
             <div id="coord-align-rows" class="space-y-2"></div>
           </div>
         </section>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════ TAB: ISSUES ════════════════════════ -->
+    <div id="tab-issues" class="tab-panel hidden p-6">
+      <!-- Toolbar -->
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div>
+          <p class="text-xs text-slate-500">
+            ACC issues for this project. Filter, view detail, comment, and update status.
+            Requires the Construction Issues API to be enabled on the project.
+          </p>
+        </div>
+        <div class="flex items-center gap-2">
+          <input id="inp-issue-search" type="text" placeholder="Search title…"
+            class="field-input text-sm py-1.5 w-56"/>
+          <button id="btn-load-issues" class="btn-primary text-sm">Load Issues</button>
+          <button id="btn-new-issue"   class="btn-secondary text-sm">+ New Issue</button>
+        </div>
+      </div>
+
+      <!-- Filter pills -->
+      <div class="flex flex-wrap gap-2 mb-4">
+        <span class="text-xs text-slate-500 mr-1 self-center">Status:</span>
+        <button class="issue-filter-pill active" data-status="open">Open</button>
+        <button class="issue-filter-pill" data-status="answered">Answered</button>
+        <button class="issue-filter-pill" data-status="closed">Closed</button>
+        <button class="issue-filter-pill" data-status="void">Void</button>
+        <button class="issue-filter-pill" data-status="">All</button>
+      </div>
+
+      <!-- Inline error banner -->
+      <div id="issues-error" class="hidden mb-4 p-3 rounded text-sm bg-amber-50 border border-amber-300 text-amber-900">
+        <p id="issues-error-msg" class="font-medium"></p>
+        <p id="issues-error-hint" class="text-xs mt-1 text-amber-800"></p>
+      </div>
+
+      <!-- Layout: list (left) + detail (right) -->
+      <div class="grid grid-cols-1 lg:grid-cols-5 gap-4 min-h-[28rem]">
+        <!-- List -->
+        <div class="lg:col-span-2 bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div class="px-4 py-2.5 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+            <p class="text-xs font-semibold text-slate-700">Issues</p>
+            <span id="issues-count" class="text-xs text-slate-500"></span>
+          </div>
+          <div id="issues-list" class="overflow-y-auto" style="max-height: 32rem">
+            <div class="p-6 text-center text-slate-400 text-sm">Click <strong>Load Issues</strong> to fetch from ACC</div>
+          </div>
+        </div>
+
+        <!-- Detail -->
+        <div class="lg:col-span-3 bg-white rounded-xl border border-slate-200">
+          <div id="issue-detail-empty" class="p-10 text-center text-slate-400 text-sm">
+            Select an issue from the left to see its details
+          </div>
+          <div id="issue-detail" class="hidden p-5"></div>
+        </div>
+      </div>
+
+      <!-- New Issue Modal -->
+      <div id="issue-new-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+        <div class="modal-panel">
+          <div class="modal-header">
+            <h3 class="card-title">New Issue</h3>
+            <button id="btn-issue-new-close" class="modal-close" aria-label="Close">×</button>
+          </div>
+          <div class="modal-body space-y-3">
+            <div class="field-row">
+              <label class="field-label">Title</label>
+              <input id="inp-issue-title" type="text" class="field-input" placeholder="Concise summary (required)"/>
+            </div>
+            <div class="field-row">
+              <label class="field-label">Description</label>
+              <textarea id="inp-issue-desc" class="field-input" rows="4" placeholder="Detail, expected resolution, etc."></textarea>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="field-row">
+                <label class="field-label">Issue Type</label>
+                <select id="sel-issue-type" class="field-input"></select>
+              </div>
+              <div class="field-row">
+                <label class="field-label">Subtype</label>
+                <select id="sel-issue-subtype" class="field-input"></select>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="field-row">
+                <label class="field-label">Due Date</label>
+                <input id="inp-issue-due" type="date" class="field-input"/>
+              </div>
+              <div class="field-row">
+                <label class="field-label">Status</label>
+                <select id="sel-issue-status" class="field-input">
+                  <option value="draft">Draft</option>
+                  <option value="open" selected>Open</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer flex gap-2 justify-end p-4 border-t border-slate-200">
+            <button id="btn-issue-cancel" class="btn-secondary">Cancel</button>
+            <button id="btn-issue-create" class="btn-primary">Create Issue</button>
+          </div>
+        </div>
       </div>
     </div>
 

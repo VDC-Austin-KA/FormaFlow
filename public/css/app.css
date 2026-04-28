@@ -1053,3 +1053,56 @@ code { font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace; }
   line-height: 1;
 }
 .align-step:hover { background: #e2e8f0; }
+
+/* ═══════════════════════════════════════════════════════════
+   Issues tab
+   ═══════════════════════════════════════════════════════════ */
+.issue-filter-pill {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.issue-filter-pill:hover { border-color: #94a3b8; color: #0f172a; }
+.issue-filter-pill.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.issue-row {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #f1f5f9;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.issue-row:hover { background: #f8fafc; }
+.issue-row.selected {
+  background: #eff6ff;
+  border-left: 3px solid #2563eb;
+  padding-left: calc(1rem - 3px);
+}
+.issue-row .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.issue-status-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+}
+
+.issue-status-badge {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  background: transparent;
+}

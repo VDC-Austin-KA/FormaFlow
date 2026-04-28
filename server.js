@@ -126,6 +126,46 @@ async function makeAPSClient(overrides = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Startup diagnostic — log the resolved MC URLs so stale env overrides are
+// immediately visible in Railway/etc. logs.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const rawMs   = process.env.MC_MODELSET_API_BASE || '(default)';
+  const fixedMs = (process.env.MC_MODELSET_API_BASE
+    ?? 'https://developer.api.autodesk.com/bim360/modelset/v3')
+    .replace('/bim360/modelcoordination/', '/bim360/');
+  const rawCl   = process.env.MC_CLASH_API_BASE || '(default)';
+  const fixedCl = (process.env.MC_CLASH_API_BASE
+    ?? 'https://developer.api.autodesk.com/bim360/clash/v3')
+    .replace('/bim360/modelcoordination/', '/bim360/');
+  console.log('[FormaFlow] MC_MODELSET_API_BASE: %s → %s', rawMs, fixedMs);
+  console.log('[FormaFlow] MC_CLASH_API_BASE:    %s → %s', rawCl, fixedCl);
+  if (rawMs.includes('modelcoordination/') || rawCl.includes('modelcoordination/')) {
+    console.warn('[FormaFlow] ⚠ Stale .env override detected — auto-correcting at runtime.');
+    console.warn('[FormaFlow]   Recommended: remove MC_MODELSET_API_BASE / MC_CLASH_API_BASE from .env');
+  }
+}
+
+/** Diagnostic: returns the actual URLs the server will use for MC calls */
+app.get('/api/debug/mc-config', (_req, res) => {
+  const ms = (process.env.MC_MODELSET_API_BASE
+    ?? 'https://developer.api.autodesk.com/bim360/modelset/v3')
+    .replace('/bim360/modelcoordination/', '/bim360/');
+  const cl = (process.env.MC_CLASH_API_BASE
+    ?? 'https://developer.api.autodesk.com/bim360/clash/v3')
+    .replace('/bim360/modelcoordination/', '/bim360/');
+  res.json({
+    rawEnv: {
+      MC_MODELSET_API_BASE: process.env.MC_MODELSET_API_BASE || null,
+      MC_CLASH_API_BASE:    process.env.MC_CLASH_API_BASE    || null,
+    },
+    resolved: { MC_MODELSET_BASE: ms, MC_CLASH_BASE: cl },
+    container:        process.env.MC_CONTAINER_ID || null,
+    activeModelSetId: process.env.MC_MODEL_SET_ID || null,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Routes — Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -728,6 +768,89 @@ app.get('/api/mc/search-sets', async (req, res) => {
     if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
     const mc = await buildMcClient(req);
     const data = await mc.listSearchSets(modelSetId);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes — Issues (ACC Construction Issues v1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function buildIssuesClient(req) {
+  const projectId = req.query.projectId ?? process.env.ACC_PROJECT_ID;
+  if (!projectId) throw Object.assign(new Error('projectId required (set ACC_PROJECT_ID or pass ?projectId=)'), { status: 400 });
+  const { IssuesClient } = await import('./src/api/issues-client.js');
+  const apsClient = await makeAPSClient();
+  return new IssuesClient(apsClient, projectId);
+}
+
+app.get('/api/issues', async (req, res) => {
+  try {
+    const issues = await (await buildIssuesClient(req)).list({
+      status:       req.query.status ? String(req.query.status).split(',') : undefined,
+      assignedTo:   req.query.assignedTo,
+      issueTypeId:  req.query.typeId ? String(req.query.typeId).split(',') : undefined,
+      limit:        req.query.limit ? parseInt(req.query.limit, 10) : 200,
+      offset:       req.query.offset,
+    });
+    res.json(issues);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+app.get('/api/issues/types', async (req, res) => {
+  try {
+    const data = await (await buildIssuesClient(req)).listTypes();
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+app.get('/api/issues/:id', async (req, res) => {
+  try {
+    const data = await (await buildIssuesClient(req)).get(req.params.id);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+app.post('/api/issues', async (req, res) => {
+  try {
+    const data = await (await buildIssuesClient(req)).create(req.body);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+app.patch('/api/issues/:id', async (req, res) => {
+  try {
+    const data = await (await buildIssuesClient(req)).update(req.params.id, req.body);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+app.get('/api/issues/:id/comments', async (req, res) => {
+  try {
+    const data = await (await buildIssuesClient(req)).listComments(req.params.id);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+app.post('/api/issues/:id/comments', async (req, res) => {
+  try {
+    const body = req.body?.body ?? '';
+    if (!body.trim()) return res.status(400).json({ error: 'comment body required' });
+    const data = await (await buildIssuesClient(req)).addComment(req.params.id, body);
     res.json(data);
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
