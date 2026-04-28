@@ -118,6 +118,22 @@ function populateConnect(cfg) {
   if (cfg.env.TARGET_FOLDER_URN) {
     el('folder-urn-row').classList.remove('hidden');
   }
+  if (cfg.env.MC_MODEL_SET_ID) {
+    // Pre-seed the dropdown with the saved value; the actual list will load on demand.
+    const sel = el('sel-coord-space');
+    if (sel && !sel.querySelector(`option[value="${cfg.env.MC_MODEL_SET_ID}"]`)) {
+      sel.add(new Option('Saved coordination space (click Load to refresh)', cfg.env.MC_MODEL_SET_ID));
+    }
+    if (sel) sel.value = cfg.env.MC_MODEL_SET_ID;
+    showCoordSpaceInfo('Saved selection — click Load to verify and refresh.');
+  }
+}
+
+function showCoordSpaceInfo(text) {
+  const info = el('coord-space-info');
+  if (!info) return;
+  el('coord-space-info-text').textContent = text;
+  info.classList.remove('hidden');
 }
 
 async function testConnection() {
@@ -279,6 +295,78 @@ function selectFolderNode(folderId, folderName, nodeEl) {
   toast(`Folder selected: ${folderName}`);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Coordination Space (Model Set) selection
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _coordSpaces = [];
+
+async function loadCoordinationSpaces() {
+  const containerId = el('inp-container-id').value.trim();
+  if (!containerId) { toast('Set MC Container ID first (click Detect)', 'error'); return; }
+
+  const btn = el('btn-load-coord-spaces');
+  btn.disabled = true; btn.textContent = '…';
+
+  try {
+    const data = await api('GET', `/api/project/modelsets?containerId=${encodeURIComponent(containerId)}`);
+    const sets = data?.data ?? data ?? [];
+    _coordSpaces = sets;
+
+    const sel = el('sel-coord-space');
+    const previousValue = sel.value;
+    sel.innerHTML = sets.length
+      ? '<option value="">— select a coordination space —</option>'
+      : '<option value="">— no coordination spaces in this container —</option>';
+
+    for (const s of sets) {
+      const id   = s.id ?? s.modelSetId;
+      const name = s.name ?? id;
+      const docCount = s.documentCount ?? s.size ?? null;
+      const label = docCount != null ? `${name}  (${docCount} models)` : name;
+      sel.add(new Option(label, id));
+    }
+    if (previousValue && sel.querySelector(`option[value="${previousValue}"]`)) sel.value = previousValue;
+
+    if (!sets.length) {
+      showCoordSpaceInfo('No coordination spaces found — verify Container ID and ACC custom integration');
+    } else {
+      showCoordSpaceInfo(`${sets.length} coordination space(s) available`);
+    }
+    toast(sets.length ? `Loaded ${sets.length} coordination space(s)` : 'No coordination spaces found', sets.length ? '' : 'error');
+  } catch (err) {
+    showCoordSpaceInfo(`Error: ${err.message}`);
+    toast('Failed to load coordination spaces: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Load';
+  }
+}
+
+async function onCoordSpaceChange() {
+  const sel = el('sel-coord-space');
+  const id  = sel.value;
+  if (!id) return;
+  const name = sel.options[sel.selectedIndex]?.text ?? id;
+  showCoordSpaceInfo(`Active: ${name}`);
+  // Persist immediately so the workflow uses it
+  try {
+    await api('POST', '/api/config/env', { MC_MODEL_SET_ID: id });
+    if (State.config?.env) State.config.env.MC_MODEL_SET_ID = id;
+    toast('Coordination space saved');
+  } catch (err) {
+    toast('Failed to save selection: ' + err.message, 'error');
+  }
+}
+
+function getActiveCoordSpaceId() {
+  return el('sel-coord-space')?.value || State.config?.env?.MC_MODEL_SET_ID || '';
+}
+
+function getActiveCoordSpaceName() {
+  const sel = el('sel-coord-space');
+  if (sel?.selectedIndex > 0) return sel.options[sel.selectedIndex].text;
+  return getActiveCoordSpaceId() || '';
+}
 
 async function detectContainer() {
   const accountId = el('inp-account-id').value.trim();
@@ -442,6 +530,7 @@ async function saveEnv() {
     ACC_ACCOUNT_ID:    el('inp-account-id').value,
     ACC_PROJECT_ID:    el('inp-project-id').value,
     MC_CONTAINER_ID:   el('inp-container-id').value,
+    MC_MODEL_SET_ID:   el('sel-coord-space')?.value ?? '',
     TARGET_FOLDER_URN: folderUrn,
   };
 
@@ -1250,7 +1339,109 @@ const _viewerState = {
   loadedModels: [],   // { urn, name, discipline, model }
   clashGroups: [],
   activeGroup: null,
+  source: 'space',    // 'space' | 'folder'
 };
+
+const RECENT_MODELS_KEY = 'formaflow.recentModels';
+const RECENT_MODELS_LIMIT = 10;
+
+function loadRecentModels() {
+  try { return JSON.parse(localStorage.getItem(RECENT_MODELS_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function saveRecentModel(modelDef) {
+  if (!modelDef?.viewerUrn) return;
+  const list = loadRecentModels().filter(m => m.viewerUrn !== modelDef.viewerUrn);
+  list.unshift({
+    viewerUrn:  modelDef.viewerUrn,
+    name:       modelDef.name,
+    discipline: modelDef.discipline ?? 'UNKNOWN',
+    addedAt:    Date.now(),
+  });
+  localStorage.setItem(RECENT_MODELS_KEY, JSON.stringify(list.slice(0, RECENT_MODELS_LIMIT)));
+  renderRecentModels();
+}
+
+function renderRecentModels() {
+  const list = loadRecentModels();
+  const section = el('viewer-recent-section');
+  const container = el('viewer-recent-list');
+  if (!section || !container) return;
+
+  if (!list.length) { section.classList.add('hidden'); return; }
+  section.classList.remove('hidden');
+  container.innerHTML = '';
+  for (const m of list) {
+    const isLoaded = _viewerState.loadedModels.some(lm => lm.urn === m.viewerUrn);
+    const row = document.createElement('div');
+    row.className = `viewer-recent-row${isLoaded ? ' loaded' : ''}`;
+    row.title = m.name;
+    row.innerHTML = `
+      <div class="disc-dot" style="background:${DISC_COLORS_HEX[m.discipline] ?? '#9ca3af'}"></div>
+      <span class="model-name truncate flex-1">${m.name}</span>
+      <span class="text-xs text-slate-500">${isLoaded ? '✓' : '↻'}</span>
+    `;
+    row.addEventListener('click', () => {
+      // Reload from recent — synthetic modelDef
+      const fakeItem = { name: m.name, discipline: m.discipline };
+      const fauxEl = document.createElement('div');
+      fauxEl.dataset.urn = m.viewerUrn;
+      toggleViewerModel(fauxEl, { viewerUrn: m.viewerUrn, name: m.name, discipline: m.discipline });
+      renderRecentModels();
+    });
+    container.appendChild(row);
+  }
+}
+
+function clearRecentModels() {
+  localStorage.removeItem(RECENT_MODELS_KEY);
+  renderRecentModels();
+  toast('Recent models cleared');
+}
+
+function setViewerSource(src) {
+  _viewerState.source = src;
+  document.querySelectorAll('.viewer-src-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.src === src)
+  );
+  el('btn-load-viewer-models').textContent = src === 'space'
+    ? 'Load from Coord. Space' : 'Load from Folder';
+
+  const infoEl = el('viewer-active-space');
+  if (src === 'space') {
+    const name = getActiveCoordSpaceName();
+    if (name) {
+      infoEl.classList.remove('hidden');
+      infoEl.textContent = `📐 ${name}`;
+      infoEl.title = name;
+    } else {
+      infoEl.classList.remove('hidden');
+      infoEl.textContent = '⚠ No coordination space selected — use Connect tab';
+    }
+  } else {
+    infoEl.classList.add('hidden');
+  }
+}
+
+async function unloadAllModels() {
+  if (!_viewerState.viewer || !_viewerState.loadedModels.length) return;
+  const count = _viewerState.loadedModels.length;
+  for (const m of _viewerState.loadedModels) {
+    try { _viewerState.viewer.unloadModel(m.model); } catch (_) {}
+  }
+  _viewerState.loadedModels = [];
+  document.querySelectorAll('.viewer-model-item.loaded').forEach(item => {
+    item.classList.remove('loaded');
+    const status = item.querySelector('.model-status');
+    if (status) status.textContent = '▶';
+  });
+  updateViewerModelCounter();
+  renderRecentModels();
+  el('btn-unload-all-models').classList.add('hidden');
+  el('viewer-status-text').textContent = '';
+  toast(`Unloaded ${count} model(s)`);
+}
 
 async function loadViewerSDK() {
   if (_viewerState.sdkLoaded) return;
@@ -1303,34 +1494,29 @@ async function initViewerTab() {
 }
 
 async function loadViewerModels() {
-  const projectId = el('inp-project-id').value.trim();
-  const folderUrn = el('inp-folder-urn').value.trim();
-  if (!projectId) { toast('Set Project ID on the Connect tab first', 'error'); return; }
-  if (!folderUrn) { toast('Select a Target Folder on the Connect tab first', 'error'); return; }
-
   const btn = el('btn-load-viewer-models');
-  btn.disabled = true; btn.textContent = 'Loading…';
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = 'Loading…';
   try {
-    const data = await api('GET',
-      `/api/project/folder-contents?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderUrn)}`);
-    const isNwcFile = name => /\.(nwc|nwd)$/i.test(name ?? '');
-    const allItems = data.items ?? [];
-    const models = allItems.filter(i => {
-      if (i.type !== 'items') return false;
-      if (i.viewerUrn) return true;           // RVT/DWG already translated
-      if (isNwcFile(i.name)) return true;      // NWC/NWD — include even without viewerUrn
-      return false;
-    });
+    const models = _viewerState.source === 'space'
+      ? await fetchSpaceViewerModels()
+      : await fetchFolderViewerModels();
+
+    if (!models) return; // error already toasted
 
     const list = el('viewer-model-list');
     list.innerHTML = '';
+    el('viewer-model-list-count').textContent = `${models.length} models`;
 
     if (!models.length) {
-      list.innerHTML = '<p class="text-xs text-slate-600 px-2 py-3">No viewable models in this folder</p>';
+      list.innerHTML = '<p class="text-xs text-slate-600 px-2 py-3">No viewable models found</p>';
       return;
     }
 
+    const isNwcFile = name => /\.(nwc|nwd)$/i.test(name ?? '');
     const disciplines = new Set();
+
     models.forEach(m => {
       const disc = guessDiscFromName(m.name);
       m.discipline = disc;
@@ -1339,7 +1525,7 @@ async function loadViewerModels() {
       const nwcOnly = !m.viewerUrn && isNwcFile(m.name);
       const item = document.createElement('div');
       item.className = `viewer-model-item${nwcOnly ? ' nwc-only' : ''}`;
-      item.dataset.urn = m.viewerUrn ?? '';
+      item.dataset.urn  = m.viewerUrn ?? '';
       item.dataset.name = m.name;
       item.dataset.disc = disc;
       item.title = nwcOnly ? 'NWC file — not yet translated to SVF2; load into a Navisworks model set to enable 3D viewing' : '';
@@ -1350,21 +1536,51 @@ async function loadViewerModels() {
           ? '<span class="nwc-badge">NWC</span>'
           : '<span class="model-status">▶</span>'}
       `;
-      if (!nwcOnly) {
-        item.addEventListener('click', () => toggleViewerModel(item, m));
-      }
+      if (!nwcOnly) item.addEventListener('click', () => toggleViewerModel(item, m));
       list.appendChild(item);
     });
 
     const nwcCount = models.filter(m => !m.viewerUrn && isNwcFile(m.name)).length;
-    const viewableCount = models.length - nwcCount;
     renderDiscToggles([...disciplines]);
-    toast(`Found ${viewableCount} viewable + ${nwcCount} NWC coordination model(s)`);
+    toast(`Found ${models.length - nwcCount} viewable + ${nwcCount} NWC coordination model(s)`);
   } catch (err) {
     toast('Failed to list models: ' + err.message, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Load Models from Folder';
+    btn.disabled = false;
+    btn.textContent = _viewerState.source === 'space' ? 'Load from Coord. Space' : 'Load from Folder';
   }
+}
+
+async function fetchSpaceViewerModels() {
+  const modelSetId = getActiveCoordSpaceId();
+  const containerId = el('inp-container-id').value.trim();
+  if (!modelSetId)  { toast('Pick a Coordination Space on the Connect tab first', 'error'); return null; }
+  if (!containerId) { toast('Set MC Container ID on the Connect tab first', 'error'); return null; }
+
+  const data = await api('GET',
+    `/api/mc/space-documents?modelSetId=${encodeURIComponent(modelSetId)}&containerId=${encodeURIComponent(containerId)}`);
+  return (data?.documents ?? []).map(d => ({
+    name:       d.name,
+    viewerUrn:  d.viewerUrn,
+    rawUrn:     d.rawUrn,
+  }));
+}
+
+async function fetchFolderViewerModels() {
+  const projectId = el('inp-project-id').value.trim();
+  const folderUrn = el('inp-folder-urn').value.trim();
+  if (!projectId) { toast('Set Project ID on the Connect tab first', 'error'); return null; }
+  if (!folderUrn) { toast('Select a Target Folder on the Connect tab first', 'error'); return null; }
+
+  const data = await api('GET',
+    `/api/project/folder-contents?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderUrn)}`);
+  const isNwcFile = name => /\.(nwc|nwd)$/i.test(name ?? '');
+  return (data.items ?? []).filter(i => {
+    if (i.type !== 'items') return false;
+    if (i.viewerUrn) return true;
+    if (isNwcFile(i.name)) return true;
+    return false;
+  });
 }
 
 function guessDiscFromName(name = '') {
@@ -1398,8 +1614,11 @@ async function toggleViewerModel(itemEl, modelDef) {
     _viewerState.viewer.unloadModel(existing.model);
     _viewerState.loadedModels = _viewerState.loadedModels.filter(m => m.urn !== modelDef.viewerUrn);
     itemEl.classList.remove('loaded');
-    itemEl.querySelector('.model-status').textContent = '▶';
+    const statusEl = itemEl.querySelector('.model-status');
+    if (statusEl) statusEl.textContent = '▶';
     updateViewerModelCounter();
+    el('btn-unload-all-models').classList.toggle('hidden', _viewerState.loadedModels.length === 0);
+    renderRecentModels();
     return;
   }
 
@@ -1420,9 +1639,12 @@ async function toggleViewerModel(itemEl, modelDef) {
           _viewerState.loadedModels.push({ urn: modelDef.viewerUrn, name: modelDef.name,
             discipline: modelDef.discipline, model });
           itemEl.classList.remove('loading'); itemEl.classList.add('loaded');
-          itemEl.querySelector('.model-status').textContent = '✓';
+          const statusEl = itemEl.querySelector('.model-status');
+          if (statusEl) statusEl.textContent = '✓';
           el('viewer-status-text').textContent = `${modelDef.name} loaded`;
           updateViewerModelCounter();
+          el('btn-unload-all-models').classList.remove('hidden');
+          saveRecentModel(modelDef);
           resolve();
         },
         (code, msg) => reject(new Error(`Viewer load error ${code}: ${msg}`))
@@ -1430,7 +1652,8 @@ async function toggleViewerModel(itemEl, modelDef) {
     });
   } catch (err) {
     itemEl.classList.remove('loading'); itemEl.classList.add('error');
-    itemEl.querySelector('.model-status').textContent = '✗';
+    const statusEl = itemEl.querySelector('.model-status');
+    if (statusEl) statusEl.textContent = '✗';
     toast('Load failed: ' + err.message, 'error');
   }
 }
@@ -1589,17 +1812,32 @@ function showAllClashMarkers() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 let _hubProjects = [];
+let _hubFilter = 'all';
+let _hubSort   = 'name';
 
 async function loadHubProjects() {
   const btn = el('btn-load-hub-projects');
+  const errorEl = el('hub-error');
   btn.disabled = true; btn.textContent = 'Loading…';
+  errorEl.classList.add('hidden');
+
+  // Skeleton placeholders while loading
+  const grid = el('hub-project-grid');
+  grid.innerHTML = Array(6).fill('').map(() => `
+    <div class="hub-project-card animate-pulse">
+      <div class="h-4 bg-slate-200 rounded w-3/4 mb-3"></div>
+      <div class="h-3 bg-slate-100 rounded w-1/2 mb-2"></div>
+      <div class="h-3 bg-slate-100 rounded w-2/3 mb-3"></div>
+      <div class="h-7 bg-slate-100 rounded w-24"></div>
+    </div>
+  `).join('');
+
   try {
     const data = await api('GET', '/api/hub/projects');
     _hubProjects = data?.data ?? [];
     renderHubProjects(_hubProjects);
 
-    // Stats
-    const accCount   = _hubProjects.filter(p => p.attributes?.projectType === 'ACC').length;
+    const accCount   = _hubProjects.filter(p => (p.attributes?.projectType ?? '').toUpperCase().includes('ACC')).length;
     const otherCount = _hubProjects.length - accCount;
     el('hub-stat-total').textContent = _hubProjects.length;
     el('hub-stat-acc').textContent   = accCount;
@@ -1611,7 +1849,15 @@ async function loadHubProjects() {
 
     toast(`Loaded ${_hubProjects.length} project(s)`);
   } catch (err) {
-    toast('Failed to load hub projects: ' + err.message, 'error');
+    grid.innerHTML = '';
+    errorEl.classList.remove('hidden');
+    el('hub-error-msg').textContent = `Failed to load hub projects: ${err.message}`;
+    el('hub-error-hint').textContent = err.status === 403
+      ? 'Tip: Your APS app may not be authorized for this ACC hub. An ACC Account Admin needs to add your Client ID under Account Admin → Settings → Custom Integrations.'
+      : err.status === 401
+      ? 'Tip: Verify APS Client ID/Secret on the Connect tab and click Test Connection.'
+      : '';
+    toast('Failed to load hub projects', 'error');
   } finally {
     btn.disabled = false; btn.textContent = 'Load Projects';
   }
@@ -1619,29 +1865,60 @@ async function loadHubProjects() {
 
 function renderHubProjects(projects) {
   const grid = el('hub-project-grid');
-  const filter = (el('inp-hub-search')?.value ?? '').toLowerCase();
-  const filtered = filter ? projects.filter(p =>
-    p.attributes?.name?.toLowerCase().includes(filter)
-  ) : projects;
+  const filter   = (el('inp-hub-search')?.value ?? '').toLowerCase();
+  const currentProjId = el('inp-project-id').value.trim();
+
+  // Apply filter pill
+  let filtered = projects.filter(p => {
+    if (_hubFilter === 'acc') return (p.attributes?.projectType ?? '').toUpperCase().includes('ACC');
+    if (_hubFilter === 'bim360') return (p.attributes?.projectType ?? '').toLowerCase().includes('bim');
+    if (_hubFilter === 'active') return p.id?.replace(/^b\./, '') === currentProjId;
+    return true;
+  });
+
+  if (filter) {
+    filtered = filtered.filter(p =>
+      (p.attributes?.name ?? '').toLowerCase().includes(filter) ||
+      (p.id ?? '').toLowerCase().includes(filter)
+    );
+  }
+
+  // Sort
+  const sortFn = {
+    'name':       (a, b) => (a.attributes?.name ?? '').localeCompare(b.attributes?.name ?? ''),
+    'name-desc':  (a, b) => (b.attributes?.name ?? '').localeCompare(a.attributes?.name ?? ''),
+    'updated':    (a, b) => (b.attributes?.updatedAt ?? '').localeCompare(a.attributes?.updatedAt ?? ''),
+    'type':       (a, b) => (a.attributes?.projectType ?? '').localeCompare(b.attributes?.projectType ?? ''),
+  }[_hubSort] ?? ((a, b) => 0);
+  filtered = [...filtered].sort(sortFn);
 
   if (!filtered.length) {
-    grid.innerHTML = '<div class="col-span-3 text-center text-slate-400 py-12">No projects match your search</div>';
+    grid.innerHTML = '<div class="col-span-3 text-center text-slate-400 py-12">No projects match the current filter</div>';
     return;
   }
 
-  const currentProjId = el('inp-project-id').value.trim();
-
   grid.innerHTML = filtered.map(p => {
-    const rawId = p.id?.replace(/^b\./, '') ?? '';
-    const isActive = rawId === currentProjId;
+    const rawId      = p.id?.replace(/^b\./, '') ?? '';
+    const isActive   = rawId === currentProjId;
+    const name       = p.attributes?.name ?? 'Unnamed Project';
+    const type       = p.attributes?.projectType ?? 'ACC';
+    const status     = p.attributes?.status ?? 'active';
+    const updatedAt  = p.attributes?.updatedAt ?? p.attributes?.createdAt ?? null;
+    const updatedStr = updatedAt ? formatRelativeDate(updatedAt) : '';
+    const safeName = name.replace(/'/g, '\\\'').replace(/"/g, '&quot;');
     return `
       <div class="hub-project-card ${isActive ? 'active-project' : ''}" data-project-id="${rawId}">
-        <div class="hpc-name" title="${p.attributes?.name ?? ''}">${p.attributes?.name ?? 'Unnamed Project'}</div>
-        <div class="hpc-type">${p.attributes?.projectType ?? 'ACC'} · ${p.attributes?.status ?? 'active'}</div>
+        <div class="hpc-name" title="${name}">${name}</div>
+        <div class="hpc-type">
+          <span class="hpc-type-badge">${type}</span>
+          <span class="text-slate-400">·</span>
+          <span class="${status === 'active' ? 'text-emerald-600' : 'text-slate-400'}">${status}</span>
+          ${updatedStr ? `<span class="text-slate-400">·</span><span class="text-xs text-slate-500">${updatedStr}</span>` : ''}
+        </div>
         <div class="hpc-id">${rawId}</div>
         <div class="hpc-actions">
           <button class="btn-primary text-xs py-1 px-3 ${isActive ? 'opacity-50 cursor-default' : ''}"
-            onclick="switchHubProject('${rawId}', '${(p.attributes?.name ?? '').replace(/'/g, '')}')"
+            onclick="switchHubProject('${rawId}', '${safeName}')"
             ${isActive ? 'disabled' : ''}>
             ${isActive ? '✓ Active' : 'Use This Project'}
           </button>
@@ -1649,6 +1926,17 @@ function renderHubProjects(projects) {
       </div>
     `;
   }).join('');
+}
+
+function formatRelativeDate(iso) {
+  try {
+    const ms = Date.now() - new Date(iso).getTime();
+    const days = Math.floor(ms / 86_400_000);
+    if (days < 1)   return 'today';
+    if (days < 30)  return `${days}d ago`;
+    if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+    return `${Math.floor(days / 365)}y ago`;
+  } catch { return ''; }
 }
 
 function switchHubProject(projectId, projectName) {
@@ -1839,6 +2127,11 @@ async function init() {
 
   // Viewer tab
   el('btn-load-viewer-models').addEventListener('click', loadViewerModels);
+  el('btn-unload-all-models').addEventListener('click', unloadAllModels);
+  el('btn-clear-recent').addEventListener('click', clearRecentModels);
+  document.querySelectorAll('.viewer-src-btn').forEach(btn => {
+    btn.addEventListener('click', () => setViewerSource(btn.dataset.src));
+  });
   el('btn-viewer-home').addEventListener('click', () => {
     if (_viewerState.viewer) _viewerState.viewer.fitToView();
   });
@@ -1851,6 +2144,14 @@ async function init() {
   el('btn-clear-markers').addEventListener('click', clearClashMarkers);
   el('btn-load-clash-results').addEventListener('click', loadClashResultsForViewer);
   el('inp-clash-filter').addEventListener('input', () => renderClashGroups(_viewerState.clashGroups));
+
+  // Coordination space
+  el('btn-load-coord-spaces').addEventListener('click', loadCoordinationSpaces);
+  el('sel-coord-space').addEventListener('change', onCoordSpaceChange);
+
+  // Initialize viewer source toggle + recents on load
+  setViewerSource('space');
+  renderRecentModels();
 
   // Models tab
   el('btn-load-models').addEventListener('click', loadModels);
@@ -1866,6 +2167,18 @@ async function init() {
   // Hub tab
   el('btn-load-hub-projects').addEventListener('click', loadHubProjects);
   el('inp-hub-search').addEventListener('input', () => renderHubProjects(_hubProjects));
+  el('sel-hub-sort').addEventListener('change', e => {
+    _hubSort = e.target.value;
+    renderHubProjects(_hubProjects);
+  });
+  document.querySelectorAll('.hub-filter-pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      document.querySelectorAll('.hub-filter-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      _hubFilter = pill.dataset.filter;
+      renderHubProjects(_hubProjects);
+    });
+  });
 
   // Connect tab
   el('btn-test-conn').addEventListener('click', testConnection);

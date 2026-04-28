@@ -188,6 +188,23 @@
             <div id="container-error" class="hidden mt-2 p-3 rounded text-sm bg-red-900/40 border border-red-700 text-red-200"></div>
             <p class="text-xs text-gray-400 mt-1">For ACC v3 projects the Container ID equals the Project ID — you can paste it manually if Detect fails.</p>
           </div>
+
+          <!-- Coordination Space (Model Set) selector -->
+          <div class="field-row">
+            <label class="field-label">Coordination Space</label>
+            <div class="flex gap-2">
+              <select id="sel-coord-space" class="field-input flex-1">
+                <option value="">— load coordination spaces first —</option>
+              </select>
+              <button id="btn-load-coord-spaces" class="btn-secondary text-sm">Load</button>
+            </div>
+            <div id="coord-space-info" class="hidden mt-1 text-xs text-slate-500 flex items-center gap-2">
+              <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              <span id="coord-space-info-text"></span>
+            </div>
+            <p class="text-xs text-gray-400 mt-1">Active coordination space scopes the Models tab, 3D Viewer, clash tests, and search sets.</p>
+          </div>
+
           <div class="field-row">
             <label class="field-label">Target Folder</label>
             <!-- Selected folder display -->
@@ -286,17 +303,39 @@
 
       <!-- Project grid -->
       <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        <div class="px-6 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 class="font-semibold text-slate-800">Hub Projects</h3>
             <p class="text-xs text-slate-400 mt-0.5">Click any project to make it your active project</p>
           </div>
-          <div class="flex items-center gap-3">
+          <div class="flex items-center gap-2 flex-wrap">
             <input id="inp-hub-search" type="text" placeholder="Search projects…"
               class="field-input text-sm py-1.5 w-48"/>
+            <select id="sel-hub-sort" class="field-input text-sm py-1.5">
+              <option value="name">Sort: Name (A→Z)</option>
+              <option value="name-desc">Sort: Name (Z→A)</option>
+              <option value="updated">Sort: Recently Updated</option>
+              <option value="type">Sort: Type</option>
+            </select>
             <button id="btn-load-hub-projects" class="btn-primary text-sm">Load Projects</button>
           </div>
         </div>
+
+        <!-- Filter pills -->
+        <div class="px-6 py-2.5 border-b border-slate-100 flex items-center gap-2 flex-wrap bg-slate-50">
+          <span class="text-xs text-slate-500 mr-1">Filter:</span>
+          <button class="hub-filter-pill active" data-filter="all">All</button>
+          <button class="hub-filter-pill" data-filter="acc">ACC</button>
+          <button class="hub-filter-pill" data-filter="bim360">BIM 360</button>
+          <button class="hub-filter-pill" data-filter="active">Active</button>
+        </div>
+
+        <!-- Inline error banner -->
+        <div id="hub-error" class="hidden mx-6 mt-4 p-3 rounded text-sm bg-amber-50 border border-amber-300 text-amber-900">
+          <p id="hub-error-msg" class="font-medium"></p>
+          <p id="hub-error-hint" class="text-xs mt-1 text-amber-800"></p>
+        </div>
+
         <div id="hub-project-grid" class="grid grid-cols-3 gap-4 p-6 min-h-48">
           <div class="col-span-3 text-center text-slate-400 py-16">
             <svg class="w-12 h-12 mx-auto mb-4 opacity-20 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -315,17 +354,38 @@
 
       <!-- Left: model browser -->
       <div class="viewer-sidebar">
-        <div class="p-3 border-b border-slate-700">
+        <!-- Source toggle: Folder vs Coordination Space -->
+        <div class="p-3 border-b border-slate-700 space-y-2">
+          <div class="flex rounded overflow-hidden border border-slate-700">
+            <button id="btn-src-space" class="viewer-src-btn flex-1 py-1.5 text-xs active" data-src="space">Coord. Space</button>
+            <button id="btn-src-folder" class="viewer-src-btn flex-1 py-1.5 text-xs" data-src="folder">Folder</button>
+          </div>
+          <div id="viewer-active-space" class="hidden text-xs text-slate-400 truncate" title=""></div>
           <button id="btn-load-viewer-models" class="btn-primary text-xs w-full py-2">
-            Load Models from Folder
+            Load Models
           </button>
+          <button id="btn-unload-all-models" class="btn-secondary text-xs w-full py-1.5 hidden">Unload All</button>
         </div>
-        <div class="px-3 pt-3 pb-1">
-          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Loaded Models</p>
+
+        <!-- Currently loaded -->
+        <div class="px-3 pt-3 pb-1 flex items-center justify-between">
+          <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Available</p>
+          <span id="viewer-model-list-count" class="text-xs text-slate-600"></span>
         </div>
         <div id="viewer-model-list" class="flex-1 overflow-y-auto px-2 space-y-1 min-h-0 pb-2">
-          <p class="text-xs text-slate-600 px-2 py-3">No models loaded yet</p>
+          <p class="text-xs text-slate-600 px-2 py-3">Pick a source above and click Load Models</p>
         </div>
+
+        <!-- Recent models -->
+        <div id="viewer-recent-section" class="border-t border-slate-700 p-3 hidden">
+          <div class="flex items-center justify-between mb-2">
+            <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Recent</p>
+            <button id="btn-clear-recent" class="text-xs text-slate-500 hover:text-slate-300" title="Clear recents">×</button>
+          </div>
+          <div id="viewer-recent-list" class="space-y-1"></div>
+        </div>
+
+        <!-- Discipline visibility -->
         <div class="border-t border-slate-700 p-3">
           <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Discipline Visibility</p>
           <div id="viewer-disc-toggles" class="space-y-1">
