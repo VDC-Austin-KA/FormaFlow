@@ -179,6 +179,76 @@
         </div>
       </section>
 
+      <!-- Service Account (3-legged OAuth) -->
+      <section class="card mb-6" id="service-account-card">
+        <div class="card-header flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h3 class="card-title">Service Account <span class="text-xs font-normal text-slate-400">· 3-legged OAuth</span></h3>
+            <p class="card-sub">Required for Model Coordination, Search Sets, and all ACC APIs that need a user identity.</p>
+          </div>
+          <div id="sa-status-badge" class="hidden flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border"></div>
+        </div>
+        <div class="card-body space-y-4">
+
+          <!-- Not logged in state -->
+          <div id="sa-logged-out">
+            <p class="text-sm text-slate-600 mb-3">
+              Create a dedicated Autodesk ID to use as a service account, invite it to your ACC project as <strong>Project Admin</strong>, then sign in below so FormaFlow can act on its behalf for all API calls.
+            </p>
+
+            <!-- Step-by-step guide -->
+            <ol class="text-sm text-slate-600 space-y-2 mb-4 list-none">
+              <li class="flex gap-2">
+                <span class="flex-shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-700 font-bold text-xs flex items-center justify-center">1</span>
+                <span>Create a new Autodesk ID at <strong>accounts.autodesk.com</strong> using a dedicated email address such as
+                  <code class="url-hint">formaflow-service@yourdomain.com</code></span>
+              </li>
+              <li class="flex gap-2">
+                <span class="flex-shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-700 font-bold text-xs flex items-center justify-center">2</span>
+                <span>In <strong>ACC Account Admin → Members</strong>, invite that email and grant it <strong>Project Admin</strong> on your project.</span>
+              </li>
+              <li class="flex gap-2">
+                <span class="flex-shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-700 font-bold text-xs flex items-center justify-center">3</span>
+                <span>In your <strong>APS app settings</strong> (aps.autodesk.com/myapps), add this URL to <em>Callback URLs</em>:
+                  <code id="sa-callback-display" class="url-hint block mt-0.5 break-all"></code>
+                </span>
+              </li>
+              <li class="flex gap-2">
+                <span class="flex-shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-700 font-bold text-xs flex items-center justify-center">4</span>
+                <span>Click <strong>Sign in with Autodesk</strong> below and log in as the service account. FormaFlow stores the token locally and auto-refreshes it.</span>
+              </li>
+            </ol>
+
+            <a id="btn-sa-login" href="/api/auth/login"
+              class="inline-flex items-center gap-2 btn-primary text-sm no-underline">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/>
+              </svg>
+              Sign in with Autodesk
+            </a>
+          </div>
+
+          <!-- Logged in state -->
+          <div id="sa-logged-in" class="hidden">
+            <div class="flex items-start gap-3 p-3 rounded-lg bg-emerald-50 border border-emerald-200 mb-3">
+              <svg class="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <div class="flex-1">
+                <p class="text-sm font-semibold text-emerald-800">Service account connected</p>
+                <p id="sa-account-name" class="text-xs text-emerald-700 mt-0.5"></p>
+                <p id="sa-account-email" class="text-xs text-emerald-600"></p>
+                <p id="sa-token-expiry" class="text-xs text-slate-500 mt-1"></p>
+              </div>
+              <button id="btn-sa-logout" class="text-xs text-red-600 hover:text-red-800 font-medium flex-shrink-0">Sign out</button>
+            </div>
+            <p class="text-xs text-slate-500">All Model Coordination API calls now use this identity. The token refreshes automatically.</p>
+          </div>
+
+        </div>
+      </section>
+
       <!-- ACC Project -->
       <section class="card mb-6">
         <div class="card-header">

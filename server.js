@@ -9,7 +9,7 @@
 
 import 'dotenv/config';
 import express from 'express';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { EventEmitter } from 'events';
@@ -114,15 +114,175 @@ function writeConfig(name, data) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// APS client factory (uses current process.env)
+// 3-legged OAuth — token store
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TOKENS_PATH = resolve(__dirname, 'config', 'auth-tokens.json');
+
+// The callback URL must be registered in the APS application's Callback URLs list.
+// Set APS_CALLBACK_URL in .env to match your deployed URL; defaults to localhost.
+function getCallbackUrl() {
+  return process.env.APS_CALLBACK_URL
+    || `http://localhost:${PORT}/api/auth/callback`;
+}
+
+function readTokens() {
+  try { return JSON.parse(readFileSync(TOKENS_PATH, 'utf8')); }
+  catch { return null; }
+}
+
+function writeTokensFile(data) {
+  mkdirSync(resolve(__dirname, 'config'), { recursive: true });
+  writeFileSync(TOKENS_PATH, JSON.stringify(data, null, 2));
+}
+
+async function refreshStoredToken() {
+  const stored = readTokens();
+  if (!stored?.refresh_token) return null;
+  try {
+    const res = await fetch('https://developer.api.autodesk.com/authentication/v2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type:    'refresh_token',
+        refresh_token: stored.refresh_token,
+        client_id:     process.env.APS_CLIENT_ID,
+        client_secret: process.env.APS_CLIENT_SECRET,
+      }),
+    });
+    if (!res.ok) { console.warn('[FormaFlow] Token refresh failed:', res.status); return null; }
+    const data = await res.json();
+    writeTokensFile({
+      ...stored,
+      access_token:  data.access_token,
+      refresh_token: data.refresh_token ?? stored.refresh_token,
+      expires_at:    Date.now() + data.expires_in * 1000,
+    });
+    return data.access_token;
+  } catch (err) {
+    console.warn('[FormaFlow] Token refresh error:', err.message);
+    return null;
+  }
+}
+
+// Returns a valid 3-legged access token, refreshing if needed. Returns null if
+// no service-account session has been established yet.
+async function getThreeLeggedToken() {
+  const stored = readTokens();
+  if (!stored) return null;
+  if (Date.now() < stored.expires_at - 60_000) return stored.access_token;
+  return refreshStoredToken();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes — 3-legged OAuth
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Step 1: Redirect browser to Autodesk OAuth consent screen */
+app.get('/api/auth/login', (req, res) => {
+  const clientId = process.env.APS_CLIENT_ID;
+  if (!clientId) return res.status(500).send('APS_CLIENT_ID not set');
+  const url = new URL('https://developer.api.autodesk.com/authentication/v2/authorize');
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('client_id', clientId);
+  url.searchParams.set('redirect_uri', getCallbackUrl());
+  url.searchParams.set('scope', 'data:read data:write data:create account:read viewables:read');
+  res.redirect(url.toString());
+});
+
+/** Step 2: Exchange authorization code for tokens */
+app.get('/api/auth/callback', async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.redirect('/?auth=error&msg=missing_code');
+  try {
+    const tokenRes = await fetch('https://developer.api.autodesk.com/authentication/v2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type:   'authorization_code',
+        code,
+        client_id:    process.env.APS_CLIENT_ID,
+        client_secret: process.env.APS_CLIENT_SECRET,
+        redirect_uri: getCallbackUrl(),
+      }),
+    });
+    if (!tokenRes.ok) throw new Error(`Token exchange ${tokenRes.status}: ${await tokenRes.text()}`);
+    const tokens = await tokenRes.json();
+
+    // Fetch user profile so the UI can show who is logged in
+    let email = '', name = '';
+    try {
+      const profileRes = await fetch('https://api.userprofile.autodesk.com/userinfo', {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      });
+      if (profileRes.ok) {
+        const p = await profileRes.json();
+        email = p.email ?? '';
+        name  = p.name ?? p.preferred_username ?? '';
+      }
+    } catch { /* profile fetch is best-effort */ }
+
+    writeTokensFile({
+      access_token:  tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at:    Date.now() + tokens.expires_in * 1000,
+      email, name,
+      saved_at: new Date().toISOString(),
+    });
+    res.redirect('/?auth=success');
+  } catch (err) {
+    console.error('[FormaFlow] OAuth callback error:', err.message);
+    res.redirect(`/?auth=error&msg=${encodeURIComponent(err.message)}`);
+  }
+});
+
+/** Returns login status + email of the stored service account */
+app.get('/api/auth/status', (_req, res) => {
+  const stored = readTokens();
+  if (!stored) return res.json({ loggedIn: false });
+  const expired = Date.now() >= stored.expires_at - 60_000;
+  res.json({
+    loggedIn:  true,
+    email:     stored.email,
+    name:      stored.name,
+    expiresAt: stored.expires_at,
+    expired,
+    savedAt:   stored.saved_at,
+  });
+});
+
+/** Clear stored service account session */
+app.post('/api/auth/logout', (_req, res) => {
+  try { unlinkSync(TOKENS_PATH); } catch { /* already gone */ }
+  res.json({ ok: true });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APS client factory — prefers 3-legged service-account token, falls back to 2-legged
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function makeAPSClient(overrides = {}) {
   const { APSClient } = await import('./src/api/aps-client.js');
-  return new APSClient(
+  const client = new APSClient(
     overrides.clientId ?? process.env.APS_CLIENT_ID,
     overrides.clientSecret ?? process.env.APS_CLIENT_SECRET
   );
+
+  // If we have a stored service-account (3-legged) token, use it — this gives
+  // access to all MC endpoints that require a user identity. If the token is
+  // expired it is refreshed automatically. Falls back to 2-legged silently.
+  if (!overrides.forceTwoLegged) {
+    const threeLeggedToken = await getThreeLeggedToken();
+    if (threeLeggedToken) {
+      const _prototype_getToken = APSClient.prototype.getToken.bind(client);
+      client.getToken = async () => {
+        const fresh = await getThreeLeggedToken();
+        return fresh ?? _prototype_getToken();
+      };
+    }
+  }
+
+  return client;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
