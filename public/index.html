@@ -72,6 +72,13 @@
       Models
       <span id="badge-models" class="nav-badge hidden"></span>
     </button>
+    <button class="nav-item" data-tab="coordination">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
+          d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+      </svg>
+      Coordination
+    </button>
     <button class="nav-item" data-tab="searchsets">
       <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -502,6 +509,92 @@
 
       <!-- Model grid -->
       <div id="models-list" class="hidden space-y-1"></div>
+    </div>
+
+    <!-- ══════════════════════════════ TAB: COORDINATION ════════════════════════════ -->
+    <div id="tab-coordination" class="tab-panel hidden p-6">
+      <!-- Toolbar -->
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div>
+          <p class="text-xs text-slate-500">
+            Assign models to disciplines, choose which to include in clash detection,
+            and align them using project base point, internal origin, survey point, or manual offsets.
+            Changes auto-save and apply to the workflow + 3D viewer.
+          </p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="coord-save-indicator" class="text-xs text-slate-400 hidden">Saving…</span>
+          <span id="coord-saved-at" class="text-xs text-emerald-600 hidden">✓ Saved</span>
+          <button id="btn-coord-refresh" class="btn-secondary text-sm">↻ Refresh from Space</button>
+        </div>
+      </div>
+
+      <!-- Empty state -->
+      <div id="coord-empty" class="empty-state">
+        <svg class="w-12 h-12 text-slate-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+        </svg>
+        <p class="text-slate-500 font-medium">No coordination space loaded</p>
+        <p class="text-slate-400 text-sm mt-1">
+          Select a <strong>Coordination Space</strong> on the Connect tab, then click <strong>Refresh from Space</strong>.
+        </p>
+      </div>
+
+      <!-- Sections -->
+      <div id="coord-sections" class="hidden space-y-6">
+        <!-- Section 1: Discipline Assignments -->
+        <section class="card">
+          <header class="card-header">
+            <h3 class="card-title">Discipline Assignment</h3>
+            <p class="card-sub">Pick the canonical model representing each discipline. Workflow uses these for naming, search-set scoping, and reports.</p>
+          </header>
+          <div class="card-body">
+            <div id="coord-disc-rows" class="space-y-2"></div>
+          </div>
+        </section>
+
+        <!-- Section 2: Clash Include Selection -->
+        <section class="card">
+          <header class="card-header flex items-center justify-between">
+            <div>
+              <h3 class="card-title">Models in Clash Detection</h3>
+              <p class="card-sub">Toggle which models are sent to the Model Coordination clash test.</p>
+            </div>
+            <div class="flex gap-2">
+              <button id="btn-clash-incl-all"  class="btn-secondary text-xs py-1 px-3">Include All</button>
+              <button id="btn-clash-incl-none" class="btn-secondary text-xs py-1 px-3">Exclude All</button>
+              <button id="btn-clash-incl-disc" class="btn-secondary text-xs py-1 px-3" title="Include only models that are assigned to a discipline above">Disciplines Only</button>
+            </div>
+          </header>
+          <div class="card-body">
+            <div id="coord-clash-rows" class="space-y-1"></div>
+          </div>
+        </section>
+
+        <!-- Section 3: Alignment -->
+        <section class="card">
+          <header class="card-header flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 class="card-title">Model Alignment</h3>
+              <p class="card-sub">PBP and Internal Origin are applied at translate time. Manual offsets work in feet (model units assumed imperial).</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <label class="field-label text-xs m-0">Snap:</label>
+              <select id="sel-align-snap" class="field-input text-xs py-1 w-20">
+                <option value="1">1 ft</option>
+                <option value="0.5">½ ft</option>
+                <option value="0.25">¼ ft</option>
+                <option value="0.083333">1 in</option>
+                <option value="0">Free</option>
+              </select>
+            </div>
+          </header>
+          <div class="card-body">
+            <div id="coord-align-rows" class="space-y-2"></div>
+          </div>
+        </section>
+      </div>
     </div>
 
     <!-- ══════════════════════════════ TAB: SEARCH SETS ═════════════════ -->
