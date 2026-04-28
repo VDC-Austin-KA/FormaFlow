@@ -69,6 +69,7 @@ const TAB_META = {
   hub:        { title: 'Hub Projects',  sub: 'Browse and switch between all projects in your ACC hub' },
   viewer:     { title: '3D Viewer',     sub: 'Visualize models and clash results in an interactive 3D view' },
   models:     { title: 'Models',        sub: 'View and override automatically identified disciplines' },
+  coordination: { title: 'Coordination', sub: 'Assign disciplines, pick clash models, align to PBP / origin / survey / manual offsets' },
   searchsets: { title: 'Search Sets',   sub: 'Toggle and preview reusable property-based filters' },
   clashtests: { title: 'Clash Tests',   sub: 'Enable, disable, and fine-tune clash test pairs' },
   settings:   { title: 'Settings',      sub: 'Workflow options, naming conventions, and output' },
@@ -98,6 +99,8 @@ function navigate(tab) {
   if (tab === 'clashtests' || tab === 'searchsets' || tab === 'settings') renderSaveBtn(tab);
   // Lazy-init viewer on first open
   if (tab === 'viewer' && !_viewerState.sdkLoaded) initViewerTab();
+  // Lazy-load coordination data
+  if (tab === 'coordination' && !_coordState.loaded) loadCoordinationData();
 }
 
 function renderSaveBtn(tab) {
@@ -1645,6 +1648,9 @@ async function toggleViewerModel(itemEl, modelDef) {
           updateViewerModelCounter();
           el('btn-unload-all-models').classList.remove('hidden');
           saveRecentModel(modelDef);
+          // Apply any saved manual alignment for this model
+          const matchedItem = _coordState.models.find(cm => cm.viewerUrn === modelDef.viewerUrn);
+          if (matchedItem?.id) maybeApplyAlignmentToViewer(matchedItem.id);
           resolve();
         },
         (code, msg) => reject(new Error(`Viewer load error ${code}: ${msg}`))
@@ -2092,6 +2098,310 @@ function renderModels() {
   list.classList.remove('hidden');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Coordination tab — discipline assignment, clash includes, alignment
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _coordState = {
+  loaded: false,
+  models: [],          // [{ id, name, viewerUrn, rawUrn, discipline }]
+  assignments: {},     // { ARCH: itemId, ... }
+  clashIncludes: [],   // [itemId, ...]
+  alignments: {},      // { itemId: { mode, offset:[x,y,z] } }
+  alignSnap: 1.0,
+};
+
+const ALIGN_MODES = [
+  { value: 'pbp',      label: 'Project Base Point' },
+  { value: 'internal', label: 'Internal Origin' },
+  { value: 'survey',   label: 'Survey Point' },
+  { value: 'manual',   label: 'Manual Offset' },
+];
+
+const COORD_DISC_KEYS = ['ARCH','STRUCT','MECH','PLUMB','ELEC','FP','CIVIL','INT'];
+
+async function loadCoordinationData() {
+  el('coord-empty').classList.add('hidden');
+  el('coord-sections').classList.add('hidden');
+
+  try {
+    const [persisted, modelsResp] = await Promise.all([
+      api('GET', '/api/coordination/assignments').catch(() => ({})),
+      fetchCoordSpaceModels(),
+    ]);
+
+    _coordState.assignments   = persisted?.assignments   ?? {};
+    _coordState.clashIncludes = persisted?.clashIncludes ?? [];
+    _coordState.alignments    = persisted?.alignments    ?? {};
+    _coordState.alignSnap     = persisted?.alignSnap     ?? 1.0;
+    _coordState.models        = modelsResp ?? [];
+
+    if (!_coordState.models.length) {
+      el('coord-empty').classList.remove('hidden');
+      _coordState.loaded = true;
+      return;
+    }
+
+    // Auto-include any model that's assigned to a discipline if state is fresh
+    if (!_coordState.clashIncludes.length && Object.keys(_coordState.assignments).length === 0) {
+      _coordState.clashIncludes = _coordState.models.map(m => m.id);
+    }
+
+    el('sel-align-snap').value = String(_coordState.alignSnap);
+
+    renderCoordinationTab();
+    el('coord-sections').classList.remove('hidden');
+    _coordState.loaded = true;
+  } catch (err) {
+    el('coord-empty').classList.remove('hidden');
+    toast('Failed to load coordination data: ' + err.message, 'error');
+  }
+}
+
+async function fetchCoordSpaceModels() {
+  const modelSetId  = getActiveCoordSpaceId();
+  const containerId = el('inp-container-id').value.trim();
+  if (!modelSetId || !containerId) return [];
+  const data = await api('GET',
+    `/api/mc/space-documents?modelSetId=${encodeURIComponent(modelSetId)}&containerId=${encodeURIComponent(containerId)}`);
+  return (data?.documents ?? []).map(d => ({
+    id:         d.id,
+    name:       d.name,
+    rawUrn:     d.rawUrn,
+    viewerUrn:  d.viewerUrn,
+    discipline: guessDiscFromName(d.name),
+  }));
+}
+
+function renderCoordinationTab() {
+  renderCoordDisciplineRows();
+  renderCoordClashRows();
+  renderCoordAlignRows();
+}
+
+function renderCoordDisciplineRows() {
+  const host = el('coord-disc-rows');
+  host.innerHTML = '';
+  for (const disc of COORD_DISC_KEYS) {
+    const assignedId = _coordState.assignments[disc] ?? '';
+    const candidateGuesses = _coordState.models.filter(m => m.discipline === disc);
+
+    const row = document.createElement('div');
+    row.className = 'coord-disc-row';
+    row.innerHTML = `
+      <div class="disc-dot flex-shrink-0" style="background:${DISC_COLOR[disc]}"></div>
+      <div class="coord-disc-label">${DISC_LABEL[disc] ?? disc}</div>
+      <select class="field-input text-sm flex-1 max-w-2xl" data-disc="${disc}">
+        <option value="">— unassigned —</option>
+        ${_coordState.models.map(m => {
+          const isGuess = candidateGuesses.some(g => g.id === m.id);
+          return `<option value="${m.id}"${assignedId === m.id ? ' selected' : ''}>${
+            m.name}${isGuess ? '  (auto-detected)' : ''}</option>`;
+        }).join('')}
+      </select>
+      <span class="text-xs text-slate-400 w-32 text-right">${
+        candidateGuesses.length ? `${candidateGuesses.length} candidate${candidateGuesses.length === 1 ? '' : 's'}` : 'no candidates'
+      }</span>
+    `;
+    row.querySelector('select').addEventListener('change', e => {
+      const id = e.target.value;
+      if (id) _coordState.assignments[disc] = id;
+      else delete _coordState.assignments[disc];
+      saveCoordinationDebounced();
+    });
+    host.appendChild(row);
+  }
+}
+
+function renderCoordClashRows() {
+  const host = el('coord-clash-rows');
+  host.innerHTML = '';
+  for (const m of _coordState.models) {
+    const isIncluded = _coordState.clashIncludes.includes(m.id);
+    const row = document.createElement('label');
+    row.className = `coord-clash-row${isIncluded ? ' active' : ''}`;
+    row.innerHTML = `
+      <input type="checkbox" data-id="${m.id}" ${isIncluded ? 'checked' : ''}>
+      <div class="disc-dot flex-shrink-0" style="background:${DISC_COLOR[m.discipline] ?? '#9ca3af'}"></div>
+      <span class="flex-1 truncate text-sm" title="${m.name}">${m.name}</span>
+      <span class="text-xs text-slate-400">${DISC_LABEL[m.discipline] ?? '—'}</span>
+    `;
+    row.querySelector('input').addEventListener('change', e => {
+      const id = e.target.dataset.id;
+      if (e.target.checked) {
+        if (!_coordState.clashIncludes.includes(id)) _coordState.clashIncludes.push(id);
+        row.classList.add('active');
+      } else {
+        _coordState.clashIncludes = _coordState.clashIncludes.filter(x => x !== id);
+        row.classList.remove('active');
+      }
+      saveCoordinationDebounced();
+    });
+    host.appendChild(row);
+  }
+}
+
+function renderCoordAlignRows() {
+  const host = el('coord-align-rows');
+  host.innerHTML = '';
+  for (const m of _coordState.models) {
+    const align = _coordState.alignments[m.id] ?? { mode: 'pbp', offset: [0, 0, 0] };
+    const isManual = align.mode === 'manual';
+    const offset = align.offset ?? [0, 0, 0];
+
+    const row = document.createElement('div');
+    row.className = 'coord-align-row';
+    row.innerHTML = `
+      <div class="flex items-center gap-2 flex-1 min-w-0">
+        <div class="disc-dot flex-shrink-0" style="background:${DISC_COLOR[m.discipline] ?? '#9ca3af'}"></div>
+        <span class="truncate text-sm" title="${m.name}">${m.name}</span>
+      </div>
+      <select class="field-input text-xs py-1 w-44" data-id="${m.id}" data-field="mode">
+        ${ALIGN_MODES.map(o =>
+          `<option value="${o.value}"${align.mode === o.value ? ' selected' : ''}>${o.label}</option>`
+        ).join('')}
+      </select>
+      <div class="coord-align-manual ${isManual ? '' : 'hidden'}">
+        ${['X', 'Y', 'Z'].map((axis, i) => `
+          <div class="coord-align-axis">
+            <span>${axis}</span>
+            <button type="button" class="align-step" data-id="${m.id}" data-axis="${i}" data-dir="-1">−</button>
+            <input type="number" step="0.1" class="field-input text-xs w-20 py-1 text-center"
+              data-id="${m.id}" data-field="offset" data-axis="${i}" value="${offset[i] ?? 0}"/>
+            <button type="button" class="align-step" data-id="${m.id}" data-axis="${i}" data-dir="1">+</button>
+            <span class="text-xs text-slate-400">ft</span>
+          </div>
+        `).join('')}
+        <button type="button" class="btn-secondary text-xs py-1 px-2" data-id="${m.id}" data-action="reset-offset">Reset</button>
+        <button type="button" class="btn-secondary text-xs py-1 px-2" data-id="${m.id}" data-action="apply-viewer" title="Apply this offset to the model in the 3D viewer">Apply in Viewer</button>
+      </div>
+    `;
+
+    // Mode change
+    row.querySelector('select[data-field="mode"]').addEventListener('change', e => {
+      const id = e.target.dataset.id;
+      const mode = e.target.value;
+      const existing = _coordState.alignments[id] ?? { mode, offset: [0,0,0] };
+      _coordState.alignments[id] = { ...existing, mode };
+      const manualEl = row.querySelector('.coord-align-manual');
+      manualEl.classList.toggle('hidden', mode !== 'manual');
+      saveCoordinationDebounced();
+      maybeApplyAlignmentToViewer(id);
+    });
+
+    // Offset inputs
+    row.querySelectorAll('input[data-field="offset"]').forEach(inp => {
+      inp.addEventListener('change', e => {
+        const id = e.target.dataset.id;
+        const axis = parseInt(e.target.dataset.axis, 10);
+        const val = parseFloat(e.target.value || '0');
+        const snap = _coordState.alignSnap;
+        const snapped = snap > 0 ? Math.round(val / snap) * snap : val;
+        e.target.value = snapped.toFixed(snap >= 1 ? 0 : 3);
+        const align = _coordState.alignments[id] ?? { mode: 'manual', offset: [0,0,0] };
+        align.mode = 'manual';
+        align.offset[axis] = snapped;
+        _coordState.alignments[id] = align;
+        saveCoordinationDebounced();
+      });
+    });
+
+    // Step buttons
+    row.querySelectorAll('button.align-step').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.id;
+        const axis = parseInt(btn.dataset.axis, 10);
+        const dir  = parseInt(btn.dataset.dir, 10);
+        const step = _coordState.alignSnap > 0 ? _coordState.alignSnap : 1.0;
+        const align = _coordState.alignments[id] ?? { mode: 'manual', offset: [0,0,0] };
+        align.mode = 'manual';
+        align.offset[axis] = (align.offset[axis] ?? 0) + step * dir;
+        _coordState.alignments[id] = align;
+        const inp = row.querySelector(`input[data-axis="${axis}"][data-id="${id}"]`);
+        if (inp) inp.value = align.offset[axis].toFixed(step >= 1 ? 0 : 3);
+        saveCoordinationDebounced();
+      });
+    });
+
+    // Reset / apply-viewer buttons
+    row.querySelectorAll('button[data-action="reset-offset"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.id;
+        _coordState.alignments[id] = { mode: 'manual', offset: [0, 0, 0] };
+        renderCoordAlignRows();
+        saveCoordinationDebounced();
+        maybeApplyAlignmentToViewer(id);
+      });
+    });
+    row.querySelectorAll('button[data-action="apply-viewer"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.id;
+        if (maybeApplyAlignmentToViewer(id)) toast('Offset applied in viewer');
+        else toast('Model not currently loaded in the 3D viewer', 'error');
+      });
+    });
+
+    host.appendChild(row);
+  }
+}
+
+let _coordSaveTimer = null;
+function saveCoordinationDebounced() {
+  el('coord-save-indicator').classList.remove('hidden');
+  el('coord-saved-at').classList.add('hidden');
+  clearTimeout(_coordSaveTimer);
+  _coordSaveTimer = setTimeout(saveCoordination, 500);
+}
+
+async function saveCoordination() {
+  try {
+    await api('PUT', '/api/coordination/assignments', {
+      modelSetId:    getActiveCoordSpaceId(),
+      assignments:   _coordState.assignments,
+      clashIncludes: _coordState.clashIncludes,
+      alignments:    _coordState.alignments,
+      alignSnap:     _coordState.alignSnap,
+    });
+    el('coord-save-indicator').classList.add('hidden');
+    el('coord-saved-at').classList.remove('hidden');
+    setTimeout(() => el('coord-saved-at').classList.add('hidden'), 1500);
+  } catch (err) {
+    el('coord-save-indicator').classList.add('hidden');
+    toast('Save failed: ' + err.message, 'error');
+  }
+}
+
+// Convert feet → model display units (assume imperial RVT publishes in feet).
+// Apply offset to a currently-loaded viewer model via setPlacementTransform.
+function maybeApplyAlignmentToViewer(itemId) {
+  if (!_viewerState.viewer) return false;
+  const model = _coordState.models.find(m => m.id === itemId);
+  if (!model?.viewerUrn) return false;
+  const loaded = _viewerState.loadedModels.find(lm => lm.urn === model.viewerUrn);
+  if (!loaded?.model) return false;
+
+  const align = _coordState.alignments[itemId] ?? { mode: 'pbp', offset: [0,0,0] };
+  if (align.mode !== 'manual') {
+    // Reset to identity for non-manual modes (PBP/Internal/Survey are model-side concerns
+    // that the viewer can't shift independently — see PR description for details).
+    if (typeof loaded.model.setPlacementTransform === 'function') {
+      const THREE = window.THREE ?? Autodesk?.Viewing?.Private?.THREE;
+      if (THREE) loaded.model.setPlacementTransform(new THREE.Matrix4());
+    }
+    return true;
+  }
+  const [x, y, z] = align.offset;
+  const THREE = window.THREE ?? Autodesk?.Viewing?.Private?.THREE;
+  if (!THREE) return false;
+  const m = new THREE.Matrix4().makeTranslation(x, y, z);
+  if (typeof loaded.model.setPlacementTransform === 'function') {
+    loaded.model.setPlacementTransform(m);
+    _viewerState.viewer.impl.invalidate(true, true, true);
+    return true;
+  }
+  return false;
+}
+
 // Initialisation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2152,6 +2462,31 @@ async function init() {
   // Initialize viewer source toggle + recents on load
   setViewerSource('space');
   renderRecentModels();
+
+  // Coordination tab
+  el('btn-coord-refresh').addEventListener('click', () => {
+    _coordState.loaded = false;
+    loadCoordinationData();
+  });
+  el('btn-clash-incl-all').addEventListener('click', () => {
+    _coordState.clashIncludes = _coordState.models.map(m => m.id);
+    renderCoordClashRows();
+    saveCoordinationDebounced();
+  });
+  el('btn-clash-incl-none').addEventListener('click', () => {
+    _coordState.clashIncludes = [];
+    renderCoordClashRows();
+    saveCoordinationDebounced();
+  });
+  el('btn-clash-incl-disc').addEventListener('click', () => {
+    _coordState.clashIncludes = Object.values(_coordState.assignments);
+    renderCoordClashRows();
+    saveCoordinationDebounced();
+  });
+  el('sel-align-snap').addEventListener('change', e => {
+    _coordState.alignSnap = parseFloat(e.target.value || '1');
+    saveCoordinationDebounced();
+  });
 
   // Models tab
   el('btn-load-models').addEventListener('click', loadModels);

@@ -732,6 +732,33 @@ app.get('/api/mc/search-sets', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes — Coordination Assignments (discipline mapping, clash includes, alignments)
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.get('/api/coordination/assignments', (_req, res) => {
+  try { res.json(readConfig('coordination-assignments.json')); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/coordination/assignments', (req, res) => {
+  try {
+    const incoming = req.body ?? {};
+    const merged = {
+      modelSetId:    incoming.modelSetId ?? '',
+      assignments:   incoming.assignments ?? {},
+      clashIncludes: Array.isArray(incoming.clashIncludes) ? incoming.clashIncludes : [],
+      alignments:    incoming.alignments ?? {},
+      alignSnap:     typeof incoming.alignSnap === 'number' ? incoming.alignSnap : 1.0,
+      lastSavedAt:   new Date().toISOString(),
+    };
+    writeConfig('coordination-assignments.json', merged);
+    res.json({ ok: true, lastSavedAt: merged.lastSavedAt });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /**
  * List MC views for a coordination space.
  * The MC v3 Views endpoint surfaces saved viewer states. If the endpoint
@@ -846,7 +873,24 @@ app.post('/api/workflow/run', async (req, res) => {
     const versions = versResp?.data ?? versResp ?? [];
     const latest   = versions[versions.length - 1];
     const versionIndex = latest?.versionIndex ?? 1;
-    const docs = latest?.documents ?? [];
+    const allDocs = latest?.documents ?? [];
+
+    // Apply user clash-include filter and discipline overrides from coordination-assignments.json
+    let coord;
+    try { coord = readConfig('coordination-assignments.json'); } catch { coord = null; }
+    let docs = allDocs;
+    if (coord?.clashIncludes?.length) {
+      const includeSet = new Set(coord.clashIncludes);
+      const filtered = allDocs.filter(d =>
+        includeSet.has(d.id) || includeSet.has(d.urn) || includeSet.has(d.derivativeUrn)
+      );
+      if (filtered.length) {
+        docs = filtered;
+        emit('info', `✓ Applying coordination filter: ${filtered.length} of ${allDocs.length} model(s) included in clash detection`);
+      } else {
+        emit('warn', `⚠ Coordination clash include list did not match any documents — using all ${allDocs.length}`);
+      }
+    }
     emit('info', `✓ Version ${versionIndex} — ${docs.length} document(s)`);
 
     // ── Step 3 — Extract + Classify ─────────────────────────────────────
@@ -858,6 +902,21 @@ app.post('/api/workflow/run', async (req, res) => {
 
     const classifier = new DisciplineClassifier();
     const classifications = classifier.classifyAll(descriptors);
+
+    // Apply user discipline overrides — `assignments[DISC] = itemId` wins over auto-detected
+    if (coord?.assignments && Object.keys(coord.assignments).length) {
+      for (const [disc, itemId] of Object.entries(coord.assignments)) {
+        const target = descriptors.find(d => d.id === itemId || d.urn === itemId);
+        if (target && classifications.has(target.id)) {
+          const existing = classifications.get(target.id);
+          if (existing.discipline !== disc) {
+            emit('info', `  ↻ User override: ${target.fileName} → ${disc} (was ${existing.discipline})`);
+          }
+          classifications.set(target.id, { ...existing, discipline: disc, confidence: 1.0, requiresManualReview: false });
+        }
+      }
+    }
+
     const disciplineSet = new Set();
 
     for (const [id, result] of classifications) {
