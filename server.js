@@ -660,7 +660,9 @@ app.get('/api/workflow/stream', (req, res) => {
 
 /** Start the workflow — responds immediately with sessionId, then streams logs */
 app.post('/api/workflow/run', async (req, res) => {
-  const sessionId = `run-${Date.now()}`;
+  // Use the client-provided sessionId so SSE subscriber and emitter share the same channel.
+  // Falls back to a generated one only if the client didn't supply it.
+  const sessionId = req.body?.sessionId || `run-${Date.now()}`;
   res.json({ sessionId });
 
   const emit = (level, message, label = 'Workflow') =>
