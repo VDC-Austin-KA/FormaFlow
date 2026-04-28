@@ -9,7 +9,7 @@
 
 import 'dotenv/config';
 import express from 'express';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { EventEmitter } from 'events';
@@ -179,6 +179,96 @@ app.get('/api/capabilities', async (_req, res) => {
     const { detectCapabilities } = await import('./src/utils/capability-detector.js');
     const result = detectCapabilities();
     res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes — APS Viewer
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Short-lived 2-legged token for the APS Viewer SDK */
+app.get('/api/viewer/token', async (_req, res) => {
+  try {
+    const client = await makeAPSClient();
+    const token = await client.getToken();
+    res.json({ access_token: token, expires_in: 3600 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Resolve the APS Viewer-ready URN for an ACC item.
+ * ACC items are already translated by Revit on publish — no OSS upload needed.
+ * Returns a base64url-encoded URN suitable for Autodesk.Viewing.Document.load().
+ */
+app.get('/api/models/viewer-urn', async (req, res) => {
+  try {
+    const { projectId, itemId } = req.query;
+    if (!projectId || !itemId) return res.status(400).json({ error: 'projectId and itemId required' });
+    const client = await makeAPSClient();
+    const projId = projectId.startsWith('b.') ? projectId : `b.${projectId}`;
+    const versionsData = await client.get(
+      `https://developer.api.autodesk.com/data/v1/projects/${projId}/items/${itemId}/versions`
+    );
+    const version = versionsData.data?.[0];
+    if (!version) return res.status(404).json({ error: 'No versions found for this item' });
+
+    const itemUrn = version.id; // e.g. urn:adsk.wipprod:fs.file:vf.XXX?version=N
+    // base64url-encode (URL-safe, no padding) — required by the Viewer SDK
+    const viewerUrn = Buffer.from(itemUrn).toString('base64')
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+
+    res.json({
+      urn: viewerUrn,
+      itemUrn,
+      fileName:     version.attributes?.name ?? version.attributes?.displayName,
+      version:      version.attributes?.versionNumber ?? 1,
+      lastModified: version.attributes?.lastModifiedTime,
+      storageSize:  version.attributes?.storageSize ?? null,
+    });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes — Hub / multi-project
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** List all projects in the connected ACC hub */
+app.get('/api/hub/projects', async (req, res) => {
+  try {
+    const rawHubId = req.query.hubId || process.env.ACC_ACCOUNT_ID || '';
+    const hubId = rawHubId.replace(/^b\./, '');
+    if (!hubId) return res.status(400).json({ error: 'hubId required (or set ACC_ACCOUNT_ID)' });
+    const client = await makeAPSClient();
+    const data = await client.get(
+      `https://developer.api.autodesk.com/project/v1/hubs/b.${hubId}/projects?pageNumber=0&pageLimit=100`
+    );
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes — Clash results
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Serve the most recent clash-results JSON produced by the workflow */
+app.get('/api/clash/results', (_req, res) => {
+  try {
+    const resultsDir = resolve(__dirname, 'output', 'clash-results');
+    if (!existsSync(resultsDir)) return res.json({ groups: [], summary: null });
+    const files = readdirSync(resultsDir)
+      .filter(f => f.endsWith('.json'))
+      .map(f => ({ name: f, full: resolve(resultsDir, f), mtime: statSync(resolve(resultsDir, f)).mtime }))
+      .sort((a, b) => b.mtime - a.mtime);
+    if (!files.length) return res.json({ groups: [], summary: null });
+    res.json(JSON.parse(readFileSync(files[0].full, 'utf8')));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -382,14 +472,22 @@ app.get('/api/project/folder-contents', async (req, res) => {
     const data = await client.get(
       `https://developer.api.autodesk.com/data/v1/projects/${projId}/folders/${encodeURIComponent(folderUrn)}/contents`
     );
-    // Trim to essentials the UI needs to render a picker
-    const items = (data?.data ?? []).map(it => ({
-      id: it.id,
-      type: it.type,                                // 'folders' | 'items'
-      name: it.attributes?.displayName ?? it.attributes?.name ?? it.id,
-      extension: it.attributes?.extension?.type ?? null,
-      derivativeUrn: it.relationships?.tip?.data?.id ?? null
-    }));
+    const items = (data?.data ?? []).map(it => {
+      const tipUrn = it.relationships?.tip?.data?.id ?? null;
+      // Pre-compute viewer URN so the client can load directly without an extra API call
+      const viewerUrn = tipUrn
+        ? Buffer.from(tipUrn).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'')
+        : null;
+      return {
+        id:           it.id,
+        type:         it.type,   // 'folders' | 'items'
+        name:         it.attributes?.displayName ?? it.attributes?.name ?? it.id,
+        extension:    it.attributes?.extension?.type ?? null,
+        derivativeUrn: tipUrn,
+        viewerUrn,               // ready for Autodesk.Viewing.Document.load(`urn:${viewerUrn}`)
+        discipline:   null,      // populated client-side after classification
+      };
+    });
     res.json({ items });
   } catch (err) {
     res.status(500).json({ error: err.message, details: err.body });

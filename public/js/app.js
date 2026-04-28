@@ -65,23 +65,39 @@ function formatTime(iso) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TAB_META = {
-  connect:    { title: 'Connect',      sub: 'Configure APS credentials and ACC project' },
-  models:     { title: 'Models',       sub: 'View and override automatically identified disciplines' },
-  searchsets: { title: 'Search Sets',  sub: 'Toggle and preview reusable property-based filters' },
-  clashtests: { title: 'Clash Tests',  sub: 'Enable, disable, and fine-tune clash test pairs' },
-  settings:   { title: 'Settings',     sub: 'Workflow options, naming conventions, and output' },
-  run:        { title: 'Run Workflow', sub: 'Execute the full automated coordination workflow' },
+  connect:    { title: 'Connect',       sub: 'Configure APS credentials and ACC project' },
+  hub:        { title: 'Hub Projects',  sub: 'Browse and switch between all projects in your ACC hub' },
+  viewer:     { title: '3D Viewer',     sub: 'Visualize models and clash results in an interactive 3D view' },
+  models:     { title: 'Models',        sub: 'View and override automatically identified disciplines' },
+  searchsets: { title: 'Search Sets',   sub: 'Toggle and preview reusable property-based filters' },
+  clashtests: { title: 'Clash Tests',   sub: 'Enable, disable, and fine-tune clash test pairs' },
+  settings:   { title: 'Settings',      sub: 'Workflow options, naming conventions, and output' },
+  run:        { title: 'Run Workflow',   sub: 'Execute the full automated coordination workflow' },
 };
+
+// Tabs that need flex layout (not block/overflow-y-auto)
+const FLEX_TABS = new Set(['viewer']);
 
 function navigate(tab) {
   State.currentTab = tab;
   document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('hidden', p.id !== `tab-${tab}`));
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    const isActive = p.id === `tab-${tab}`;
+    if (FLEX_TABS.has(tab) && isActive) {
+      p.classList.remove('hidden');
+    } else if (FLEX_TABS.has(p.id.replace('tab-', '')) && !isActive) {
+      p.classList.add('hidden');
+    } else {
+      p.classList.toggle('hidden', !isActive);
+    }
+  });
   const meta = TAB_META[tab] || {};
   el('tab-title').textContent = meta.title || tab;
   el('tab-sub').textContent = meta.sub || '';
   el('header-actions').innerHTML = '';
   if (tab === 'clashtests' || tab === 'searchsets' || tab === 'settings') renderSaveBtn(tab);
+  // Lazy-init viewer on first open
+  if (tab === 'viewer' && !_viewerState.sdkLoaded) initViewerTab();
 }
 
 function renderSaveBtn(tab) {
@@ -101,13 +117,6 @@ function populateConnect(cfg) {
   el('inp-folder-urn').value    = cfg.env.TARGET_FOLDER_URN || '';
   if (cfg.env.TARGET_FOLDER_URN) {
     el('folder-urn-row').classList.remove('hidden');
-    // Try to pre-populate the select
-    const sel = el('sel-folder');
-    if (sel.options.length <= 1) {
-      const opt = new Option(cfg.env.TARGET_FOLDER_URN.split(':').pop(), cfg.env.TARGET_FOLDER_URN);
-      sel.add(opt);
-      sel.value = cfg.env.TARGET_FOLDER_URN;
-    }
   }
 }
 
@@ -153,110 +162,123 @@ async function loadFolders() {
   if (!accountId || !projectId) { toast('Enter Account ID and Project ID first', 'error'); return; }
 
   const btn = el('btn-load-folders');
-  btn.disabled = true;
-  btn.textContent = 'Loading…';
+  btn.disabled = true; btn.textContent = 'Loading…';
 
   try {
     const data = await api('GET', `/api/project/folders?accountId=${encodeURIComponent(accountId)}&projectId=${encodeURIComponent(projectId)}`);
     const folders = data?.data ?? [];
-    const sel = el('sel-folder');
-    sel.innerHTML = '<option value="">— select a folder —</option>';
-
-    // Group: user folders first, system folders at bottom
     const userFolders   = folders.filter(f => f._category !== 'system');
     const systemFolders = folders.filter(f => f._category === 'system');
 
-    if (userFolders.length) {
-      const grp = document.createElement('optgroup');
-      grp.label = 'Project Folders';
-      for (const f of userFolders) {
-        const opt = new Option(f.attributes?.name || f.id, f.id);
-        grp.appendChild(opt);
-      }
-      sel.add(grp);
-    }
-    if (systemFolders.length) {
-      const grp = document.createElement('optgroup');
-      grp.label = 'System Folders (ACC modules — skip these)';
-      for (const f of systemFolders) {
-        const opt = new Option(f.attributes?.name || f.id, f.id);
-        opt.style.color = '#6b7280';
-        grp.appendChild(opt);
-      }
-      sel.add(grp);
+    const tree = el('folder-tree');
+    tree.innerHTML = '';
+
+    // User folders first, system folders dimmed at the bottom
+    for (const f of [...userFolders, ...systemFolders]) {
+      tree.appendChild(buildFolderNode(
+        f.id, f.attributes?.name ?? f.id, f._category === 'system'
+      ));
     }
 
+    el('folder-tree-container').classList.remove('hidden');
     if (!folders.length) toast('No folders found — check account/project IDs', 'error');
     else toast(`Loaded ${userFolders.length} project folder(s)`);
   } catch (err) {
     toast('Failed to load folders: ' + err.message, 'error');
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Load';
+    btn.disabled = false; btn.textContent = 'Load Folders';
   }
 }
 
-// Folder path stack for breadcrumb drill-down: [{id, name}]
-let _folderStack = [];
+function buildFolderNode(folderId, folderName, isSystem = false) {
+  const node = document.createElement('div');
+  node.className = 'folder-tree-node';
+  node.dataset.folderId = folderId;
+  node.dataset.loaded   = 'false';
 
-async function browseSubfolder(folderId, folderName) {
+  node.innerHTML = `
+    <div class="folder-node-row ${isSystem ? 'folder-node-system' : ''}">
+      <button class="folder-expand-btn" title="Expand subfolders">▶</button>
+      <svg class="w-3.5 h-3.5 flex-shrink-0 ${isSystem ? 'text-slate-400' : 'text-amber-500'}" fill="currentColor" viewBox="0 0 24 24">
+        <path d="M10 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2h-8l-2-2z"/>
+      </svg>
+      <span class="folder-node-name" title="${folderName}">${folderName}</span>
+      ${isSystem ? '<span class="folder-system-badge">system</span>' : ''}
+    </div>
+    <div class="folder-node-children hidden"></div>
+  `;
+
+  const expandBtn  = node.querySelector('.folder-expand-btn');
+  const nameLabel  = node.querySelector('.folder-node-name');
+  const childrenEl = node.querySelector('.folder-node-children');
+
+  // Expand / collapse
+  expandBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!childrenEl.classList.contains('hidden')) {
+      childrenEl.classList.add('hidden');
+      expandBtn.textContent = '▶';
+      expandBtn.classList.remove('expanded');
+      return;
+    }
+    if (node.dataset.loaded === 'false') {
+      await populateFolderChildren(folderId, childrenEl, expandBtn, node);
+    }
+    childrenEl.classList.remove('hidden');
+    expandBtn.textContent = '▼';
+    expandBtn.classList.add('expanded');
+  });
+
+  // Select on name click
+  nameLabel.addEventListener('click', () => selectFolderNode(folderId, folderName, node));
+
+  return node;
+}
+
+async function populateFolderChildren(folderId, childrenEl, expandBtn, parentNode) {
   const projectId = el('inp-project-id').value.trim();
-  if (!projectId) { toast('Project ID required', 'error'); return; }
-
-  const btn = el('btn-browse-subfolder');
-  btn.disabled = true;
-  btn.textContent = '…';
+  expandBtn.textContent = '⋯';
+  expandBtn.disabled = true;
 
   try {
     const data = await api('GET',
       `/api/project/folder-contents?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderId)}`);
     const subfolders = (data?.items ?? []).filter(i => i.type === 'folders');
 
+    parentNode.dataset.loaded = 'true';
+
     if (!subfolders.length) {
-      toast('No subfolders in this folder — you can use it as-is', 'info');
+      childrenEl.innerHTML = '<div class="folder-leaf-msg">No subfolders</div>';
+      expandBtn.textContent = '—';
       return;
     }
-
-    _folderStack.push({ id: folderId, name: folderName });
-    renderFolderBreadcrumb();
-
-    const sub = el('sel-subfolder');
-    sub.innerHTML = '<option value="">— select subfolder —</option>';
-    for (const f of subfolders) {
-      sub.add(new Option(f.name, f.id));
-    }
-    el('subfolder-row').classList.remove('hidden');
+    subfolders.forEach(f => childrenEl.appendChild(buildFolderNode(f.id, f.name, false)));
+    expandBtn.textContent = '▼';
   } catch (err) {
-    toast('Failed to browse subfolder: ' + err.message, 'error');
+    childrenEl.innerHTML = '<div class="folder-leaf-msg text-red-400">Failed to load</div>';
+    expandBtn.textContent = '▶';
+    parentNode.dataset.loaded = 'false';
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Browse';
+    expandBtn.disabled = false;
   }
 }
 
-function renderFolderBreadcrumb() {
-  const bc = el('folder-breadcrumb');
-  bc.innerHTML = '';
-  bc.classList.remove('hidden');
-  _folderStack.forEach((crumb, i) => {
-    if (i > 0) {
-      const sep = document.createElement('span');
-      sep.textContent = '›';
-      bc.appendChild(sep);
-    }
-    const span = document.createElement('span');
-    span.textContent = crumb.name;
-    span.className = 'cursor-pointer text-blue-400 hover:underline';
-    span.addEventListener('click', () => {
-      // Navigate back to this crumb
-      _folderStack = _folderStack.slice(0, i);
-      el('inp-folder-urn').value = crumb.id;
-      el('folder-urn-row').classList.remove('hidden');
-      browseSubfolder(crumb.id, crumb.name);
-    });
-    bc.appendChild(span);
-  });
+function selectFolderNode(folderId, folderName, nodeEl) {
+  // Deselect all
+  document.querySelectorAll('.folder-tree-node.selected').forEach(n => n.classList.remove('selected'));
+  nodeEl.classList.add('selected');
+
+  // Update display + URN fields
+  const nameSpan = el('selected-folder-name');
+  nameSpan.textContent = folderName;
+  nameSpan.className = 'text-sm text-slate-800 font-medium flex-1 truncate';
+
+  el('inp-folder-urn').value = folderId;
+  el('folder-urn-row').classList.remove('hidden');
+
+  toast(`Folder selected: ${folderName}`);
 }
+
 
 async function detectContainer() {
   const accountId = el('inp-account-id').value.trim();
@@ -412,8 +434,7 @@ function renderCapabilities(data) {
 }
 
 async function saveEnv() {
-  const folderSel = el('sel-folder');
-  const folderUrn = folderSel.value || el('inp-folder-urn').value;
+  const folderUrn = el('inp-folder-urn').value;
 
   const payload = {
     APS_CLIENT_ID:     el('inp-client-id').value,
@@ -1214,6 +1235,443 @@ function showRunSummary(data) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 3D Viewer
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DISC_COLORS_HEX = {
+  ARCH:'#f59e0b', STRUCT:'#3b82f6', MECH:'#10b981', PLUMB:'#06b6d4',
+  ELEC:'#f97316', FP:'#ef4444',    CIVIL:'#78716c', INT:'#8b5cf6', UNKNOWN:'#9ca3af',
+};
+
+const _viewerState = {
+  sdkLoaded: false,
+  viewer: null,
+  loadedModels: [],   // { urn, name, discipline, model }
+  clashGroups: [],
+  activeGroup: null,
+};
+
+async function loadViewerSDK() {
+  if (_viewerState.sdkLoaded) return;
+  return new Promise((resolve, reject) => {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.type = 'text/css';
+    link.href = 'https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/style.min.css';
+    document.head.appendChild(link);
+
+    const script = document.createElement('script');
+    script.src = 'https://developer.api.autodesk.com/modelderivative/v2/viewers/7.*/viewer3D.min.js';
+    script.onload = () => { _viewerState.sdkLoaded = true; resolve(); };
+    script.onerror = () => reject(new Error('Failed to load APS Viewer SDK'));
+    document.head.appendChild(script);
+  });
+}
+
+async function initViewerTab() {
+  el('viewer-status-text').textContent = 'Loading viewer SDK…';
+  try {
+    await loadViewerSDK();
+    await new Promise((resolve, reject) => {
+      Autodesk.Viewing.Initializer({
+        env: 'AutodeskProduction2',
+        api: 'streamingV2',
+        getAccessToken: async (onToken) => {
+          try {
+            const data = await api('GET', '/api/viewer/token');
+            onToken(data.access_token, data.expires_in ?? 3600);
+          } catch (e) {
+            toast('Viewer auth failed: ' + e.message, 'error');
+          }
+        },
+      }, () => {
+        const container = el('viewer-container');
+        el('viewer-placeholder').style.display = 'none';
+        _viewerState.viewer = new Autodesk.Viewing.GuiViewer3D(container, {
+          disabledExtensions: { bimwalk: true },
+        });
+        _viewerState.viewer.start();
+        el('viewer-status-text').textContent = 'Viewer ready';
+        resolve();
+      });
+    });
+  } catch (err) {
+    el('viewer-status-text').textContent = 'Viewer failed to load';
+    toast('Viewer SDK error: ' + err.message, 'error');
+  }
+}
+
+async function loadViewerModels() {
+  const projectId = el('inp-project-id').value.trim();
+  const folderUrn = el('inp-folder-urn').value.trim();
+  if (!projectId) { toast('Set Project ID on the Connect tab first', 'error'); return; }
+  if (!folderUrn) { toast('Select a Target Folder on the Connect tab first', 'error'); return; }
+
+  const btn = el('btn-load-viewer-models');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  try {
+    const data = await api('GET',
+      `/api/project/folder-contents?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderUrn)}`);
+    const isNwcFile = name => /\.(nwc|nwd)$/i.test(name ?? '');
+    const allItems = data.items ?? [];
+    const models = allItems.filter(i => {
+      if (i.type !== 'items') return false;
+      if (i.viewerUrn) return true;           // RVT/DWG already translated
+      if (isNwcFile(i.name)) return true;      // NWC/NWD — include even without viewerUrn
+      return false;
+    });
+
+    const list = el('viewer-model-list');
+    list.innerHTML = '';
+
+    if (!models.length) {
+      list.innerHTML = '<p class="text-xs text-slate-600 px-2 py-3">No viewable models in this folder</p>';
+      return;
+    }
+
+    const disciplines = new Set();
+    models.forEach(m => {
+      const disc = guessDiscFromName(m.name);
+      m.discipline = disc;
+      if (disc) disciplines.add(disc);
+
+      const nwcOnly = !m.viewerUrn && isNwcFile(m.name);
+      const item = document.createElement('div');
+      item.className = `viewer-model-item${nwcOnly ? ' nwc-only' : ''}`;
+      item.dataset.urn = m.viewerUrn ?? '';
+      item.dataset.name = m.name;
+      item.dataset.disc = disc;
+      item.title = nwcOnly ? 'NWC file — not yet translated to SVF2; load into a Navisworks model set to enable 3D viewing' : '';
+      item.innerHTML = `
+        <div class="disc-dot" style="background:${DISC_COLORS_HEX[disc] ?? '#9ca3af'}"></div>
+        <span class="model-name" title="${m.name}">${m.name}</span>
+        ${nwcOnly
+          ? '<span class="nwc-badge">NWC</span>'
+          : '<span class="model-status">▶</span>'}
+      `;
+      if (!nwcOnly) {
+        item.addEventListener('click', () => toggleViewerModel(item, m));
+      }
+      list.appendChild(item);
+    });
+
+    const nwcCount = models.filter(m => !m.viewerUrn && isNwcFile(m.name)).length;
+    const viewableCount = models.length - nwcCount;
+    renderDiscToggles([...disciplines]);
+    toast(`Found ${viewableCount} viewable + ${nwcCount} NWC coordination model(s)`);
+  } catch (err) {
+    toast('Failed to list models: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Load Models from Folder';
+  }
+}
+
+function guessDiscFromName(name = '') {
+  const n = name.toUpperCase();
+  // Architecture — ARCH, A_, AR_, ARCHITECTURAL, INTERIOR, INT
+  if (/\bARCH\b|_A_|_AR_|ARCHITECTURAL|INTERIOR/.test(n)) return 'ARCH';
+  if (/\bINT\b|_INT_|INT[-_]/.test(n))                    return 'INT';
+  // Structure — STRUCT, S_, STR_, STRUCTURAL, FOUNDATION, CONCRETE, STEEL
+  if (/\bSTRUCT\b|_S_|_STR_|STRUCTURAL|FOUNDATION|CONCRETE|STEEL[-_]/.test(n)) return 'STRUCT';
+  // Mechanical / HVAC — MECH, M_, HVAC, DUCT, MECHANICAL, PIPING (non-plumbing)
+  if (/\bMECH\b|_M_|HVAC|DUCT|MECHANICAL|CHILLED[-_ ]?WATER|AIR[-_ ]?HAND/.test(n)) return 'MECH';
+  // Plumbing — PLUMB, P_, PLMB, SANIT, SANITARY, DOMESTIC
+  if (/\bPLUMB\b|_P_|PLMB|SANIT|SANITARY|DOMESTIC[-_ ]?WATER/.test(n)) return 'PLUMB';
+  // Electrical — ELEC, E_, ELE_, ELECTRICAL, POWER, LIGHTING, LOW[-_]VOLTAGE
+  if (/\bELEC\b|_E_|ELE[-_]|ELECTRICAL|POWER|LIGHTING|LOW[-_]VOLTAGE/.test(n)) return 'ELEC';
+  // Fire Protection — FIRE, FP_, SPRINK, SUPPRESSION
+  if (/\bFP\b|FP[-_]|FIRE[-_ ]?PROTECTION|SPRINK|SUPPRESSION/.test(n)) return 'FP';
+  // Civil / Site — CIVIL, SITE, GRADING, SURVEY, TOPO, INFRASTRUCTURE
+  if (/\bCIVIL\b|SITE[-_]|GRADING|SURVEY|TOPO|INFRASTRUCTURE/.test(n)) return 'CIVIL';
+  return 'UNKNOWN';
+}
+
+async function toggleViewerModel(itemEl, modelDef) {
+  if (!_viewerState.viewer) {
+    toast('Viewer not initialized — open the 3D Viewer tab first', 'error');
+    return;
+  }
+
+  const existing = _viewerState.loadedModels.find(m => m.urn === modelDef.viewerUrn);
+  if (existing) {
+    _viewerState.viewer.unloadModel(existing.model);
+    _viewerState.loadedModels = _viewerState.loadedModels.filter(m => m.urn !== modelDef.viewerUrn);
+    itemEl.classList.remove('loaded');
+    itemEl.querySelector('.model-status').textContent = '▶';
+    updateViewerModelCounter();
+    return;
+  }
+
+  itemEl.classList.add('loading');
+  itemEl.querySelector('.model-status').textContent = '⋯';
+  el('viewer-status-text').textContent = `Loading ${modelDef.name}…`;
+
+  try {
+    await new Promise((resolve, reject) => {
+      Autodesk.Viewing.Document.load(
+        `urn:${modelDef.viewerUrn}`,
+        async (doc) => {
+          const geometry = doc.getRoot().getDefaultGeometry();
+          const model = await _viewerState.viewer.loadDocumentNode(doc, geometry, {
+            keepCurrentModels: true,
+            loadAsHidden: false,
+          });
+          _viewerState.loadedModels.push({ urn: modelDef.viewerUrn, name: modelDef.name,
+            discipline: modelDef.discipline, model });
+          itemEl.classList.remove('loading'); itemEl.classList.add('loaded');
+          itemEl.querySelector('.model-status').textContent = '✓';
+          el('viewer-status-text').textContent = `${modelDef.name} loaded`;
+          updateViewerModelCounter();
+          resolve();
+        },
+        (code, msg) => reject(new Error(`Viewer load error ${code}: ${msg}`))
+      );
+    });
+  } catch (err) {
+    itemEl.classList.remove('loading'); itemEl.classList.add('error');
+    itemEl.querySelector('.model-status').textContent = '✗';
+    toast('Load failed: ' + err.message, 'error');
+  }
+}
+
+function updateViewerModelCounter() {
+  const n = _viewerState.loadedModels.length;
+  el('viewer-model-count').textContent = n;
+  el('viewer-model-counter').classList.toggle('hidden', n === 0);
+}
+
+function renderDiscToggles(disciplines) {
+  const container = el('viewer-disc-toggles');
+  container.innerHTML = '';
+  disciplines.forEach(disc => {
+    const color = DISC_COLORS_HEX[disc] ?? '#9ca3af';
+    const row = document.createElement('div');
+    row.className = 'disc-toggle-row';
+    row.innerHTML = `
+      <div class="disc-swatch" style="background:${color}"></div>
+      <span class="flex-1">${disc}</span>
+      <input type="checkbox" checked class="accent-blue-500" data-disc="${disc}"/>
+    `;
+    row.querySelector('input').addEventListener('change', (e) => {
+      toggleDisciplineVisibility(disc, e.target.checked);
+    });
+    container.appendChild(row);
+  });
+}
+
+function toggleDisciplineVisibility(disc, visible) {
+  if (!_viewerState.viewer) return;
+  _viewerState.loadedModels
+    .filter(m => m.discipline === disc)
+    .forEach(m => {
+      if (visible) _viewerState.viewer.showModel(m.model, false);
+      else         _viewerState.viewer.hideModel(m.model);
+    });
+}
+
+async function loadClashResultsForViewer() {
+  try {
+    const data = await api('GET', '/api/clash/results');
+    const groups = data?.groups ?? data?.clashGroups ?? [];
+    if (!groups.length) { toast('No clash results found — run the workflow first', 'error'); return; }
+    _viewerState.clashGroups = groups;
+    renderClashGroups(groups);
+    toast(`Loaded ${groups.length} clash group(s)`);
+  } catch (err) {
+    toast('Failed to load clash results: ' + err.message, 'error');
+  }
+}
+
+function renderClashGroups(groups) {
+  const list = el('viewer-clash-list');
+  const filter = (el('inp-clash-filter').value ?? '').toLowerCase();
+  const filtered = filter ? groups.filter(g => g.name?.toLowerCase().includes(filter)) : groups;
+
+  list.innerHTML = '';
+  if (!filtered.length) {
+    list.innerHTML = '<div class="p-4 text-xs text-slate-600 text-center">No groups match the filter</div>';
+    return;
+  }
+
+  // Build discipline summary chips
+  const discCounts = {};
+  filtered.forEach(g => {
+    const d = g.disciplines?.[0] ?? 'UNKNOWN';
+    discCounts[d] = (discCounts[d] ?? 0) + (g.clashes?.length ?? g.count ?? 0);
+  });
+  const chips = el('clash-disc-chips');
+  chips.innerHTML = Object.entries(discCounts).map(([d, n]) =>
+    `<span class="clash-disc-chip" style="background:${DISC_COLORS_HEX[d] ?? '#9ca3af'}" data-disc="${d}">${d} ${n}</span>`
+  ).join('');
+  chips.classList.remove('hidden');
+
+  let totalClashes = 0;
+  filtered.forEach(g => {
+    const count = g.clashes?.length ?? g.count ?? 0;
+    totalClashes += count;
+    const div = document.createElement('div');
+    div.className = 'clash-group-item';
+    div.innerHTML = `
+      <div class="flex items-center justify-between">
+        <span class="cg-name" title="${g.name ?? ''}">${g.name ?? 'Unnamed Group'}</span>
+        <span class="cg-count">${count}</span>
+      </div>
+      <div class="cg-meta">
+        <span>${g.level ?? ''}</span>
+        <span>${g.testName ?? ''}</span>
+      </div>
+    `;
+    div.addEventListener('click', () => selectClashGroup(div, g));
+    list.appendChild(div);
+  });
+
+  el('footer-group-count').textContent = `${filtered.length} groups`;
+  el('footer-clash-count').textContent = `${totalClashes} clashes`;
+  el('clash-results-footer').classList.remove('hidden');
+}
+
+function selectClashGroup(itemEl, group) {
+  document.querySelectorAll('.clash-group-item').forEach(el => el.classList.remove('active'));
+  itemEl.classList.add('active');
+  _viewerState.activeGroup = group;
+  showClashMarkersForGroup(group);
+}
+
+function showClashMarkersForGroup(group) {
+  if (!_viewerState.viewer) return;
+  const THREE = Autodesk.Viewing.Private.THREE;
+  const SCENE = 'clash-markers';
+
+  if (_viewerState.viewer.overlays.hasScene(SCENE)) {
+    _viewerState.viewer.overlays.clearScene(SCENE);
+  } else {
+    _viewerState.viewer.overlays.addScene(SCENE);
+  }
+
+  const clashes = group.clashes ?? [];
+  let hasPoints = false;
+  const positions = [];
+
+  clashes.forEach(clash => {
+    if (!clash.point) return;
+    hasPoints = true;
+    positions.push(new THREE.Vector3(clash.point.x, clash.point.y, clash.point.z));
+    const geo = new THREE.SphereGeometry(0.2, 8, 8);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true, opacity: 0.85 });
+    const sphere = new THREE.Mesh(geo, mat);
+    sphere.position.set(clash.point.x, clash.point.y, clash.point.z);
+    _viewerState.viewer.overlays.addMesh(sphere, SCENE);
+  });
+
+  if (hasPoints && positions.length) {
+    // Fly camera to the bounding box of this clash group
+    const box = new THREE.Box3().setFromPoints(positions);
+    _viewerState.viewer.navigation.fitBounds(false, box, true);
+  }
+  toast(`Showing ${clashes.length} clash(es) for: ${group.name ?? 'group'}`);
+}
+
+function clearClashMarkers() {
+  if (!_viewerState.viewer) return;
+  if (_viewerState.viewer.overlays.hasScene('clash-markers')) {
+    _viewerState.viewer.overlays.clearScene('clash-markers');
+  }
+}
+
+function showAllClashMarkers() {
+  if (!_viewerState.clashGroups.length) { toast('Load clash results first', 'error'); return; }
+  _viewerState.clashGroups.forEach(g => showClashMarkersForGroup(g));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hub — multi-project manager
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _hubProjects = [];
+
+async function loadHubProjects() {
+  const btn = el('btn-load-hub-projects');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  try {
+    const data = await api('GET', '/api/hub/projects');
+    _hubProjects = data?.data ?? [];
+    renderHubProjects(_hubProjects);
+
+    // Stats
+    const accCount   = _hubProjects.filter(p => p.attributes?.projectType === 'ACC').length;
+    const otherCount = _hubProjects.length - accCount;
+    el('hub-stat-total').textContent = _hubProjects.length;
+    el('hub-stat-acc').textContent   = accCount;
+    el('hub-stat-other').textContent = otherCount;
+
+    const currentProjId = el('inp-project-id').value.trim();
+    const current = _hubProjects.find(p => p.id?.replace(/^b\./, '') === currentProjId);
+    el('hub-stat-active').textContent = current?.attributes?.name ?? 'None';
+
+    toast(`Loaded ${_hubProjects.length} project(s)`);
+  } catch (err) {
+    toast('Failed to load hub projects: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Load Projects';
+  }
+}
+
+function renderHubProjects(projects) {
+  const grid = el('hub-project-grid');
+  const filter = (el('inp-hub-search')?.value ?? '').toLowerCase();
+  const filtered = filter ? projects.filter(p =>
+    p.attributes?.name?.toLowerCase().includes(filter)
+  ) : projects;
+
+  if (!filtered.length) {
+    grid.innerHTML = '<div class="col-span-3 text-center text-slate-400 py-12">No projects match your search</div>';
+    return;
+  }
+
+  const currentProjId = el('inp-project-id').value.trim();
+
+  grid.innerHTML = filtered.map(p => {
+    const rawId = p.id?.replace(/^b\./, '') ?? '';
+    const isActive = rawId === currentProjId;
+    return `
+      <div class="hub-project-card ${isActive ? 'active-project' : ''}" data-project-id="${rawId}">
+        <div class="hpc-name" title="${p.attributes?.name ?? ''}">${p.attributes?.name ?? 'Unnamed Project'}</div>
+        <div class="hpc-type">${p.attributes?.projectType ?? 'ACC'} · ${p.attributes?.status ?? 'active'}</div>
+        <div class="hpc-id">${rawId}</div>
+        <div class="hpc-actions">
+          <button class="btn-primary text-xs py-1 px-3 ${isActive ? 'opacity-50 cursor-default' : ''}"
+            onclick="switchHubProject('${rawId}', '${(p.attributes?.name ?? '').replace(/'/g, '')}')"
+            ${isActive ? 'disabled' : ''}>
+            ${isActive ? '✓ Active' : 'Use This Project'}
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function switchHubProject(projectId, projectName) {
+  el('inp-project-id').value = projectId;
+  // Reset container + folder since they're project-specific
+  el('inp-container-id').value = '';
+  el('inp-folder-urn').value   = '';
+  el('folder-urn-row').classList.add('hidden');
+  // Reset the folder tree
+  const folderTree = el('folder-tree');
+  if (folderTree) folderTree.innerHTML = '';
+  el('folder-tree-container')?.classList.add('hidden');
+  const nameSpan = el('selected-folder-name');
+  if (nameSpan) { nameSpan.textContent = 'No folder selected'; nameSpan.className = 'text-sm text-slate-500 flex-1 truncate'; }
+  el('hub-stat-active').textContent = projectName;
+
+  // Re-render cards to update active state
+  renderHubProjects(_hubProjects);
+
+  navigate('connect');
+  toast(`Switched to "${projectName}" — save credentials to persist`);
+}
+
 // Initialisation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1247,6 +1705,25 @@ async function init() {
     btn.addEventListener('click', () => navigate(btn.dataset.tab));
   });
 
+  // Viewer tab
+  el('btn-load-viewer-models').addEventListener('click', loadViewerModels);
+  el('btn-viewer-home').addEventListener('click', () => {
+    if (_viewerState.viewer) _viewerState.viewer.fitToView();
+  });
+  el('btn-viewer-explode').addEventListener('click', () => {
+    if (!_viewerState.viewer) return;
+    const current = _viewerState.viewer.getExplodeScale?.() ?? 0;
+    _viewerState.viewer.explode(current > 0 ? 0 : 0.5);
+  });
+  el('btn-show-clashes').addEventListener('click', showAllClashMarkers);
+  el('btn-clear-markers').addEventListener('click', clearClashMarkers);
+  el('btn-load-clash-results').addEventListener('click', loadClashResultsForViewer);
+  el('inp-clash-filter').addEventListener('input', () => renderClashGroups(_viewerState.clashGroups));
+
+  // Hub tab
+  el('btn-load-hub-projects').addEventListener('click', loadHubProjects);
+  el('inp-hub-search').addEventListener('input', () => renderHubProjects(_hubProjects));
+
   // Connect tab
   el('btn-test-conn').addEventListener('click', testConnection);
   el('btn-load-folders').addEventListener('click', loadFolders);
@@ -1256,39 +1733,6 @@ async function init() {
   el('btn-toggle-secret').addEventListener('click', () => {
     const inp = el('inp-client-secret');
     inp.type = inp.type === 'password' ? 'text' : 'password';
-  });
-
-  el('sel-folder').addEventListener('change', (e) => {
-    const urn = e.target.value;
-    const name = e.target.options[e.target.selectedIndex]?.text || urn;
-    el('inp-folder-urn').value = urn;
-    el('folder-urn-row').classList.toggle('hidden', !urn);
-    // Reset subfolder state when top-level changes
-    _folderStack = [];
-    el('subfolder-row').classList.add('hidden');
-    el('folder-breadcrumb').classList.add('hidden');
-    el('folder-breadcrumb').innerHTML = '';
-    if (urn) {
-      el('subfolder-row').classList.remove('hidden');
-      el('sel-subfolder').innerHTML = '<option value="">— select subfolder (optional) —</option>';
-    }
-  });
-
-  el('btn-browse-subfolder').addEventListener('click', () => {
-    const folderId = el('sel-subfolder').value || el('sel-folder').value;
-    const name = el('sel-subfolder').value
-      ? el('sel-subfolder').options[el('sel-subfolder').selectedIndex]?.text
-      : el('sel-folder').options[el('sel-folder').selectedIndex]?.text;
-    if (!folderId) { toast('Select a folder to browse first', 'error'); return; }
-    browseSubfolder(folderId, name);
-  });
-
-  el('sel-subfolder').addEventListener('change', (e) => {
-    const urn = e.target.value;
-    if (urn) {
-      el('inp-folder-urn').value = urn;
-      el('folder-urn-row').classList.remove('hidden');
-    }
   });
 
   // Search Sets tab — discipline filter pills
