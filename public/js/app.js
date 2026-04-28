@@ -3364,6 +3364,66 @@ async function createIssue() {
 // Initialisation
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Service account (3-legged OAuth) UI
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function loadAuthStatus() {
+  try {
+    const status = await api('GET', '/api/auth/status');
+    renderAuthStatus(status);
+
+    // Check URL for post-OAuth redirect result
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('auth') === 'success') {
+      toast('Service account signed in successfully', 'success');
+      window.history.replaceState({}, '', '/');
+    } else if (params.get('auth') === 'error') {
+      toast('Sign-in failed: ' + (params.get('msg') || 'Unknown error'), 'error');
+      window.history.replaceState({}, '', '/');
+    }
+  } catch { /* non-critical */ }
+}
+
+function renderAuthStatus(status) {
+  const loggedOut = el('sa-logged-out');
+  const loggedIn  = el('sa-logged-in');
+  const badge     = el('sa-status-badge');
+  const callbackEl = el('sa-callback-display');
+
+  // Show callback URL so user knows what to register in APS app settings
+  if (callbackEl) {
+    callbackEl.textContent = `${window.location.origin}/api/auth/callback`;
+  }
+
+  if (!status?.loggedIn) {
+    loggedOut?.classList.remove('hidden');
+    loggedIn?.classList.add('hidden');
+    if (badge) {
+      badge.className = 'hidden';
+    }
+    return;
+  }
+
+  loggedOut?.classList.add('hidden');
+  loggedIn?.classList.remove('hidden');
+
+  if (badge) {
+    badge.textContent = '● Connected';
+    badge.className = 'flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-300';
+  }
+
+  if (el('sa-account-name') && status.name) el('sa-account-name').textContent = status.name;
+  if (el('sa-account-email') && status.email) el('sa-account-email').textContent = status.email;
+  if (el('sa-token-expiry') && status.expiresAt) {
+    const expires = new Date(status.expiresAt);
+    const diffMin = Math.round((expires - Date.now()) / 60_000);
+    el('sa-token-expiry').textContent = status.expired
+      ? 'Token expired — will auto-refresh on next API call'
+      : `Token valid · refreshes in ~${diffMin} min`;
+  }
+}
+
 async function init() {
   try {
     State.config = await api('GET', '/api/config');
@@ -3383,6 +3443,9 @@ async function init() {
     el('conn-dot').className = 'w-2 h-2 rounded-full flex-shrink-0 bg-slate-500';
     el('conn-label').textContent = 'Credentials loaded';
   }
+
+  // Load service account auth status
+  loadAuthStatus();
 
   // Load capabilities panel
   loadCapabilities();
@@ -3503,6 +3566,13 @@ async function init() {
       _hubFilter = pill.dataset.filter;
       renderHubProjects(_hubProjects);
     });
+  });
+
+  // Connect tab — service account
+  el('btn-sa-logout')?.addEventListener('click', async () => {
+    await api('POST', '/api/auth/logout');
+    renderAuthStatus({ loggedIn: false });
+    toast('Service account signed out');
   });
 
   // Connect tab

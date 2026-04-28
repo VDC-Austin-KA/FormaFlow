@@ -4,3 +4,4 @@ output/
 *.log
 dist/
 .DS_Store
+config/auth-tokens.json
