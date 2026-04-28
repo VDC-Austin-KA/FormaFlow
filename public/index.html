@@ -624,6 +624,66 @@
             <div id="coord-align-rows" class="space-y-2"></div>
           </div>
         </section>
+
+        <!-- Section 4: MC Search Sets -->
+        <section class="card" id="mc-ss-section">
+          <header class="card-header flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 class="card-title">Search Sets <span class="text-xs font-normal text-slate-400">· live from ACC</span></h3>
+              <p class="card-sub">Existing search set definitions stored in this coordination space.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <span id="mc-ss-count" class="text-xs text-slate-400 hidden"></span>
+              <button id="btn-load-mc-ss" class="btn-secondary text-xs py-1 px-3">Load Search Sets</button>
+            </div>
+          </header>
+          <div class="card-body">
+            <div id="mc-ss-list">
+              <p class="text-slate-400 text-sm text-center py-4">Click <strong>Load Search Sets</strong> to fetch from ACC.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section 5: MC Clash Tests -->
+        <section class="card" id="mc-ct-section">
+          <header class="card-header flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 class="card-title">Clash Tests <span class="text-xs font-normal text-slate-400">· live from ACC</span></h3>
+              <p class="card-sub">Active clash tests for the latest model set version. Click a test to expand its clash groups.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <span id="mc-ct-version" class="text-xs text-slate-400 hidden"></span>
+              <span id="mc-ct-count"   class="text-xs text-slate-400 hidden"></span>
+              <button id="btn-load-mc-ct" class="btn-secondary text-xs py-1 px-3">Load Clash Tests</button>
+            </div>
+          </header>
+          <div class="card-body">
+            <div id="mc-ct-list">
+              <p class="text-slate-400 text-sm text-center py-4">Click <strong>Load Clash Tests</strong> to fetch from ACC.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section 6: Workflow Clash Results -->
+        <section class="card" id="clash-results-section">
+          <header class="card-header flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 class="card-title">Workflow Clash Results <span class="text-xs font-normal text-slate-400">· last run</span></h3>
+              <p class="card-sub">Clash groups and summary from the most recent FormaFlow workflow run.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <span id="wf-results-meta" class="text-xs text-slate-400 hidden"></span>
+              <button id="btn-load-wf-results" class="btn-secondary text-xs py-1 px-3">Load Results</button>
+            </div>
+          </header>
+          <div class="card-body">
+            <div id="clash-results-summary" class="hidden mb-3 grid grid-cols-2 sm:grid-cols-4 gap-2"></div>
+            <div id="clash-results-list">
+              <p class="text-slate-400 text-sm text-center py-4">Click <strong>Load Results</strong> to view the last workflow run.</p>
+            </div>
+          </div>
+        </section>
+
       </div>
     </div>
 

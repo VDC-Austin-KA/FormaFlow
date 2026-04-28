@@ -2664,6 +2664,298 @@ function maybeApplyAlignmentToViewer(itemId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Coordination tab — MC Live Data (Search Sets, Clash Tests, Workflow Results)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _mcState = {
+  searchSets:    null,   // raw data from /api/mc/search-sets
+  clashTests:    null,   // { versionIndex, tests: [] }
+  clashGroups:   {},     // { [testId]: data }  cached per test
+  loadingGroups: new Set(),
+  clashResults:  null,   // last workflow run
+};
+
+// ── Search Sets ──────────────────────────────────────────────────────────────
+
+async function loadMcSearchSets() {
+  const modelSetId = getActiveCoordSpaceId();
+  if (!modelSetId) { toast('Select a Coordination Space first', 'error'); return; }
+
+  const listEl = el('mc-ss-list');
+  const countEl = el('mc-ss-count');
+  listEl.innerHTML = '<div class="mc-loading">Loading…</div>';
+  countEl.classList.add('hidden');
+
+  try {
+    const data = await api('GET', `/api/mc/search-sets?modelSetId=${encodeURIComponent(modelSetId)}`);
+    _mcState.searchSets = data;
+    renderMcSearchSets();
+  } catch (err) {
+    listEl.innerHTML = `<p class="mc-error">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function renderMcSearchSets() {
+  const listEl  = el('mc-ss-list');
+  const countEl = el('mc-ss-count');
+  const data    = _mcState.searchSets;
+  const sets    = data?.searchSets ?? data?.data ?? (Array.isArray(data) ? data : []);
+
+  if (!sets.length) {
+    listEl.innerHTML = '<p class="text-slate-400 text-sm text-center py-4">No search sets found in this coordination space.</p>';
+    countEl.classList.add('hidden');
+    return;
+  }
+
+  countEl.textContent = `${sets.length} set${sets.length !== 1 ? 's' : ''}`;
+  countEl.classList.remove('hidden');
+
+  listEl.innerHTML = sets.map(s => `
+    <div class="mc-row">
+      <div class="mc-row-main">
+        <span class="mc-row-name">${escapeHtml(s.name ?? s.id ?? 'Unnamed')}</span>
+        ${s.modelName ? `<span class="mc-row-sub">${escapeHtml(s.modelName)}</span>` : ''}
+      </div>
+      <div class="mc-row-meta">
+        ${s.isDirty ? '<span class="mc-badge mc-badge-warn">Dirty</span>' : ''}
+        ${s.hasElements !== undefined ? `<span class="mc-badge">${s.hasElements ? 'Active' : 'Empty'}</span>` : ''}
+        ${s.lastModifiedTime ? `<span class="text-xs text-slate-400">${formatRelativeDate(s.lastModifiedTime)}</span>` : ''}
+      </div>
+    </div>`).join('');
+}
+
+// ── Clash Tests ───────────────────────────────────────────────────────────────
+
+async function loadMcClashTests() {
+  const modelSetId = getActiveCoordSpaceId();
+  if (!modelSetId) { toast('Select a Coordination Space first', 'error'); return; }
+
+  const listEl    = el('mc-ct-list');
+  const versionEl = el('mc-ct-version');
+  const countEl   = el('mc-ct-count');
+  listEl.innerHTML = '<div class="mc-loading">Loading…</div>';
+  versionEl.classList.add('hidden');
+  countEl.classList.add('hidden');
+
+  try {
+    const data = await api('GET', `/api/mc/clash-tests?modelSetId=${encodeURIComponent(modelSetId)}`);
+    _mcState.clashTests = data;
+    renderMcClashTests();
+  } catch (err) {
+    listEl.innerHTML = `<p class="mc-error">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function renderMcClashTests() {
+  const listEl    = el('mc-ct-list');
+  const versionEl = el('mc-ct-version');
+  const countEl   = el('mc-ct-count');
+  const data      = _mcState.clashTests;
+  const tests     = data?.tests ?? (Array.isArray(data) ? data : []);
+  const vi        = data?.versionIndex;
+
+  if (vi !== null && vi !== undefined) {
+    versionEl.textContent = `v${vi}`;
+    versionEl.classList.remove('hidden');
+  }
+
+  if (!tests.length) {
+    listEl.innerHTML = '<p class="text-slate-400 text-sm text-center py-4">No clash tests found.</p>';
+    countEl.classList.add('hidden');
+    return;
+  }
+
+  countEl.textContent = `${tests.length} test${tests.length !== 1 ? 's' : ''}`;
+  countEl.classList.remove('hidden');
+
+  listEl.innerHTML = tests.map(t => {
+    const testId  = t.id ?? t.testId;
+    const status  = t.status ?? t.status ?? '';
+    const total   = t.clashCount ?? t.totalClashes ?? t.clashesTotal ?? '';
+    const new_    = t.newClashCount ?? t.newClashes ?? '';
+    const active  = t.activeClashCount ?? t.activeClashes ?? '';
+    return `
+    <div class="mc-test-row" id="mc-test-${escapeHtml(testId)}">
+      <div class="mc-test-header" data-testid="${escapeHtml(testId)}" data-vi="${vi ?? ''}">
+        <span class="mc-expand-icon">▶</span>
+        <div class="mc-row-main">
+          <span class="mc-row-name">${escapeHtml(t.name ?? testId)}</span>
+          ${t.description ? `<span class="mc-row-sub">${escapeHtml(t.description)}</span>` : ''}
+        </div>
+        <div class="mc-row-meta">
+          ${status ? `<span class="mc-badge mc-status-${escapeHtml(status.toLowerCase())}">${escapeHtml(status)}</span>` : ''}
+          ${total !== '' ? `<span class="mc-badge mc-badge-clash" title="Total clashes">${total} clashes</span>` : ''}
+          ${new_ !== '' ? `<span class="mc-badge mc-badge-new" title="New clashes">${new_} new</span>` : ''}
+        </div>
+      </div>
+      <div class="mc-groups-panel hidden" id="mc-groups-${escapeHtml(testId)}">
+        <div class="mc-groups-inner"><p class="text-slate-400 text-sm py-2 px-2">Loading groups…</p></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Attach click handlers for expand/collapse
+  listEl.querySelectorAll('.mc-test-header').forEach(hdr => {
+    hdr.addEventListener('click', () => toggleClashTestGroups(hdr.dataset.testid, hdr.dataset.vi));
+  });
+}
+
+async function toggleClashTestGroups(testId, versionIndex) {
+  const rowEl    = el(`mc-test-${testId}`);
+  const panelEl  = el(`mc-groups-${testId}`);
+  const expandEl = rowEl?.querySelector('.mc-expand-icon');
+  if (!rowEl || !panelEl) return;
+
+  const isOpen = !panelEl.classList.contains('hidden');
+  if (isOpen) {
+    panelEl.classList.add('hidden');
+    if (expandEl) expandEl.textContent = '▶';
+    return;
+  }
+
+  // Open
+  panelEl.classList.remove('hidden');
+  if (expandEl) expandEl.textContent = '▼';
+
+  // Already cached?
+  if (_mcState.clashGroups[testId]) {
+    renderMcClashGroups(testId, _mcState.clashGroups[testId], panelEl.querySelector('.mc-groups-inner'));
+    return;
+  }
+  if (_mcState.loadingGroups.has(testId)) return;
+
+  _mcState.loadingGroups.add(testId);
+  const modelSetId = getActiveCoordSpaceId();
+  try {
+    const data = await api('GET',
+      `/api/mc/clash-groups?modelSetId=${encodeURIComponent(modelSetId)}&versionIndex=${encodeURIComponent(versionIndex)}&testId=${encodeURIComponent(testId)}`
+    );
+    _mcState.clashGroups[testId] = data;
+    renderMcClashGroups(testId, data, panelEl.querySelector('.mc-groups-inner'));
+  } catch (err) {
+    if (panelEl.querySelector('.mc-groups-inner')) {
+      panelEl.querySelector('.mc-groups-inner').innerHTML = `<p class="mc-error">${escapeHtml(err.message)}</p>`;
+    }
+  } finally {
+    _mcState.loadingGroups.delete(testId);
+  }
+}
+
+function renderMcClashGroups(testId, data, container) {
+  if (!container) return;
+  const groups = data?.clashGroups ?? data?.data ?? data?.groups ?? (Array.isArray(data) ? data : []);
+
+  if (!groups.length) {
+    container.innerHTML = '<p class="text-slate-400 text-sm py-2 px-2">No clash groups found for this test.</p>';
+    return;
+  }
+
+  const SEV_COLOR = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e', none: '#94a3b8' };
+
+  container.innerHTML = `
+    <div class="mc-groups-table-header">
+      <span>Group</span><span>Severity</span><span>Clashes</span><span>Status</span>
+    </div>
+    ${groups.slice(0, 100).map(g => {
+      const sev   = (g.severity ?? g.clashSeverity ?? 'none').toLowerCase();
+      const count = g.clashCount ?? g.count ?? '';
+      const name  = g.name ?? g.groupName ?? g.id ?? 'Group';
+      const stat  = g.status ?? g.groupStatus ?? '';
+      return `<div class="mc-group-row">
+        <span class="mc-group-name">${escapeHtml(name)}</span>
+        <span class="mc-badge" style="background:${SEV_COLOR[sev] ?? SEV_COLOR.none}22;color:${SEV_COLOR[sev] ?? SEV_COLOR.none};border-color:${SEV_COLOR[sev] ?? SEV_COLOR.none}44">${escapeHtml(sev)}</span>
+        <span class="text-xs text-slate-600">${count !== '' ? count : '—'}</span>
+        <span class="text-xs text-slate-500">${escapeHtml(stat)}</span>
+      </div>`;
+    }).join('')}
+    ${groups.length > 100 ? `<p class="text-xs text-slate-400 px-2 py-1">… and ${groups.length - 100} more</p>` : ''}
+  `;
+}
+
+// ── Workflow Clash Results ────────────────────────────────────────────────────
+
+async function loadWorkflowClashResults() {
+  const listEl    = el('clash-results-list');
+  const summEl    = el('clash-results-summary');
+  const metaEl    = el('wf-results-meta');
+  listEl.innerHTML = '<div class="mc-loading">Loading…</div>';
+  summEl.classList.add('hidden');
+  metaEl.classList.add('hidden');
+
+  try {
+    const data = await api('GET', '/api/clash/results');
+    _mcState.clashResults = data;
+    renderWorkflowClashResults();
+  } catch (err) {
+    listEl.innerHTML = `<p class="mc-error">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function renderWorkflowClashResults() {
+  const listEl = el('clash-results-list');
+  const summEl = el('clash-results-summary');
+  const metaEl = el('wf-results-meta');
+  const data   = _mcState.clashResults;
+
+  if (!data || (!data.groups?.length && !data.summary)) {
+    listEl.innerHTML = '<p class="text-slate-400 text-sm text-center py-4">No workflow results found. Run the workflow to generate clash data.</p>';
+    summEl.classList.add('hidden');
+    return;
+  }
+
+  const summary = data.summary ?? {};
+  const groups  = data.groups ?? data.clashGroups ?? [];
+
+  // Summary cards
+  const statCards = [
+    { label: 'Total Clashes', value: summary.totalClashes ?? groups.reduce((n, g) => n + (g.clashCount ?? 0), 0), color: 'text-slate-700' },
+    { label: 'Groups',        value: groups.length,                                                                  color: 'text-blue-600' },
+    { label: 'Critical',      value: groups.filter(g => (g.severity ?? '').toLowerCase() === 'critical').length,     color: 'text-red-600'  },
+    { label: 'High',          value: groups.filter(g => (g.severity ?? '').toLowerCase() === 'high').length,         color: 'text-orange-500' },
+  ];
+  summEl.innerHTML = statCards.map(c => `
+    <div class="mc-stat-card">
+      <p class="mc-stat-value ${c.color}">${c.value}</p>
+      <p class="mc-stat-label">${c.label}</p>
+    </div>`).join('');
+  summEl.classList.remove('hidden');
+
+  if (summary.runAt || summary.generatedAt) {
+    metaEl.textContent = `Run: ${formatRelativeDate(summary.runAt ?? summary.generatedAt)}`;
+    metaEl.classList.remove('hidden');
+  }
+
+  // Group list
+  if (!groups.length) {
+    listEl.innerHTML = '<p class="text-slate-400 text-sm text-center py-4">No clash groups in results file.</p>';
+    return;
+  }
+
+  const SEV_COLOR = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e', none: '#94a3b8' };
+
+  listEl.innerHTML = `
+    <div class="mc-groups-table-header mt-2">
+      <span>Group / Test</span><span>Severity</span><span>Clashes</span><span>Disciplines</span>
+    </div>
+    ${groups.slice(0, 200).map(g => {
+      const sev  = (g.severity ?? 'none').toLowerCase();
+      const cnt  = g.clashCount ?? g.count ?? g.clashes?.length ?? '';
+      const disc = [g.disciplineA, g.disciplineB].filter(Boolean).join(' × ') || (g.disciplines ?? []).join(' × ') || '';
+      return `<div class="mc-group-row">
+        <div>
+          <span class="mc-group-name">${escapeHtml(g.name ?? g.testName ?? g.id ?? 'Group')}</span>
+          ${g.testName ? `<span class="mc-row-sub">${escapeHtml(g.testName)}</span>` : ''}
+        </div>
+        <span class="mc-badge" style="background:${SEV_COLOR[sev] ?? SEV_COLOR.none}22;color:${SEV_COLOR[sev] ?? SEV_COLOR.none};border-color:${SEV_COLOR[sev] ?? SEV_COLOR.none}44">${escapeHtml(sev)}</span>
+        <span class="text-xs text-slate-600">${cnt !== '' ? cnt : '—'}</span>
+        <span class="text-xs text-slate-500">${escapeHtml(disc)}</span>
+      </div>`;
+    }).join('')}
+    ${groups.length > 200 ? `<p class="text-xs text-slate-400 px-2 py-1">… and ${groups.length - 200} more groups</p>` : ''}
+  `;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Issues tab — ACC Construction Issues v1
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -3044,6 +3336,9 @@ async function init() {
     _coordState.alignSnap = parseFloat(e.target.value || '1');
     saveCoordinationDebounced();
   });
+  el('btn-load-mc-ss').addEventListener('click', loadMcSearchSets);
+  el('btn-load-mc-ct').addEventListener('click', loadMcClashTests);
+  el('btn-load-wf-results').addEventListener('click', loadWorkflowClashResults);
 
   // Models tab
   el('btn-load-models').addEventListener('click', loadModels);
