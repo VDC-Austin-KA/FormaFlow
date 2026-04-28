@@ -391,8 +391,10 @@ app.get('/api/project/containers', async (req, res) => {
     if (!accountId) return res.status(400).json({ error: 'accountId required' });
 
     const client = await makeAPSClient();
-    const MC_MODELSET_BASE = process.env.MC_MODELSET_API_BASE
-      ?? 'https://developer.api.autodesk.com/bim360/modelset/v3';
+    // Same path-normalization as in src/api/model-coordination.js — survives stale .env files.
+    const MC_MODELSET_BASE = (process.env.MC_MODELSET_API_BASE
+      ?? 'https://developer.api.autodesk.com/bim360/modelset/v3')
+      .replace('/bim360/modelcoordination/', '/bim360/');
 
     // ── Strategy 0: HQ Admin API — works independently of MC provisioning ────
     // Pull the container ID from the BIM360/ACC project record. This succeeds
@@ -739,6 +741,130 @@ app.get('/api/mc/search-sets', async (req, res) => {
 app.get('/api/coordination/assignments', (_req, res) => {
   try { res.json(readConfig('coordination-assignments.json')); }
   catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes — Saved Views (FormaFlow local + ACC Model Coordination merged)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function readViews() {
+  try { return readConfig('saved-views.json'); }
+  catch { return { views: [] }; }
+}
+
+/**
+ * Merged views listing — local FormaFlow views + MC views (if API supported).
+ * Filters local views by ?modelSetId so you only see views for the active space.
+ */
+app.get('/api/views', async (req, res) => {
+  try {
+    const modelSetId  = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID ?? '';
+    const containerId = req.query.containerId ?? process.env.MC_CONTAINER_ID ?? '';
+    const local = readViews().views ?? [];
+
+    const localFiltered = modelSetId
+      ? local.filter(v => !v.modelSetId || v.modelSetId === modelSetId)
+      : local;
+
+    let mc = [];
+    let mcSupported = false;
+    let mcReason = null;
+
+    if (modelSetId && containerId) {
+      try {
+        const client = await makeAPSClient();
+        const url = `https://developer.api.autodesk.com/bim360/modelset/v3/containers/${containerId}/modelsets/${modelSetId}/views`;
+        try {
+          const data = await client.get(url);
+          mc = (data?.data ?? data ?? []).map(v => ({
+            id:          `mc:${v.id ?? v.viewId}`,
+            name:        v.name ?? v.title ?? `MC View ${v.id ?? ''}`,
+            source:      'mc',
+            modelSetId,
+            modelIds:    v.modelIds ?? v.documentIds ?? [],
+            clashTestId: v.clashTestId ?? null,
+            createdAt:   v.createdAt ?? v.created ?? null,
+            raw:         v,
+          }));
+          mcSupported = true;
+        } catch (e) {
+          if (e.status === 404 || e.status === 403) {
+            mcSupported = false;
+            mcReason = e.status === 404
+              ? 'MC Views API not available for this container'
+              : 'MC Views API not authorized for this app — add as Custom Integration';
+          } else {
+            throw e;
+          }
+        }
+      } catch (err) {
+        mcReason = err.message;
+      }
+    }
+
+    const combined = [...mc, ...localFiltered];
+    res.json({ mcSupported, mcReason, views: combined, localCount: localFiltered.length, mcCount: mc.length });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message });
+  }
+});
+
+/** Save a new local view */
+app.post('/api/views', (req, res) => {
+  try {
+    const incoming = req.body ?? {};
+    if (!incoming.name) return res.status(400).json({ error: 'name required' });
+    const all = readViews();
+    const view = {
+      id:           `local:${Date.now()}`,
+      name:         String(incoming.name).slice(0, 80),
+      source:       'local',
+      modelSetId:   incoming.modelSetId ?? '',
+      modelIds:     Array.isArray(incoming.modelIds) ? incoming.modelIds : [],
+      camera:       incoming.camera ?? null,
+      clashTestId:  incoming.clashTestId ?? null,
+      searchSetIds: Array.isArray(incoming.searchSetIds) ? incoming.searchSetIds : [],
+      notes:        incoming.notes ?? '',
+      createdAt:    new Date().toISOString(),
+      updatedAt:    new Date().toISOString(),
+    };
+    all.views.unshift(view);
+    writeConfig('saved-views.json', all);
+    res.json(view);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Update an existing local view (rename / re-camera) */
+app.patch('/api/views/:id', (req, res) => {
+  try {
+    const all = readViews();
+    const idx = all.views.findIndex(v => v.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'view not found' });
+    if (all.views[idx].source !== 'local') return res.status(400).json({ error: 'only local views are editable' });
+    const merged = { ...all.views[idx], ...req.body, updatedAt: new Date().toISOString(), id: all.views[idx].id, source: 'local' };
+    all.views[idx] = merged;
+    writeConfig('saved-views.json', all);
+    res.json(merged);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Delete a local view */
+app.delete('/api/views/:id', (req, res) => {
+  try {
+    const all = readViews();
+    const idx = all.views.findIndex(v => v.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'view not found' });
+    if (all.views[idx].source !== 'local') return res.status(400).json({ error: 'only local views are deletable' });
+    all.views.splice(idx, 1);
+    writeConfig('saved-views.json', all);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put('/api/coordination/assignments', (req, res) => {

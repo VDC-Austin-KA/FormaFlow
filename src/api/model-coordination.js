@@ -22,13 +22,28 @@ const logger = createLogger('ModelCoordination');
 // Model Coordination v3 — official Autodesk base URLs.
 // NB: paths are `bim360/modelset/v3/...` and `bim360/clash/v3/...`,
 // NOT `bim360/modelcoordination/...` (that extra segment returns 404).
-const MC_MODELSET_BASE =
-  process.env.MC_MODELSET_API_BASE ??
-  'https://developer.api.autodesk.com/bim360/modelset/v3';
+//
+// Auto-correct any env override that still contains the old path so a stale
+// .env file from a pre-fix install can't silently break MC calls.
+function normalizeMcBase(raw, fallback) {
+  if (!raw) return fallback;
+  const fixed = raw.replace('/bim360/modelcoordination/', '/bim360/');
+  if (fixed !== raw) {
+    // Best-effort warning — logger may not yet be wired in some import orders
+    try { logger.warn('Auto-correcting stale MC base URL: %s → %s', raw, fixed); } catch (_) {}
+  }
+  return fixed;
+}
 
-const MC_CLASH_BASE =
-  process.env.MC_CLASH_API_BASE ??
-  'https://developer.api.autodesk.com/bim360/clash/v3';
+const MC_MODELSET_BASE = normalizeMcBase(
+  process.env.MC_MODELSET_API_BASE,
+  'https://developer.api.autodesk.com/bim360/modelset/v3'
+);
+
+const MC_CLASH_BASE = normalizeMcBase(
+  process.env.MC_CLASH_API_BASE,
+  'https://developer.api.autodesk.com/bim360/clash/v3'
+);
 
 export class ModelCoordinationClient {
   /**

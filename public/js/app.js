@@ -356,6 +356,8 @@ async function onCoordSpaceChange() {
     await api('POST', '/api/config/env', { MC_MODEL_SET_ID: id });
     if (State.config?.env) State.config.env.MC_MODEL_SET_ID = id;
     toast('Coordination space saved');
+    // Refresh views (saved views are scoped to a space)
+    reloadViewsList().catch(() => {});
   } catch (err) {
     toast('Failed to save selection: ' + err.message, 'error');
   }
@@ -1446,6 +1448,202 @@ async function unloadAllModels() {
   toast(`Unloaded ${count} model(s)`);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Saved Views (FormaFlow local + ACC Model Coordination merged)
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _savedViews = [];
+let _selectedView = null;
+
+async function reloadViewsList() {
+  const sel = el('sel-view');
+  if (!sel) return;
+  const previous = sel.value;
+  sel.disabled = true;
+
+  try {
+    const containerId = el('inp-container-id').value.trim();
+    const modelSetId  = getActiveCoordSpaceId();
+    const qs = new URLSearchParams();
+    if (containerId) qs.set('containerId', containerId);
+    if (modelSetId)  qs.set('modelSetId', modelSetId);
+
+    const data = await api('GET', `/api/views?${qs}`);
+    _savedViews = data?.views ?? [];
+
+    sel.innerHTML = '<option value="">— select a saved view —</option>';
+    if (data.mcCount) {
+      const grpMc = document.createElement('optgroup');
+      grpMc.label = `ACC Model Coordination (${data.mcCount})`;
+      for (const v of _savedViews.filter(x => x.source === 'mc')) {
+        grpMc.appendChild(new Option(v.name, v.id));
+      }
+      sel.appendChild(grpMc);
+    }
+    if (data.localCount) {
+      const grpLocal = document.createElement('optgroup');
+      grpLocal.label = `FormaFlow Saved Views (${data.localCount})`;
+      for (const v of _savedViews.filter(x => x.source === 'local')) {
+        grpLocal.appendChild(new Option(v.name, v.id));
+      }
+      sel.appendChild(grpLocal);
+    }
+
+    el('views-count-badge').textContent =
+      data.mcCount || data.localCount ? `${data.mcCount + data.localCount} saved` : '';
+
+    const statusEl = el('views-mc-status');
+    if (!data.mcSupported && data.mcReason) {
+      statusEl.textContent = `${data.mcReason} — local views only`;
+      statusEl.classList.remove('hidden');
+    } else {
+      statusEl.classList.add('hidden');
+    }
+
+    if (previous && sel.querySelector(`option[value="${previous}"]`)) sel.value = previous;
+    onViewSelected();
+  } catch (err) {
+    toast('Failed to load views: ' + err.message, 'error');
+  } finally {
+    sel.disabled = false;
+  }
+}
+
+function onViewSelected() {
+  const id = el('sel-view').value;
+  _selectedView = _savedViews.find(v => v.id === id) ?? null;
+  el('btn-view-load').disabled = !_selectedView;
+  const isLocal = _selectedView?.source === 'local';
+  el('btn-view-delete').classList.toggle('hidden', !isLocal);
+}
+
+async function loadSelectedView() {
+  if (!_selectedView) return;
+  const v = _selectedView;
+  const btn = el('btn-view-load');
+  btn.disabled = true;
+  el('viewer-status-text').textContent = `Loading view "${v.name}"…`;
+
+  try {
+    if (_viewerState.loadedModels.length) await unloadAllModels();
+
+    // Resolve modelIds → viewerUrns. Need either coord space documents (preferred)
+    // or fall back to current viewer-model-list cached entries
+    const containerId = el('inp-container-id').value.trim();
+    const modelSetId  = v.modelSetId || getActiveCoordSpaceId();
+    let docs = [];
+    if (containerId && modelSetId) {
+      const resp = await api('GET',
+        `/api/mc/space-documents?modelSetId=${encodeURIComponent(modelSetId)}&containerId=${encodeURIComponent(containerId)}`);
+      docs = resp?.documents ?? [];
+    }
+
+    // Build a list of items to load
+    const targets = [];
+    for (const id of v.modelIds ?? []) {
+      const doc = docs.find(d => d.id === id || d.rawUrn === id);
+      if (doc?.viewerUrn) {
+        targets.push({ name: doc.name, viewerUrn: doc.viewerUrn, discipline: guessDiscFromName(doc.name) });
+      }
+    }
+
+    if (!targets.length) {
+      toast('No matching loadable models found in this view', 'error');
+      el('viewer-status-text').textContent = '';
+      return;
+    }
+
+    // Load them sequentially (viewer's loadDocumentNode handles concurrency badly)
+    for (const t of targets) {
+      const fauxEl = document.createElement('div');
+      fauxEl.dataset.urn = t.viewerUrn;
+      try { await toggleViewerModel(fauxEl, t); } catch (_) {}
+    }
+
+    // Apply camera if available
+    if (v.camera && _viewerState.viewer?.navigation) {
+      const nav = _viewerState.viewer.navigation;
+      try {
+        const THREE = window.THREE ?? Autodesk?.Viewing?.Private?.THREE;
+        if (THREE && v.camera.position && v.camera.target) {
+          nav.setView(
+            new THREE.Vector3(...v.camera.position),
+            new THREE.Vector3(...v.camera.target)
+          );
+          if (v.camera.up) nav.setCameraUpVector(new THREE.Vector3(...v.camera.up));
+        }
+      } catch (_) { /* camera restore is best-effort */ }
+    }
+
+    toast(`View loaded: ${targets.length} model(s)`);
+    el('viewer-status-text').textContent = `View "${v.name}" applied`;
+  } catch (err) {
+    toast('View load failed: ' + err.message, 'error');
+  } finally {
+    btn.disabled = !_selectedView;
+  }
+}
+
+async function saveCurrentAsView() {
+  if (!_viewerState.viewer || !_viewerState.loadedModels.length) {
+    toast('Load some models first, then save the view', 'error');
+    return;
+  }
+
+  const name = window.prompt('Save current view as:', `View — ${new Date().toLocaleString()}`);
+  if (!name) return;
+
+  // Capture camera
+  let camera = null;
+  try {
+    const cam = _viewerState.viewer.navigation?.getCamera() ?? _viewerState.viewer.getCamera();
+    if (cam) {
+      camera = {
+        position: [cam.position.x, cam.position.y, cam.position.z],
+        target:   [cam.target.x,   cam.target.y,   cam.target.z],
+        up:       cam.up ? [cam.up.x, cam.up.y, cam.up.z] : null,
+      };
+    }
+  } catch (_) { /* camera capture is best-effort */ }
+
+  // Map loaded viewer URNs back to coord-space document IDs (best-effort)
+  const containerId = el('inp-container-id').value.trim();
+  const modelSetId  = getActiveCoordSpaceId();
+  let docs = [];
+  if (containerId && modelSetId) {
+    try {
+      const resp = await api('GET',
+        `/api/mc/space-documents?modelSetId=${encodeURIComponent(modelSetId)}&containerId=${encodeURIComponent(containerId)}`);
+      docs = resp?.documents ?? [];
+    } catch (_) {}
+  }
+  const modelIds = _viewerState.loadedModels.map(lm => {
+    const matched = docs.find(d => d.viewerUrn === lm.urn);
+    return matched?.id ?? lm.urn; // fallback to viewerUrn so re-load still resolves
+  });
+
+  try {
+    await api('POST', '/api/views', { name, modelSetId, modelIds, camera });
+    toast(`View "${name}" saved`);
+    await reloadViewsList();
+  } catch (err) {
+    toast('Save view failed: ' + err.message, 'error');
+  }
+}
+
+async function deleteSelectedView() {
+  if (!_selectedView || _selectedView.source !== 'local') return;
+  if (!window.confirm(`Delete saved view "${_selectedView.name}"?`)) return;
+  try {
+    await api('DELETE', `/api/views/${encodeURIComponent(_selectedView.id)}`);
+    toast('View deleted');
+    _selectedView = null;
+    await reloadViewsList();
+  } catch (err) {
+    toast('Delete failed: ' + err.message, 'error');
+  }
+}
+
 async function loadViewerSDK() {
   if (_viewerState.sdkLoaded) return;
   return new Promise((resolve, reject) => {
@@ -2459,9 +2657,17 @@ async function init() {
   el('btn-load-coord-spaces').addEventListener('click', loadCoordinationSpaces);
   el('sel-coord-space').addEventListener('change', onCoordSpaceChange);
 
+  // Saved Views
+  el('sel-view').addEventListener('change', onViewSelected);
+  el('btn-view-load').addEventListener('click', loadSelectedView);
+  el('btn-view-save').addEventListener('click', saveCurrentAsView);
+  el('btn-view-delete').addEventListener('click', deleteSelectedView);
+
   // Initialize viewer source toggle + recents on load
   setViewerSource('space');
   renderRecentModels();
+  // Try to populate views list once (silent if unauthenticated)
+  reloadViewsList().catch(() => {});
 
   // Coordination tab
   el('btn-coord-refresh').addEventListener('click', () => {
