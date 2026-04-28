@@ -856,6 +856,59 @@ code { font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace; }
   flex-shrink: 0;
 }
 
+/* Discipline badge inside a viewer model row */
+.viewer-model-item .disc-badge {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid #475569;
+  flex-shrink: 0;
+  background: #1e293b;
+  color: #94a3b8;
+}
+.viewer-model-item .disc-badge.user-set {
+  /* color/bg/border injected inline */
+}
+.viewer-model-item .disc-badge.guessed {
+  background: transparent;
+  border-style: dashed;
+  border-color: #475569;
+  color: #64748b;
+}
+
+/* "+" badge marking a model from outside the current source list */
+.viewer-model-item .extra-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #60a5fa;
+  background: rgba(37,99,235,0.18);
+  border: 1px solid rgba(96,165,250,0.45);
+  border-radius: 3px;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.viewer-model-item.from-other {
+  border-left: 2px solid rgba(96,165,250,0.45);
+  padding-left: 6px;
+}
+
+/* Discipline chips on the loaded-models counter strip */
+.loaded-disc-chip {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
 /* ═══════════════════════════════════════════════════════════
    Models tab — browser rows
    ═══════════════════════════════════════════════════════════ */

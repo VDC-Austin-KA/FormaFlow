@@ -1760,42 +1760,68 @@ async function initViewerTab() {
 async function loadViewerModels() {
   const btn = el('btn-load-viewer-models');
   btn.disabled = true;
-  const originalLabel = btn.textContent;
   btn.textContent = 'Loading…';
   try {
-    const models = _viewerState.source === 'space'
+    // Pull persisted coord assignments first so user-assigned disciplines are
+    // applied to whatever the source list (folder/coord space) returns.
+    const persisted = await api('GET', '/api/coordination/assignments').catch(() => null);
+    if (persisted) {
+      _coordState.assignments      = persisted.assignments      ?? _coordState.assignments      ?? {};
+      _coordState.modelDisciplines = persisted.modelDisciplines ?? _coordState.modelDisciplines ?? {};
+    }
+
+    const sourceModels = _viewerState.source === 'space'
       ? await fetchSpaceViewerModels()
       : await fetchFolderViewerModels();
 
-    if (!models) return; // error already toasted
+    if (!sourceModels) return; // error already toasted
+
+    // Merge in any user-disciplined models from other folders / the coord space
+    // that aren't in the current source list. They get a flag so we can label
+    // them and explain why they're showing up.
+    const merged = mergeDisciplinedModels(sourceModels);
 
     const list = el('viewer-model-list');
     list.innerHTML = '';
-    el('viewer-model-list-count').textContent = `${models.length} models`;
 
-    if (!models.length) {
+    if (!merged.length) {
       list.innerHTML = '<p class="text-xs text-slate-600 px-2 py-3">No viewable models found</p>';
+      el('viewer-model-list-count').textContent = '0 models';
       return;
     }
 
     const isNwcFile = name => /\.(nwc|nwd)$/i.test(name ?? '');
     const disciplines = new Set();
+    let extrasShown = 0;
 
-    models.forEach(m => {
-      const disc = guessDiscFromName(m.name);
-      m.discipline = disc;
-      if (disc) disciplines.add(disc);
+    merged.forEach(m => {
+      const userDisc  = getUserDiscipline(m);
+      const finalDisc = userDisc || guessDiscFromName(m.name);
+      m.discipline = finalDisc;
+      disciplines.add(finalDisc);
 
       const nwcOnly = !m.viewerUrn && isNwcFile(m.name);
+      const isExtra = m._fromOtherSource;
+      if (isExtra) extrasShown++;
+
       const item = document.createElement('div');
-      item.className = `viewer-model-item${nwcOnly ? ' nwc-only' : ''}`;
+      item.className = `viewer-model-item${nwcOnly ? ' nwc-only' : ''}${isExtra ? ' from-other' : ''}`;
       item.dataset.urn  = m.viewerUrn ?? '';
       item.dataset.name = m.name;
-      item.dataset.disc = disc;
-      item.title = nwcOnly ? 'NWC file — not yet translated to SVF2; load into a Navisworks model set to enable 3D viewing' : '';
+      item.dataset.disc = finalDisc;
+      item.title = nwcOnly
+        ? 'NWC file — not yet translated to SVF2; load into a Navisworks model set to enable 3D viewing'
+        : (isExtra ? `Outside current ${_viewerState.source === 'space' ? 'coord space' : 'folder'} — included because a discipline is assigned` : '');
+
+      const discBadge = userDisc
+        ? `<span class="disc-badge user-set" style="background:${DISC_COLORS_HEX[finalDisc] ?? '#9ca3af'}22;color:${DISC_COLORS_HEX[finalDisc] ?? '#9ca3af'};border-color:${DISC_COLORS_HEX[finalDisc] ?? '#9ca3af'}55" title="User-assigned discipline">${finalDisc}</span>`
+        : `<span class="disc-badge guessed" title="Auto-detected — set in Models or Coordination tab to lock">${finalDisc}</span>`;
+
       item.innerHTML = `
-        <div class="disc-dot" style="background:${DISC_COLORS_HEX[disc] ?? '#9ca3af'}"></div>
+        <div class="disc-dot" style="background:${DISC_COLORS_HEX[finalDisc] ?? '#9ca3af'}"></div>
         <span class="model-name" title="${m.name}">${m.name}</span>
+        ${discBadge}
+        ${isExtra ? '<span class="extra-badge" title="From outside current source">+</span>' : ''}
         ${nwcOnly
           ? '<span class="nwc-badge">NWC</span>'
           : '<span class="model-status">▶</span>'}
@@ -1804,15 +1830,66 @@ async function loadViewerModels() {
       list.appendChild(item);
     });
 
-    const nwcCount = models.filter(m => !m.viewerUrn && isNwcFile(m.name)).length;
+    const nwcCount = merged.filter(m => !m.viewerUrn && isNwcFile(m.name)).length;
+    el('viewer-model-list-count').textContent =
+      `${merged.length} models${extrasShown ? ` (+${extrasShown} cross-folder)` : ''}`;
+
     renderDiscToggles([...disciplines]);
-    toast(`Found ${models.length - nwcCount} viewable + ${nwcCount} NWC coordination model(s)`);
+    const msg = extrasShown
+      ? `${merged.length - nwcCount} viewable + ${nwcCount} NWC + ${extrasShown} cross-folder disciplined`
+      : `Found ${merged.length - nwcCount} viewable + ${nwcCount} NWC coordination model(s)`;
+    toast(msg);
   } catch (err) {
     toast('Failed to list models: ' + err.message, 'error');
   } finally {
     btn.disabled = false;
     btn.textContent = _viewerState.source === 'space' ? 'Load from Coord. Space' : 'Load from Folder';
   }
+}
+
+// Combine the source list with any model that has a user-assigned discipline
+// elsewhere (Models tab cache or Coordination space). Returned items match the
+// shape of the source list; cross-source ones are flagged with `_fromOtherSource`.
+function mergeDisciplinedModels(sourceModels) {
+  const isNwcFile = name => /\.(nwc|nwd)$/i.test(name ?? '');
+  // Identity keys used for de-dup — viewerUrn first, then name fallback
+  const keyOf = m => m.viewerUrn || m.name || '';
+  const seen  = new Set(sourceModels.map(keyOf).filter(Boolean));
+  const out   = [...sourceModels];
+
+  // Pull from Models tab cache
+  for (const m of _modelsData || []) {
+    const k = keyOf(m);
+    if (!k || seen.has(k)) continue;
+    if (!m.viewerUrn && !isNwcFile(m.name)) continue;
+    if (!getUserDiscipline(m)) continue;            // only include if user-disciplined
+    seen.add(k);
+    out.push({
+      id:        m.id,
+      name:      m.name,
+      viewerUrn: m.viewerUrn,
+      rawUrn:    m.rawUrn,
+      _fromOtherSource: true,
+    });
+  }
+
+  // Pull from coord space cache
+  for (const m of _coordState.models || []) {
+    const k = keyOf(m);
+    if (!k || seen.has(k)) continue;
+    if (!m.viewerUrn) continue;
+    if (!getUserDiscipline(m)) continue;
+    seen.add(k);
+    out.push({
+      id:        m.id,
+      name:      m.name,
+      viewerUrn: m.viewerUrn,
+      rawUrn:    m.rawUrn,
+      _fromOtherSource: true,
+    });
+  }
+
+  return out;
 }
 
 async function fetchSpaceViewerModels() {
@@ -1900,8 +1977,9 @@ async function toggleViewerModel(itemEl, modelDef) {
             keepCurrentModels: true,
             loadAsHidden: false,
           });
+          const finalDisc = getUserDiscipline(modelDef) || modelDef.discipline || guessDiscFromName(modelDef.name);
           _viewerState.loadedModels.push({ urn: modelDef.viewerUrn, name: modelDef.name,
-            discipline: modelDef.discipline, model });
+            discipline: finalDisc, model });
           itemEl.classList.remove('loading'); itemEl.classList.add('loaded');
           const statusEl = itemEl.querySelector('.model-status');
           if (statusEl) statusEl.textContent = '✓';
@@ -1929,6 +2007,20 @@ function updateViewerModelCounter() {
   const n = _viewerState.loadedModels.length;
   el('viewer-model-count').textContent = n;
   el('viewer-model-counter').classList.toggle('hidden', n === 0);
+
+  // Aggregate disciplines across loaded models, count per disc, render chips
+  const counts = {};
+  for (const lm of _viewerState.loadedModels) {
+    const d = lm.discipline || 'UNKNOWN';
+    counts[d] = (counts[d] || 0) + 1;
+  }
+  const chips = el('viewer-loaded-disc-chips');
+  if (chips) {
+    chips.innerHTML = Object.entries(counts).map(([d, c]) => {
+      const color = DISC_COLORS_HEX[d] ?? '#9ca3af';
+      return `<span class="loaded-disc-chip" style="background:${color}22;color:${color};border-color:${color}55" title="${c} ${d} model(s) loaded">${d}${c > 1 ? `·${c}` : ''}</span>`;
+    }).join('');
+  }
 }
 
 function renderDiscToggles(disciplines) {
@@ -2249,13 +2341,21 @@ async function loadModels() {
   el('models-disc-filter').classList.add('hidden');
 
   try {
-    const data = await api('GET',
-      `/api/project/folder-contents-recursive?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderUrn)}`
-    );
-    _modelsData = (data.items ?? []).map(m => ({
-      ...m,
-      discipline: m.discipline ?? guessDiscFromName(m.name),
-    }));
+    // Pull coordination assignments alongside the folder scan so any persisted
+    // discipline overrides win over the auto-guess.
+    const [data, persisted] = await Promise.all([
+      api('GET', `/api/project/folder-contents-recursive?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderUrn)}`),
+      api('GET', '/api/coordination/assignments').catch(() => ({})),
+    ]);
+    if (persisted) {
+      _coordState.modelDisciplines = persisted.modelDisciplines ?? _coordState.modelDisciplines ?? {};
+      _coordState.assignments      = persisted.assignments      ?? _coordState.assignments      ?? {};
+    }
+    _modelsData = (data.items ?? []).map(m => {
+      const guessed = guessDiscFromName(m.name);
+      const override = getUserDiscipline({ ...m, name: m.name });
+      return { ...m, discipline: override || m.discipline || guessed };
+    });
 
     if (!_modelsData.length) {
       el('models-empty').classList.remove('hidden');
@@ -2347,6 +2447,14 @@ function renderModels() {
         const model = _modelsData.find(x => x.id === m.id);
         if (model) model.discipline = newDisc;
         row.querySelector('.disc-dot').style.background = DISC_COLOR[newDisc] ?? '#9ca3af';
+
+        // Persist override under every key the model is known by, so the viewer
+        // can match it later regardless of which lookup path it uses.
+        _coordState.modelDisciplines = _coordState.modelDisciplines || {};
+        for (const k of [m.id, m.viewerUrn, m.name].filter(Boolean)) {
+          _coordState.modelDisciplines[k] = newDisc;
+        }
+        saveCoordinationDebounced();
       });
 
       rows.appendChild(row);
@@ -2365,12 +2473,34 @@ function renderModels() {
 
 const _coordState = {
   loaded: false,
-  models: [],          // [{ id, name, viewerUrn, rawUrn, discipline }]
-  assignments: {},     // { ARCH: itemId, ... }
-  clashIncludes: [],   // [itemId, ...]
-  alignments: {},      // { itemId: { mode, offset:[x,y,z] } }
+  models: [],            // [{ id, name, viewerUrn, rawUrn, discipline }]
+  assignments: {},       // { ARCH: itemId, ... }   canonical model per discipline
+  clashIncludes: [],     // [itemId, ...]
+  alignments: {},        // { itemId: { mode, offset:[x,y,z] } }
   alignSnap: 1.0,
+  modelDisciplines: {},  // { itemId|viewerUrn|name: 'ARCH' }   per-model overrides from Models tab
 };
+
+// Best-effort key extraction so a viewer item can look up its discipline
+// override regardless of whether it has an item-id, a viewer-URN, or just a name.
+function modelDisciplineKey(m = {}) {
+  return m.id || m.itemId || m.viewerUrn || m.urn || m.name || '';
+}
+
+function getUserDiscipline(m = {}) {
+  const md = _coordState.modelDisciplines || {};
+  // Try itemId, viewerUrn, then name
+  for (const k of [m.id, m.itemId, m.viewerUrn, m.urn, m.name]) {
+    if (k && md[k]) return md[k];
+  }
+  // Fallback: is this model the canonical assignment for any discipline?
+  const assigns = _coordState.assignments || {};
+  for (const [disc, assignedId] of Object.entries(assigns)) {
+    if (!assignedId) continue;
+    if (assignedId === m.id || assignedId === m.itemId) return disc;
+  }
+  return null;
+}
 
 const ALIGN_MODES = [
   { value: 'pbp',      label: 'Project Base Point' },
@@ -2391,11 +2521,18 @@ async function loadCoordinationData() {
       fetchCoordSpaceModels(),
     ]);
 
-    _coordState.assignments   = persisted?.assignments   ?? {};
-    _coordState.clashIncludes = persisted?.clashIncludes ?? [];
-    _coordState.alignments    = persisted?.alignments    ?? {};
-    _coordState.alignSnap     = persisted?.alignSnap     ?? 1.0;
-    _coordState.models        = modelsResp ?? [];
+    _coordState.assignments      = persisted?.assignments      ?? {};
+    _coordState.clashIncludes    = persisted?.clashIncludes    ?? [];
+    _coordState.alignments       = persisted?.alignments       ?? {};
+    _coordState.alignSnap        = persisted?.alignSnap        ?? 1.0;
+    _coordState.modelDisciplines = persisted?.modelDisciplines ?? {};
+    _coordState.models           = modelsResp ?? [];
+
+    // Apply persisted overrides on top of guesses
+    for (const m of _coordState.models) {
+      const ud = getUserDiscipline(m);
+      if (ud) m.discipline = ud;
+    }
 
     if (!_coordState.models.length) {
       el('coord-empty').classList.remove('hidden');
@@ -2617,11 +2754,12 @@ function saveCoordinationDebounced() {
 async function saveCoordination() {
   try {
     await api('PUT', '/api/coordination/assignments', {
-      modelSetId:    getActiveCoordSpaceId(),
-      assignments:   _coordState.assignments,
-      clashIncludes: _coordState.clashIncludes,
-      alignments:    _coordState.alignments,
-      alignSnap:     _coordState.alignSnap,
+      modelSetId:       getActiveCoordSpaceId(),
+      assignments:      _coordState.assignments,
+      clashIncludes:    _coordState.clashIncludes,
+      alignments:       _coordState.alignments,
+      alignSnap:        _coordState.alignSnap,
+      modelDisciplines: _coordState.modelDisciplines,
     });
     el('coord-save-indicator').classList.add('hidden');
     el('coord-saved-at').classList.remove('hidden');
