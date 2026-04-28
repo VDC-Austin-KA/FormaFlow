@@ -495,6 +495,65 @@ app.get('/api/project/folder-contents', async (req, res) => {
 });
 
 /**
+ * Recursively walk a folder tree and return ALL item-type files (not folders).
+ * Each item includes a `folderPath` string showing its location in the tree.
+ * Depth is capped at maxDepth (default 4, max 6) to prevent runaway calls.
+ */
+app.get('/api/project/folder-contents-recursive', async (req, res) => {
+  try {
+    const { projectId, folderUrn } = req.query;
+    const maxDepth = Math.min(parseInt(req.query.maxDepth ?? '4', 10), 6);
+    if (!projectId || !folderUrn) return res.status(400).json({ error: 'projectId and folderUrn required' });
+
+    const client = await makeAPSClient();
+    const projId = projectId.startsWith('b.') ? projectId : `b.${projectId}`;
+    const allItems = [];
+
+    async function fetchFolder(folderId, pathLabel, depth) {
+      if (depth > maxDepth) return;
+      const data = await client.get(
+        `https://developer.api.autodesk.com/data/v1/projects/${projId}/folders/${encodeURIComponent(folderId)}/contents`
+      );
+      const entries = data?.data ?? [];
+      const subfolders = [];
+
+      for (const it of entries) {
+        const name = it.attributes?.displayName ?? it.attributes?.name ?? it.id;
+        if (it.type === 'folders') {
+          subfolders.push({ id: it.id, name });
+        } else if (it.type === 'items') {
+          const tipUrn = it.relationships?.tip?.data?.id ?? null;
+          const viewerUrn = tipUrn
+            ? Buffer.from(tipUrn).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'')
+            : null;
+          allItems.push({
+            id:           it.id,
+            type:         'items',
+            name,
+            extension:    it.attributes?.extension?.type ?? null,
+            derivativeUrn: tipUrn,
+            viewerUrn,
+            folderPath:   pathLabel || '(root)',
+            discipline:   null,
+          });
+        }
+      }
+
+      // Sequential subfolder recursion — avoids rate-limit bursts
+      for (const sf of subfolders) {
+        const childPath = pathLabel ? `${pathLabel} › ${sf.name}` : sf.name;
+        await fetchFolder(sf.id, childPath, depth + 1);
+      }
+    }
+
+    await fetchFolder(folderUrn, '', 0);
+    res.json({ items: allItems, total: allItems.length });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/**
  * Extract available properties (names + distinct sample values) from a model.
  * Used by the Search Set editor to offer autocompletion against live model data.
  */

@@ -405,16 +405,43 @@
     </div>
 
     <!-- ══════════════════════════════ TAB: MODELS ═══════════════════════ -->
-    <div id="tab-models" class="tab-panel hidden p-8">
+    <div id="tab-models" class="tab-panel hidden p-6">
+      <!-- Toolbar -->
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div>
+          <p class="text-xs text-slate-500">All models from your selected folder and subfolders. Click a discipline badge to override the auto-detected value.</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <span id="models-count-label" class="text-xs text-slate-400"></span>
+          <button id="btn-load-models" class="btn-primary text-sm">Load Models</button>
+        </div>
+      </div>
+
+      <!-- Discipline filter pills -->
+      <div id="models-disc-filter" class="flex flex-wrap gap-2 mb-4 hidden">
+        <button class="disc-pill active" data-disc="ALL">All</button>
+        <button class="disc-pill" data-disc="ARCH"   style="--dc:#f59e0b">Architecture</button>
+        <button class="disc-pill" data-disc="STRUCT" style="--dc:#3b82f6">Structure</button>
+        <button class="disc-pill" data-disc="MECH"   style="--dc:#10b981">Mechanical</button>
+        <button class="disc-pill" data-disc="PLUMB"  style="--dc:#06b6d4">Plumbing</button>
+        <button class="disc-pill" data-disc="ELEC"   style="--dc:#f97316">Electrical</button>
+        <button class="disc-pill" data-disc="FP"     style="--dc:#ef4444">Fire Protection</button>
+        <button class="disc-pill" data-disc="CIVIL"  style="--dc:#78716c">Civil</button>
+        <button class="disc-pill" data-disc="UNKNOWN" style="--dc:#9ca3af">Unknown</button>
+      </div>
+
+      <!-- Empty / loading state -->
       <div id="models-empty" class="empty-state">
         <svg class="w-12 h-12 text-slate-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
             d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
         </svg>
         <p class="text-slate-500 font-medium">No models loaded yet</p>
-        <p class="text-slate-400 text-sm mt-1">Go to <strong>Run Workflow</strong> to scan your model set, or save your project config first.</p>
+        <p class="text-slate-400 text-sm mt-1">Select a <strong>Target Folder</strong> on the Connect tab, then click <strong>Load Models</strong>.</p>
       </div>
-      <div id="models-list" class="hidden"></div>
+
+      <!-- Model grid -->
+      <div id="models-list" class="hidden space-y-1"></div>
     </div>
 
     <!-- ══════════════════════════════ TAB: SEARCH SETS ═════════════════ -->

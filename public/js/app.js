@@ -1672,6 +1672,138 @@ function switchHubProject(projectId, projectName) {
   toast(`Switched to "${projectName}" — save credentials to persist`);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Models tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _modelsData = [];      // cached for disc-filter re-renders
+let _modelsDiscFilter = 'ALL';
+
+async function loadModels() {
+  const projectId = el('inp-project-id').value.trim();
+  const folderUrn = el('inp-folder-urn').value.trim();
+  if (!projectId) { toast('Set Project ID on the Connect tab first', 'error'); return; }
+  if (!folderUrn) { toast('Select a Target Folder on the Connect tab first', 'error'); return; }
+
+  const btn = el('btn-load-models');
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  el('models-count-label').textContent = 'Scanning subfolders…';
+  el('models-empty').classList.add('hidden');
+  el('models-list').classList.add('hidden');
+  el('models-disc-filter').classList.add('hidden');
+
+  try {
+    const data = await api('GET',
+      `/api/project/folder-contents-recursive?projectId=${encodeURIComponent(projectId)}&folderUrn=${encodeURIComponent(folderUrn)}`
+    );
+    _modelsData = (data.items ?? []).map(m => ({
+      ...m,
+      discipline: m.discipline ?? guessDiscFromName(m.name),
+    }));
+
+    if (!_modelsData.length) {
+      el('models-empty').classList.remove('hidden');
+      el('models-count-label').textContent = 'No models found';
+      return;
+    }
+
+    _modelsDiscFilter = 'ALL';
+    document.querySelectorAll('#models-disc-filter .disc-pill').forEach(p => {
+      p.classList.toggle('active', p.dataset.disc === 'ALL');
+    });
+    el('models-disc-filter').classList.remove('hidden');
+    renderModels();
+    el('models-count-label').textContent = `${_modelsData.length} model(s)`;
+    toast(`Found ${_modelsData.length} model(s) across all subfolders`);
+  } catch (err) {
+    el('models-empty').classList.remove('hidden');
+    el('models-count-label').textContent = '';
+    toast('Failed to load models: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Load Models';
+  }
+}
+
+const DISC_LABEL = {
+  ARCH: 'Architecture', STRUCT: 'Structure', MECH: 'Mechanical',
+  PLUMB: 'Plumbing', ELEC: 'Electrical', FP: 'Fire Protection',
+  CIVIL: 'Civil / Site', INT: 'Interiors', UNKNOWN: 'Unknown',
+};
+
+function renderModels() {
+  const list = el('models-list');
+  list.innerHTML = '';
+
+  const visible = _modelsDiscFilter === 'ALL'
+    ? _modelsData
+    : _modelsData.filter(m => m.discipline === _modelsDiscFilter);
+
+  if (!visible.length) {
+    list.innerHTML = `<p class="text-sm text-slate-400 py-4 text-center">No ${_modelsDiscFilter} models found</p>`;
+    list.classList.remove('hidden');
+    return;
+  }
+
+  // Group by folderPath
+  const byFolder = new Map();
+  for (const m of visible) {
+    const key = m.folderPath || '(root)';
+    if (!byFolder.has(key)) byFolder.set(key, []);
+    byFolder.get(key).push(m);
+  }
+
+  for (const [folder, models] of byFolder) {
+    const group = document.createElement('div');
+    group.className = 'mb-4';
+    group.innerHTML = `
+      <div class="flex items-center gap-2 mb-1.5 px-1">
+        <svg class="w-3.5 h-3.5 text-amber-400 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M10 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2h-8l-2-2z"/>
+        </svg>
+        <span class="text-xs font-semibold text-slate-600 truncate">${folder}</span>
+        <span class="text-xs text-slate-400">(${models.length})</span>
+      </div>
+    `;
+
+    const rows = document.createElement('div');
+    rows.className = 'space-y-1 pl-5';
+
+    for (const m of models) {
+      const isNwc = /\.(nwc|nwd)$/i.test(m.name);
+      const color = DISC_COLOR[m.discipline] ?? '#9ca3af';
+      const row = document.createElement('div');
+      row.className = 'model-browser-row';
+      row.dataset.itemId = m.id;
+      row.innerHTML = `
+        <div class="disc-dot flex-shrink-0" style="background:${color}" title="${DISC_LABEL[m.discipline] ?? m.discipline}"></div>
+        <span class="model-br-name flex-1 truncate text-sm" title="${m.name}">${m.name}</span>
+        ${isNwc ? '<span class="nwc-badge">NWC</span>' : ''}
+        <select class="model-disc-select" data-item-id="${m.id}" title="Override discipline">
+          ${Object.entries(DISC_LABEL).map(([k, v]) =>
+            `<option value="${k}"${k === m.discipline ? ' selected' : ''}>${v}</option>`
+          ).join('')}
+        </select>
+      `;
+
+      row.querySelector('.model-disc-select').addEventListener('change', (e) => {
+        const newDisc = e.target.value;
+        const model = _modelsData.find(x => x.id === m.id);
+        if (model) model.discipline = newDisc;
+        row.querySelector('.disc-dot').style.background = DISC_COLOR[newDisc] ?? '#9ca3af';
+      });
+
+      rows.appendChild(row);
+    }
+
+    group.appendChild(rows);
+    list.appendChild(group);
+  }
+
+  list.classList.remove('hidden');
+}
+
 // Initialisation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1719,6 +1851,17 @@ async function init() {
   el('btn-clear-markers').addEventListener('click', clearClashMarkers);
   el('btn-load-clash-results').addEventListener('click', loadClashResultsForViewer);
   el('inp-clash-filter').addEventListener('input', () => renderClashGroups(_viewerState.clashGroups));
+
+  // Models tab
+  el('btn-load-models').addEventListener('click', loadModels);
+  document.querySelectorAll('#models-disc-filter .disc-pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      document.querySelectorAll('#models-disc-filter .disc-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      _modelsDiscFilter = pill.dataset.disc;
+      renderModels();
+    });
+  });
 
   // Hub tab
   el('btn-load-hub-projects').addEventListener('click', loadHubProjects);
