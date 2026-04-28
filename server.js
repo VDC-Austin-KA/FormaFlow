@@ -511,6 +511,172 @@ app.put('/api/config/workflow', (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes — ACC Admin (project access management)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ACC_ADMIN_BASE = 'https://developer.api.autodesk.com/construction/admin/v1';
+
+/**
+ * List account admins — used to let the user pick which admin identity to
+ * impersonate via the User-Id header for write operations.
+ * Works with 2-legged + account:read (read-only, no User-Id needed).
+ */
+app.get('/api/admin/account-admins', async (req, res) => {
+  try {
+    const accountId = (req.query.accountId ?? process.env.ACC_ACCOUNT_ID ?? '').replace(/^b\./, '');
+    if (!accountId) return res.status(400).json({ error: 'accountId required' });
+
+    const client = await makeAPSClient();
+    const token  = await client.getToken();
+
+    const r = await fetch(
+      `${ACC_ADMIN_BASE}/accounts/${accountId}/users?limit=50&sort=name&filterTextMatch=contains&filter[roleIds]=account_admin`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!r.ok) {
+      const body = await r.text();
+      return res.status(r.status).json({ error: `ACC Admin API ${r.status}`, details: body });
+    }
+    const data = await r.json();
+    const users = (data.results ?? data.users ?? data ?? []).map(u => ({
+      id:          u.id          ?? u.userId,
+      autodeskId:  u.autodeskId  ?? u.uid,
+      name:        u.name        ?? `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
+      email:       u.email,
+      roleId:      u.roleId,
+    }));
+    res.json({ users });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message });
+  }
+});
+
+/**
+ * Check whether the current APS app can reach the MC API for the given project.
+ * Returns { ok, status, message }.
+ */
+app.get('/api/admin/check-mc-access', async (req, res) => {
+  try {
+    const modelSetId  = req.query.modelSetId  ?? process.env.MC_MODEL_SET_ID;
+    const containerId = req.query.containerId ?? process.env.MC_CONTAINER_ID;
+    if (!modelSetId || !containerId) {
+      return res.json({ ok: false, status: 'missing_config', message: 'Set Coordination Space and Container ID first' });
+    }
+    const mc = await buildMcClient(req);
+    await mc.listModelSets();
+    res.json({ ok: true, status: 'ok', message: 'MC API accessible' });
+  } catch (err) {
+    const status = err.status ?? 500;
+    res.json({
+      ok:      false,
+      status:  status === 403 ? 'forbidden' : status === 401 ? 'unauthorized' : 'error',
+      message: err.message,
+      code:    status,
+    });
+  }
+});
+
+/**
+ * Attempt to add the APS app as a project service account (project admin).
+ *
+ * Strategy (in order):
+ *  1. POST /projects/{id}/service-accounts  with clientId  (newest — no User-Id needed)
+ *  2. POST /projects/{id}/users             with app email  (requires User-Id header)
+ *
+ * Body params (JSON):
+ *   { projectId, accountId, adminUserId? }
+ */
+app.post('/api/admin/grant-project-access', async (req, res) => {
+  try {
+    const projectId = (req.body.projectId ?? process.env.ACC_PROJECT_ID ?? '').replace(/^b\./, '');
+    const accountId = (req.body.accountId ?? process.env.ACC_ACCOUNT_ID ?? '').replace(/^b\./, '');
+    const adminUserId = req.body.adminUserId ?? '';  // ACC user id of an account admin
+
+    if (!projectId) return res.status(400).json({ error: 'projectId required' });
+
+    const client = await makeAPSClient({ forceTwoLegged: true });
+    const token  = await client.getToken();
+    const clientId = process.env.APS_CLIENT_ID;
+
+    const products = [
+      { key: 'projectAdministration', access: 'administrator' },
+      { key: 'modelCoordination',     access: 'administrator' },
+      { key: 'docs',                  access: 'administrator' },
+    ];
+
+    const results = [];
+
+    // ── Strategy 1: /service-accounts (S2S native — no User-Id required) ──
+    try {
+      const saRes = await fetch(`${ACC_ADMIN_BASE}/projects/${projectId}/service-accounts`, {
+        method:  'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId, products }),
+      });
+      const saBody = await saRes.text();
+      results.push({ strategy: 'service-accounts', status: saRes.status, body: saBody });
+
+      if (saRes.ok || saRes.status === 409 /* already exists */) {
+        return res.json({
+          ok: true,
+          strategy: 'service-accounts',
+          status: saRes.status,
+          message: saRes.status === 409
+            ? 'App already has project access'
+            : 'App granted project access via service-accounts endpoint',
+          raw: saBody,
+        });
+      }
+    } catch (e) {
+      results.push({ strategy: 'service-accounts', error: e.message });
+    }
+
+    // ── Strategy 2: /users (requires User-Id header) ──
+    if (!adminUserId) {
+      return res.status(403).json({
+        ok: false,
+        message: 'Service-accounts endpoint failed. Provide an Account Admin User ID to retry via /users endpoint.',
+        tried: results,
+      });
+    }
+
+    const appEmail = `${clientId}@aps.autodesk.com`;
+    const usersRes = await fetch(`${ACC_ADMIN_BASE}/projects/${projectId}/users`, {
+      method:  'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Id': adminUserId,
+      },
+      body: JSON.stringify({ email: appEmail, products }),
+    });
+    const usersBody = await usersRes.text();
+    results.push({ strategy: 'users', status: usersRes.status, body: usersBody });
+
+    if (usersRes.ok || usersRes.status === 409) {
+      return res.json({
+        ok: true,
+        strategy: 'users',
+        status: usersRes.status,
+        message: usersRes.status === 409
+          ? 'App already has project access'
+          : 'App granted project access via users endpoint',
+        raw: usersBody,
+      });
+    }
+
+    res.status(usersRes.status).json({
+      ok: false,
+      message: `All strategies failed (${usersRes.status})`,
+      tried: results,
+    });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Routes — Authentication
 // ─────────────────────────────────────────────────────────────────────────────

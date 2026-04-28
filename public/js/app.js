@@ -3365,6 +3365,135 @@ async function createIssue() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Project Access — grant APS app project-admin via ACC Admin API
+// ─────────────────────────────────────────────────────────────────────────────
+
+function paResult(msg, type = 'info') {
+  const el_ = el('pa-result');
+  if (!el_) return;
+  el_.classList.remove('hidden',
+    'bg-emerald-50','border-emerald-300','text-emerald-900',
+    'bg-red-50','border-red-300','text-red-900',
+    'bg-amber-50','border-amber-300','text-amber-900',
+    'bg-blue-50','border-blue-300','text-blue-900');
+  const map = {
+    success: ['bg-emerald-50','border-emerald-300','text-emerald-900'],
+    error:   ['bg-red-50','border-red-300','text-red-900'],
+    warn:    ['bg-amber-50','border-amber-300','text-amber-900'],
+    info:    ['bg-blue-50','border-blue-300','text-blue-900'],
+  };
+  el_.classList.add(...(map[type] ?? map.info));
+  el_.textContent = msg;
+}
+
+function updatePaBadge(status) {
+  const badge = el('pa-status-badge');
+  if (!badge) return;
+  if (status === 'ok') {
+    badge.textContent = '● MC Access OK';
+    badge.className = 'text-xs font-semibold px-2.5 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-300';
+  } else if (status === 'forbidden') {
+    badge.textContent = '● No Access';
+    badge.className = 'text-xs font-semibold px-2.5 py-1 rounded-full border bg-red-50 text-red-700 border-red-300';
+  } else {
+    badge.textContent = '● Unknown';
+    badge.className = 'text-xs font-semibold px-2.5 py-1 rounded-full border bg-slate-100 text-slate-600 border-slate-300';
+  }
+  badge.classList.remove('hidden');
+}
+
+async function checkMcAccess() {
+  const btn = el('btn-check-mc-access');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  paResult('Checking MC API access…', 'info');
+  try {
+    const modelSetId  = getActiveCoordSpaceId();
+    const containerId = el('inp-container-id')?.value?.trim();
+    const qs = new URLSearchParams();
+    if (modelSetId)  qs.set('modelSetId',  modelSetId);
+    if (containerId) qs.set('containerId', containerId);
+    const data = await api('GET', `/api/admin/check-mc-access?${qs}`);
+    updatePaBadge(data.status);
+    if (data.ok) {
+      paResult('✓ MC API is accessible with current credentials.', 'success');
+    } else if (data.status === 'forbidden') {
+      paResult('✗ 403 Forbidden — the app does not have project-level MC access. Click Grant Project Access to fix this.', 'warn');
+    } else {
+      paResult(`✗ ${data.message}`, 'error');
+    }
+  } catch (err) {
+    paResult('Check failed: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Check MC Access';
+  }
+}
+
+async function loadAccountAdmins() {
+  const btn = el('btn-load-admins');
+  const sel = el('sel-admin-user');
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  sel.innerHTML = '<option value="">Loading…</option>';
+  try {
+    const accountId = el('inp-account-id')?.value?.trim() || '';
+    if (!accountId) { paResult('Set Account ID first', 'warn'); return; }
+    const data = await api('GET', `/api/admin/account-admins?accountId=${encodeURIComponent(accountId)}`);
+    const users = data.users ?? [];
+    if (!users.length) {
+      sel.innerHTML = '<option value="">No admins found</option>';
+      paResult('No account admins returned — ensure account:read scope and Account ID are correct.', 'warn');
+      return;
+    }
+    sel.innerHTML = '<option value="">— select your account —</option>' +
+      users.map(u => `<option value="${escapeHtml(u.id ?? u.autodeskId ?? '')}">${escapeHtml(u.name || u.email || u.id)}</option>`).join('');
+    paResult(`Found ${users.length} account admin(s). Select yourself and click Grant Project Access.`, 'info');
+  } catch (err) {
+    sel.innerHTML = '<option value="">Error loading</option>';
+    paResult('Failed to load admins: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Load Admins';
+  }
+}
+
+async function grantProjectAccess() {
+  const btn = el('btn-grant-access');
+  btn.disabled = true;
+  btn.textContent = 'Granting…';
+  paResult('Attempting to grant project access…', 'info');
+
+  try {
+    const projectId = el('inp-project-id')?.value?.trim() || '';
+    const accountId = el('inp-account-id')?.value?.trim() || '';
+    const adminUserId = el('sel-admin-user')?.value || '';
+
+    if (!projectId) { paResult('Set Project ID first', 'warn'); return; }
+
+    const data = await api('POST', '/api/admin/grant-project-access', { projectId, accountId, adminUserId });
+
+    if (data.ok) {
+      updatePaBadge('ok');
+      paResult(`✓ ${data.message}`, 'success');
+      toast('Project access granted — try Check MC Access to verify', 'success');
+    } else {
+      // If service-accounts failed and no admin selected, show the admin picker
+      el('pa-admin-row').classList.remove('hidden');
+      paResult(`First strategy failed — select your admin account above and try again.\n${data.message}`, 'warn');
+    }
+  } catch (err) {
+    // Surface the User-Id picker on failure
+    el('pa-admin-row').classList.remove('hidden');
+    paResult(`Failed: ${err.message}. Select your admin account above and try again.`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Grant Project Access';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Service account (3-legged OAuth) UI
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -3574,6 +3703,11 @@ async function init() {
     renderAuthStatus({ loggedIn: false });
     toast('Service account signed out');
   });
+
+  // Connect tab — project access
+  el('btn-check-mc-access').addEventListener('click', checkMcAccess);
+  el('btn-grant-access').addEventListener('click', grantProjectAccess);
+  el('btn-load-admins').addEventListener('click', loadAccountAdmins);
 
   // Connect tab
   el('btn-test-conn').addEventListener('click', testConnection);
