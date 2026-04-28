@@ -19,13 +19,16 @@ import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('ModelCoordination');
 
+// Model Coordination v3 — official Autodesk base URLs.
+// NB: paths are `bim360/modelset/v3/...` and `bim360/clash/v3/...`,
+// NOT `bim360/modelcoordination/...` (that extra segment returns 404).
 const MC_MODELSET_BASE =
   process.env.MC_MODELSET_API_BASE ??
-  'https://developer.api.autodesk.com/bim360/modelcoordination/modelset/v3';
+  'https://developer.api.autodesk.com/bim360/modelset/v3';
 
 const MC_CLASH_BASE =
   process.env.MC_CLASH_API_BASE ??
-  'https://developer.api.autodesk.com/bim360/modelcoordination/clash/v3';
+  'https://developer.api.autodesk.com/bim360/clash/v3';
 
 export class ModelCoordinationClient {
   /**

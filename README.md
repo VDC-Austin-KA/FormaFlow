@@ -83,7 +83,7 @@ cp .env.example .env
 | `MC_CONTAINER_ID` | Model Coordination Container ID |
 | `TARGET_FOLDER_URN` | Docs folder URN where models live |
 
-> **Finding MC_CONTAINER_ID:** Call `GET /bim360/modelcoordination/modelset/v3/accounts/{accountId}/containers` with your APS token.
+> **Finding MC_CONTAINER_ID:** Call `GET /bim360/modelset/v3/accounts/{accountId}/containers` with your APS token.
 
 ### 3. Run the workflow
 
