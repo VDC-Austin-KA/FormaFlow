@@ -1409,6 +1409,10 @@ const _viewerState = {
   clashGroups: [],
   activeGroup: null,
   source: 'space',    // 'space' | 'folder'
+  // Captured from the FIRST loaded model so subsequent models share the
+  // same coordinate origin. Without this, multi-model loads drift apart
+  // by tens or hundreds of metres because each model gets its own offset.
+  globalOffset: null,
 };
 
 const RECENT_MODELS_KEY = 'formaflow.recentModels';
@@ -1477,6 +1481,9 @@ function setViewerSource(src) {
   el('btn-load-viewer-models').textContent = src === 'space'
     ? 'Load from Coord. Space' : 'Load from Folder';
 
+  // Federation loader is only meaningful for coordination spaces.
+  el('btn-load-federation').classList.toggle('hidden', src !== 'space');
+
   const infoEl = el('viewer-active-space');
   if (src === 'space') {
     const name = getActiveCoordSpaceName();
@@ -1500,6 +1507,8 @@ async function unloadAllModels() {
     try { _viewerState.viewer.unloadModel(m.model); } catch (_) {}
   }
   _viewerState.loadedModels = [];
+  // Reset the captured offset — the next federation load starts fresh.
+  _viewerState.globalOffset = null;
   document.querySelectorAll('.viewer-model-item.loaded').forEach(item => {
     item.classList.remove('loaded');
     const status = item.querySelector('.model-status');
@@ -1925,6 +1934,105 @@ async function fetchFolderViewerModels() {
   });
 }
 
+/**
+ * Load every model in the active coordination space sequentially.
+ * Uses the same code path as a manual toggle, so the captured globalOffset
+ * is reused across all loads — that is what makes models snap into a single
+ * federated view (the equivalent of an NWF in Navisworks / a Forma view).
+ */
+async function loadFederation() {
+  if (!_viewerState.viewer) {
+    toast('Open the 3D Viewer tab first', 'error');
+    return;
+  }
+  const btn = el('btn-load-federation');
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = 'Loading…';
+  el('viewer-status-text').textContent = 'Loading federation…';
+
+  try {
+    // Fetch the documents for the active coordination space (already
+    // server-normalised via toArray()).
+    const docs = await fetchSpaceViewerModels();
+    if (!docs?.length) {
+      toast('No documents found in the active coordination space', 'error');
+      return;
+    }
+
+    const loadable = docs.filter(d => d.viewerUrn);
+    if (!loadable.length) {
+      toast('No translated models in this space — Revit/IFC models must be published & translated in ACC first', 'error');
+      return;
+    }
+
+    let loaded = 0;
+    let failed = 0;
+    for (const d of loadable) {
+      // Skip models already loaded (allow incremental loads)
+      if (_viewerState.loadedModels.find(m => m.urn === d.viewerUrn)) continue;
+      btn.textContent = `Loading ${loaded + 1}/${loadable.length}…`;
+      el('viewer-status-text').textContent = `Loading ${d.name} (${loaded + 1}/${loadable.length})`;
+      try {
+        await new Promise((resolve, reject) => {
+          Autodesk.Viewing.Document.load(
+            `urn:${d.viewerUrn}`,
+            async (doc) => {
+              const geometry = doc.getRoot().getDefaultGeometry();
+              const loadOpts = {
+                keepCurrentModels: true,
+                loadAsHidden: false,
+                ...(_viewerState.globalOffset ? { globalOffset: _viewerState.globalOffset } : {}),
+                applyRefPoint: true,
+              };
+              const model = await _viewerState.viewer.loadDocumentNode(doc, geometry, loadOpts);
+              if (!_viewerState.globalOffset) {
+                const off = model.getData?.()?.globalOffset;
+                if (off && (off.x || off.y || off.z)) {
+                  _viewerState.globalOffset = { x: off.x, y: off.y, z: off.z };
+                }
+              }
+              const finalDisc = getUserDiscipline(d) || guessDiscFromName(d.name);
+              _viewerState.loadedModels.push({
+                urn: d.viewerUrn, name: d.name, discipline: finalDisc, model,
+              });
+              loaded++;
+              resolve();
+            },
+            (code, msg) => reject(new Error(`Viewer load error ${code}: ${msg}`)),
+          );
+        });
+
+        // Mark the matching list item as loaded so the sidebar reflects state
+        const item = document.querySelector(`.viewer-model-item[data-urn="${d.viewerUrn}"]`);
+        if (item) {
+          item.classList.add('loaded');
+          const status = item.querySelector('.model-status');
+          if (status) status.textContent = '✓';
+        }
+      } catch (err) {
+        failed++;
+        console.warn('Federation load failed for', d.name, err);
+      }
+    }
+
+    updateViewerModelCounter();
+    el('btn-unload-all-models').classList.toggle('hidden', _viewerState.loadedModels.length === 0);
+    el('viewer-status-text').textContent = `${loaded} loaded${failed ? `, ${failed} failed` : ''}`;
+    toast(`Federation: ${loaded} model(s) loaded${failed ? `, ${failed} failed` : ''}`);
+
+    // Fit all loaded models in view
+    setTimeout(() => {
+      try { _viewerState.viewer.navigation.fitBounds(true); } catch (_) {}
+    }, 500);
+  } catch (err) {
+    toast('Federation load failed: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
 function guessDiscFromName(name = '') {
   const n = name.toUpperCase();
   // Architecture — ARCH, A_, AR_, ARCHITECTURAL, INTERIOR, INT
@@ -1974,10 +2082,27 @@ async function toggleViewerModel(itemEl, modelDef) {
         `urn:${modelDef.viewerUrn}`,
         async (doc) => {
           const geometry = doc.getRoot().getDefaultGeometry();
-          const model = await _viewerState.viewer.loadDocumentNode(doc, geometry, {
+          const loadOpts = {
             keepCurrentModels: true,
             loadAsHidden: false,
-          });
+            // Apply the captured global offset so this model aligns with
+            // any model already in the scene (shared origin from the first
+            // load). The viewer auto-computes a per-model offset otherwise,
+            // which is the root cause of "models don't align" symptoms.
+            ...(_viewerState.globalOffset ? { globalOffset: _viewerState.globalOffset } : {}),
+            // Treat shared coordinates as the source of truth — Revit-published
+            // ACC models carry survey/shared coordinates that should align them.
+            applyRefPoint: true,
+          };
+          const model = await _viewerState.viewer.loadDocumentNode(doc, geometry, loadOpts);
+          // Capture the global offset from the first loaded model so all
+          // subsequent loads use the same origin.
+          if (!_viewerState.globalOffset) {
+            const off = model.getData?.()?.globalOffset;
+            if (off && (off.x || off.y || off.z)) {
+              _viewerState.globalOffset = { x: off.x, y: off.y, z: off.z };
+            }
+          }
           const finalDisc = getUserDiscipline(modelDef) || modelDef.discipline || guessDiscFromName(modelDef.name);
           _viewerState.loadedModels.push({ urn: modelDef.viewerUrn, name: modelDef.name,
             discipline: finalDisc, model });
@@ -3589,6 +3714,7 @@ async function init() {
 
   // Viewer tab
   el('btn-load-viewer-models').addEventListener('click', loadViewerModels);
+  el('btn-load-federation').addEventListener('click', loadFederation);
   el('btn-unload-all-models').addEventListener('click', unloadAllModels);
   el('btn-clear-recent').addEventListener('click', clearRecentModels);
   document.querySelectorAll('.viewer-src-btn').forEach(btn => {
