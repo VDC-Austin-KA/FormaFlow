@@ -1542,36 +1542,72 @@ app.post('/api/workflow/run', async (req, res) => {
     // ── Step 3 — Extract + Classify ─────────────────────────────────────
     emit('info', '── Step 3 / 6  Identifying disciplines');
     const mdClient = new ModelDerivativeClient(apsClient);
+    // Prefer derivativeUrn for Model Derivative API — it expects the
+    // base64-encoded version URN. d.urn is often the lineage URN which
+    // returns 404 from the MD API, leaving descriptors empty (UNKNOWN).
     const descriptors = await Promise.all(
-      docs.map(d => mdClient.extractModelDescriptor(d.urn ?? d.derivativeUrn, d.name ?? d.fileName ?? 'Unknown'))
+      docs.map(d => mdClient.extractModelDescriptor(
+        d.derivativeUrn ?? d.urn,
+        d.name ?? d.fileName ?? 'Unknown'
+      ))
     );
+    const propsExtracted = descriptors.filter(d => d.categories.length || d.systemClassifications.length).length;
+    if (propsExtracted < descriptors.length) {
+      emit('warn', `⚠ Property extraction succeeded for ${propsExtracted}/${descriptors.length} models. Models with no extracted properties will be classified by filename only.`);
+    }
 
     const classifier = new DisciplineClassifier();
     const classifications = classifier.classifyAll(descriptors);
 
-    // Apply user discipline overrides — `assignments[DISC] = itemId` wins over auto-detected
+    // Apply per-model discipline overrides from coord.modelDisciplines
+    // (added in PR #13). Keys can be itemId, viewerUrn, derivativeUrn, or name.
+    const docByKey = new Map();
+    for (const d of docs) {
+      if (d.id) docByKey.set(d.id, d);
+      if (d.urn) docByKey.set(d.urn, d);
+      if (d.derivativeUrn) docByKey.set(d.derivativeUrn, d);
+      if (d.name) docByKey.set(d.name, d);
+      if (d.fileName) docByKey.set(d.fileName, d);
+    }
+    let perModelOverrides = 0;
+    if (coord?.modelDisciplines) {
+      for (const [key, disc] of Object.entries(coord.modelDisciplines)) {
+        const matched = docByKey.get(key);
+        if (matched && classifications.has(matched.derivativeUrn ?? matched.urn)) {
+          const existingKey = matched.derivativeUrn ?? matched.urn;
+          const existing = classifications.get(existingKey);
+          if (existing.discipline !== disc) {
+            emit('info', `  ↻ Per-model override: ${matched.name ?? matched.fileName} → ${disc} (was ${existing.discipline})`);
+          }
+          classifications.set(existingKey, { ...existing, discipline: disc, confidence: 1.0, requiresManualReview: false });
+          perModelOverrides++;
+        }
+      }
+    }
+
+    // Legacy assignments[DISC] = itemId — kept for backward compatibility
     if (coord?.assignments && Object.keys(coord.assignments).length) {
       for (const [disc, itemId] of Object.entries(coord.assignments)) {
         const target = descriptors.find(d => d.id === itemId || d.urn === itemId);
         if (target && classifications.has(target.id)) {
           const existing = classifications.get(target.id);
           if (existing.discipline !== disc) {
-            emit('info', `  ↻ User override: ${target.fileName} → ${disc} (was ${existing.discipline})`);
+            emit('info', `  ↻ Discipline assignment: ${target.fileName} → ${disc} (was ${existing.discipline})`);
           }
           classifications.set(target.id, { ...existing, discipline: disc, confidence: 1.0, requiresManualReview: false });
         }
       }
     }
+    if (perModelOverrides) emit('info', `  Applied ${perModelOverrides} per-model discipline override(s)`);
 
     const disciplineSet = new Set();
-
     for (const [id, result] of classifications) {
       const model = descriptors.find(d => d.id === id);
       emit('info', `  ${model?.fileName ?? id}  →  ${result.discipline}  (${(result.confidence * 100).toFixed(1)}%)`);
       if (result.discipline !== 'UNKNOWN') disciplineSet.add(result.discipline);
     }
     const disciplines = [...disciplineSet];
-    emit('info', `✓ Disciplines detected: ${disciplines.join(', ') || 'none'}`);
+    emit('info', `✓ Disciplines detected: ${disciplines.join(', ') || 'none — assign disciplines on the Coordination tab'}`);
 
     // ── Step 4 — Search Sets ────────────────────────────────────────────
     emit('info', '── Step 4 / 6  Creating Search Sets');
@@ -1584,22 +1620,51 @@ app.post('/api/workflow/run', async (req, res) => {
     const ssResults = await ssGen.generateForDisciplines(modelSetId, disciplines);
     const ssCreated  = ssResults.filter(r => r.created || r.dryRun).length;
     const ssSkipped  = ssResults.filter(r => r.skipped).length;
-    emit('info', `✓ Search Sets — ${ssCreated} created, ${ssSkipped} already existed`);
+    const ssFailed   = ssResults.filter(r => r.error).length;
+    emit('info', `✓ Search Sets — ${ssCreated} created, ${ssSkipped} reused, ${ssFailed} failed`);
+    if (ssFailed) {
+      for (const r of ssResults.filter(x => x.error)) {
+        emit('warn', `  ✗ ${r.name}: ${r.error}`);
+      }
+    }
 
-    const ssNameToId = new Map(ssResults.filter(r => r.remoteId).map(r => [r.name, r.remoteId]));
+    // KEY FIX: clash-test templates reference search sets by library ID
+    // (e.g. "ss-arch-walls"), not by name. Building the map by r.id ensures
+    // resolveSearchSetIds() actually finds them. Previously the map was keyed
+    // by r.name, so every clash test was silently skipped.
+    const ssIdToRemoteId = new Map(
+      ssResults.filter(r => r.remoteId).map(r => [r.id, r.remoteId])
+    );
+    emit('info', `  ${ssIdToRemoteId.size} Search Set(s) available for clash test references`);
+    if (!ssIdToRemoteId.size && disciplines.length) {
+      emit('warn', '⚠ No Search Sets resolved — clash tests will be skipped. Possible causes:');
+      emit('warn', '   • App lacks 3-legged token / write permission for MC API');
+      emit('warn', '   • V2 coordination spaces do not support Search Sets API');
+      emit('warn', '   • Existing sets list could not be fetched and create calls failed');
+    }
 
     // ── Step 5 — Clash Tests ────────────────────────────────────────────
     emit('info', '── Step 5 / 6  Configuring clash tests');
+    if (disciplines.length < 2) {
+      emit('warn', `⚠ Only ${disciplines.length} discipline(s) detected — at least 2 are required for any clash pair (e.g. ARCH + STRUCT). Assign disciplines manually on the Coordination tab if auto-detection is incomplete.`);
+    }
     const testConfigurator = new ClashTestConfigurator(mcClient, {
       subTestsEnabled: config.clashTests.subTestsEnabled,
       dryRun,
       disabledTestIds: config.clashTests.disabledTestIds,
     });
     const testResults = await testConfigurator.configureForDisciplines(
-      modelSetId, versionIndex, disciplines, ssNameToId
+      modelSetId, versionIndex, disciplines, ssIdToRemoteId
     );
     const testsCreated = testResults.filter(r => r.created || r.dryRun).length;
-    emit('info', `✓ Clash tests — ${testsCreated} created`);
+    const testsSkipped = testResults.filter(r => !r.created && !r.dryRun && !r.error).length;
+    const testsFailed  = testResults.filter(r => r.error).length;
+    emit('info', `✓ Clash tests — ${testsCreated} created, ${testsSkipped} skipped (unresolved sets), ${testsFailed} failed`);
+    if (testsFailed) {
+      for (const r of testResults.filter(x => x.error)) {
+        emit('warn', `  ✗ ${r.name}: ${r.error}`);
+      }
+    }
 
     // ── Step 6 — Results ────────────────────────────────────────────────
     let report = { totalGroups: 0, totalClashes: 0, groups: [] };
