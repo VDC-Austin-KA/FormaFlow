@@ -258,6 +258,22 @@ app.post('/api/auth/logout', (_req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Utility — safely extract an array from an unknown APS API response.
+// APS endpoints are inconsistent: some return {data:[...]}, some {results:[...]},
+// some {modelSets:[...]}, and some return the array directly.
+// This prevents "X is not iterable" crashes when a new/empty resource returns {}.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function toArray(raw, ...extraKeys) {
+  if (Array.isArray(raw)) return raw;
+  const keys = ['data', 'results', 'items', 'sets', ...extraKeys];
+  for (const k of keys) {
+    if (Array.isArray(raw?.[k])) return raw[k];
+  }
+  return [];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // APS client factory — prefers 3-legged service-account token, falls back to 2-legged
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1040,8 +1056,11 @@ app.get('/api/project/modelsets', async (req, res) => {
     const { ModelCoordinationClient } = await import('./src/api/model-coordination.js');
     const client = await makeAPSClient();
     const mc = new ModelCoordinationClient(client, containerId);
-    const data = await mc.listModelSets();
-    res.json(data);
+    const raw = await mc.listModelSets();
+    // Normalize: MC API may return {data:[...]}, {results:[...]}, {modelsets:[...]}, or []
+    const items = raw?.data ?? raw?.results ?? raw?.modelsets ?? raw?.modelSets ?? raw?.sets ?? null;
+    const data  = Array.isArray(items) ? items : Array.isArray(raw) ? raw : [];
+    res.json({ data });
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
   }
@@ -1068,7 +1087,7 @@ app.get('/api/mc/space-documents', async (req, res) => {
     const mc = await buildMcClient(req);
 
     const versResp = await mc.getModelSetVersions(modelSetId);
-    const versions = versResp?.data ?? versResp ?? [];
+    const versions = toArray(versResp, 'versions');
     const latest   = versions[versions.length - 1] ?? null;
     const versionIndex = latest?.versionIndex ?? null;
 
@@ -1104,13 +1123,13 @@ app.get('/api/mc/clash-tests', async (req, res) => {
     const mc = await buildMcClient(req);
 
     const versResp = await mc.getModelSetVersions(modelSetId);
-    const versions = versResp?.data ?? versResp ?? [];
+    const versions = toArray(versResp, 'versions');
     const latest   = versions[versions.length - 1];
     if (!latest) return res.json({ versionIndex: null, tests: [] });
 
     const versionIndex = latest.versionIndex ?? 1;
     const data = await mc.listClashTests(modelSetId, versionIndex);
-    res.json({ versionIndex, tests: data?.data ?? data ?? [] });
+    res.json({ versionIndex, tests: toArray(data, 'tests', 'clashTests') });
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
   }
@@ -1271,7 +1290,7 @@ app.get('/api/views', async (req, res) => {
         const url = `https://developer.api.autodesk.com/bim360/modelset/v3/containers/${containerId}/modelsets/${modelSetId}/views`;
         try {
           const data = await client.get(url);
-          mc = (data?.data ?? data ?? []).map(v => ({
+          mc = toArray(data, 'views').map(v => ({
             id:          `mc:${v.id ?? v.viewId}`,
             name:        v.name ?? v.title ?? `MC View ${v.id ?? ''}`,
             source:      'mc',
@@ -1398,7 +1417,7 @@ app.get('/api/mc/views', async (req, res) => {
     const url = `https://developer.api.autodesk.com/bim360/modelset/v3/containers/${containerId}/modelsets/${modelSetId}/views`;
     try {
       const data = await client.get(url);
-      res.json({ supported: true, views: data?.data ?? data ?? [] });
+      res.json({ supported: true, views: toArray(data, 'views') });
     } catch (e) {
       if (e.status === 404) {
         // Endpoint not enabled for this container — return supported:false
@@ -1481,8 +1500,8 @@ app.post('/api/workflow/run', async (req, res) => {
     emit('info', '── Step 2 / 6  Fetching model set');
     const mcClient = new ModelCoordinationClient(apsClient);
     const setsResp = await mcClient.listModelSets();
-    const modelSets = setsResp?.data ?? setsResp ?? [];
-    if (!modelSets.length) { emit('error', '✗ No model sets found — check MC_CONTAINER_ID'); return done(false); }
+    const modelSets = toArray(setsResp, 'modelsets', 'modelSets');
+    if (!modelSets.length) { emit('error', '✗ No model sets found — check MC_CONTAINER_ID and ensure a Coordination Space exists in ACC'); return done(false); }
 
     // Prefer the user-selected coordination space; fall back to first if none chosen.
     const selectedId = process.env.MC_MODEL_SET_ID;
@@ -1497,7 +1516,7 @@ app.post('/api/workflow/run', async (req, res) => {
     emit('info', `✓ Coordination space: ${ms.name ?? modelSetId}`);
 
     const versResp = await mcClient.getModelSetVersions(modelSetId);
-    const versions = versResp?.data ?? versResp ?? [];
+    const versions = toArray(versResp, 'versions');
     const latest   = versions[versions.length - 1];
     const versionIndex = latest?.versionIndex ?? 1;
     const allDocs = latest?.documents ?? [];

@@ -317,7 +317,8 @@ async function loadCoordinationSpaces() {
 
   try {
     const data = await api('GET', `/api/project/modelsets?containerId=${encodeURIComponent(containerId)}`);
-    const sets = data?.data ?? data ?? [];
+    const raw  = data?.data ?? data?.results ?? data?.modelsets ?? data?.modelSets ?? data?.sets ?? null;
+    const sets = Array.isArray(raw) ? raw : Array.isArray(data) ? data : [];
     _coordSpaces = sets;
 
     const sel = el('sel-coord-space');
