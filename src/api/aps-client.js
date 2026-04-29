@@ -57,7 +57,9 @@ export class APSClient {
         Scopes.DataRead,
         Scopes.DataWrite,
         Scopes.DataCreate,
-        Scopes.AccountRead
+        Scopes.AccountRead,
+        Scopes.AccountWrite,
+        Scopes.ViewablesRead,  // required for Model Derivative and APS Viewer
       ]
     );
 

@@ -249,6 +249,37 @@
         </div>
       </section>
 
+      <!-- Project Access -->
+      <section class="card mb-6" id="project-access-card">
+        <div class="card-header flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h3 class="card-title">Project Access <span class="text-xs font-normal text-slate-400">· Model Coordination</span></h3>
+            <p class="card-sub">Grant the APS app project-admin rights so it can create and run clash tests via the MC API.</p>
+          </div>
+          <div id="pa-status-badge" class="hidden text-xs font-semibold px-2.5 py-1 rounded-full border"></div>
+        </div>
+        <div class="card-body space-y-4">
+          <div id="pa-result" class="hidden p-3 rounded-lg text-sm border"></div>
+          <div id="pa-admin-row" class="hidden space-y-2">
+            <p class="text-xs text-slate-600">The API requires an Account Admin identity. Select yours from the list below:</p>
+            <div class="flex gap-2">
+              <select id="sel-admin-user" class="field-input flex-1 text-sm">
+                <option value="">— click Load Admins —</option>
+              </select>
+              <button id="btn-load-admins" class="btn-secondary text-sm">Load Admins</button>
+            </div>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button id="btn-check-mc-access" class="btn-secondary text-sm">Check MC Access</button>
+            <button id="btn-grant-access" class="btn-primary text-sm">Grant Project Access</button>
+          </div>
+          <p class="text-xs text-slate-400">
+            Calls the ACC Admin API to add this APS app as a project service account with Project Admin + Model Coordination access.
+            Safe to run multiple times — returns success even if already granted.
+          </p>
+        </div>
+      </section>
+
       <!-- ACC Project -->
       <section class="card mb-6">
         <div class="card-header">

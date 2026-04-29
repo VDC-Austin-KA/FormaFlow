@@ -83,7 +83,7 @@ export function detectCapabilities(env = process.env) {
     {
       id: 'model-derivative', tier: 1,
       name: 'Model Derivative — Property Extraction',
-      description: 'Extract Revit model properties (Category, System Classification, Discipline) from translated models to power automatic discipline identification.',
+      description: 'Extract Revit model properties (Category, System Classification, Discipline) from translated models to power automatic discipline identification. Requires viewables:read scope (included in the 2-legged token).',
       available: canAuth,
       missing: [
         ...(f.clientId     ? [] : ['APS_CLIENT_ID']),
@@ -131,7 +131,7 @@ export function detectCapabilities(env = process.env) {
     {
       id: 'model-set-read', tier: 4,
       name: 'Model Coordination — Read Model Sets',
-      description: 'List model sets, versions, and documents in the MC container for a given project.',
+      description: 'List model sets, versions, and documents in the MC container. IMPORTANT: MC API v3 requires 3-legged (user) OAuth — 2-legged S2S tokens return 403. Establish a 3-legged session via the Service Account Login card, or add the app as a Custom Integration in ACC Admin.',
       available: canMC,
       missing: [
         ...(f.clientSecret ? [] : ['APS_CLIENT_SECRET']),
@@ -142,7 +142,7 @@ export function detectCapabilities(env = process.env) {
     {
       id: 'search-set-crud', tier: 4,
       name: 'Search Set Management',
-      description: 'Create, update, and delete reusable property-based Search Sets in an ACC model set via the Model Coordination API.',
+      description: 'Create, update, and delete reusable property-based Search Sets in an ACC model set. Requires 3-legged OAuth or Custom Integration provisioning in ACC Admin.',
       available: canMC,
       missing: [
         ...(f.clientSecret ? [] : ['APS_CLIENT_SECRET']),
@@ -153,7 +153,7 @@ export function detectCapabilities(env = process.env) {
     {
       id: 'clash-tests', tier: 4,
       name: 'Clash Test Automation',
-      description: 'Create clash tests, poll for completion, and retrieve grouped clash results from the Model Coordination API.',
+      description: 'Create clash tests, poll for completion, and retrieve grouped clash results. Requires 3-legged OAuth (MC API is 3-legged only per APS documentation).',
       available: canMC,
       missing: [
         ...(f.clientSecret ? [] : ['APS_CLIENT_SECRET']),
@@ -164,7 +164,7 @@ export function detectCapabilities(env = process.env) {
     {
       id: 'full-workflow', tier: 4,
       name: 'Full Automated Workflow',
-      description: 'End-to-end: identify disciplines → create Search Sets → run clash tests → wait for results → export named clash report.',
+      description: 'End-to-end: identify disciplines → create Search Sets → run clash tests → wait for results → export named clash report. Requires a valid 3-legged service account session for MC API access.',
       available: canMC,
       missing: [
         ...(f.clientSecret ? [] : ['APS_CLIENT_SECRET']),
