@@ -1482,7 +1482,7 @@ function setViewerSource(src) {
     ? 'Load from Coord. Space' : 'Load from Folder';
 
   // Federation loader is only meaningful for coordination spaces.
-  el('btn-load-federation').classList.toggle('hidden', src !== 'space');
+  el('btn-load-federation')?.classList.toggle('hidden', src !== 'space');
 
   const infoEl = el('viewer-active-space');
   if (src === 'space') {
@@ -1946,9 +1946,9 @@ async function loadFederation() {
     return;
   }
   const btn = el('btn-load-federation');
-  btn.disabled = true;
-  const originalText = btn.textContent;
-  btn.textContent = 'Loading…';
+  if (btn) { btn.disabled = true; }
+  const originalText = btn?.textContent ?? 'Load Federation';
+  if (btn) { btn.textContent = 'Loading…'; }
   el('viewer-status-text').textContent = 'Loading federation…';
 
   try {
@@ -1971,7 +1971,7 @@ async function loadFederation() {
     for (const d of loadable) {
       // Skip models already loaded (allow incremental loads)
       if (_viewerState.loadedModels.find(m => m.urn === d.viewerUrn)) continue;
-      btn.textContent = `Loading ${loaded + 1}/${loadable.length}…`;
+      if (btn) { btn.textContent = `Loading ${loaded + 1}/${loadable.length}…`; }
       el('viewer-status-text').textContent = `Loading ${d.name} (${loaded + 1}/${loadable.length})`;
       try {
         await new Promise((resolve, reject) => {
@@ -2028,8 +2028,7 @@ async function loadFederation() {
   } catch (err) {
     toast('Federation load failed: ' + err.message, 'error');
   } finally {
-    btn.disabled = false;
-    btn.textContent = originalText;
+    if (btn) { btn.disabled = false; btn.textContent = originalText; }
   }
 }
 
@@ -3714,7 +3713,7 @@ async function init() {
 
   // Viewer tab
   el('btn-load-viewer-models').addEventListener('click', loadViewerModels);
-  el('btn-load-federation').addEventListener('click', loadFederation);
+  el('btn-load-federation')?.addEventListener('click', loadFederation);
   el('btn-unload-all-models').addEventListener('click', unloadAllModels);
   el('btn-clear-recent').addEventListener('click', clearRecentModels);
   document.querySelectorAll('.viewer-src-btn').forEach(btn => {
