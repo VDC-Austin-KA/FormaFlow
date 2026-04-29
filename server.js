@@ -186,7 +186,7 @@ app.get('/api/auth/login', (req, res) => {
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', clientId);
   url.searchParams.set('redirect_uri', getCallbackUrl());
-  url.searchParams.set('scope', 'data:read data:write data:create account:read viewables:read');
+  url.searchParams.set('scope', 'data:read data:write data:create account:read account:write viewables:read openid');
   res.redirect(url.toString());
 });
 
@@ -212,7 +212,7 @@ app.get('/api/auth/callback', async (req, res) => {
     // Fetch user profile so the UI can show who is logged in
     let email = '', name = '';
     try {
-      const profileRes = await fetch('https://api.userprofile.autodesk.com/userinfo', {
+      const profileRes = await fetch('https://developer.api.autodesk.com/authentication/v2/userinfo', {
         headers: { Authorization: `Bearer ${tokens.access_token}` },
       });
       if (profileRes.ok) {
@@ -305,6 +305,44 @@ async function makeAPSClient(overrides = {}) {
     console.warn('[FormaFlow]   Recommended: remove MC_MODELSET_API_BASE / MC_CLASH_API_BASE from .env');
   }
 }
+
+/**
+ * Diagnostic: full auth + env summary.
+ * Reports which credentials are set, whether a 3-legged token is stored,
+ * and the effective MC API URLs — useful for debugging access issues.
+ */
+app.get('/api/debug/auth-status', async (_req, res) => {
+  const env = readEnv();
+  const stored = readTokens();
+  const threeLeggedToken = await getThreeLeggedToken();
+  res.json({
+    twoLegged: {
+      clientIdSet:     !!env.APS_CLIENT_ID,
+      clientSecretSet: !!env.APS_CLIENT_SECRET,
+      scopes: 'data:read data:write data:create account:read account:write viewables:read',
+    },
+    threeLeggedSession: stored ? {
+      loggedIn:   true,
+      email:      stored.email,
+      name:       stored.name,
+      expired:    !threeLeggedToken,
+      expiresAt:  stored.expires_at,
+      savedAt:    stored.saved_at,
+    } : { loggedIn: false },
+    mcApiAccess: {
+      note: 'MC API (modelset v3, clash v3) requires 3-legged OAuth. 2-legged S2S tokens return 403.',
+      recommendation: threeLeggedToken
+        ? 'Three-legged token present — MC API calls should work if the app is provisioned in ACC.'
+        : 'No 3-legged token stored. Use Service Account Login (Connect tab) or add a Web App APS credential with a callback URL.',
+    },
+    projectContext: {
+      accountId:   env.ACC_ACCOUNT_ID  || null,
+      projectId:   env.ACC_PROJECT_ID  || null,
+      containerId: env.MC_CONTAINER_ID || null,
+      modelSetId:  env.MC_MODEL_SET_ID || null,
+    },
+  });
+});
 
 /** Diagnostic: returns the actual URLs the server will use for MC calls */
 app.get('/api/debug/mc-config', (_req, res) => {
@@ -566,13 +604,21 @@ app.get('/api/admin/check-mc-access', async (req, res) => {
     }
     const mc = await buildMcClient(req);
     await mc.listModelSets();
-    res.json({ ok: true, status: 'ok', message: 'MC API accessible' });
+    res.json({ ok: true, status: 'ok', message: 'MC API accessible — model sets returned successfully.' });
   } catch (err) {
     const status = err.status ?? 500;
+    const hints = {
+      403: 'The APS app is not provisioned for this ACC account. An Account Admin must add it as a Custom Integration: ACC Admin → Apps & Integrations → Add Integration → paste Client ID. ' +
+           'Note: Model Coordination API also requires a 3-legged (user) OAuth token — 2-legged S2S tokens return 403 even after provisioning. ' +
+           'Use the Service Account Login card on the Connect tab to establish a 3-legged session, OR ask Autodesk to enable SSA for your app.',
+      401: 'Token is invalid or expired. Check APS_CLIENT_ID / APS_CLIENT_SECRET and retry.',
+      404: 'Coordination space not found. Verify MC_CONTAINER_ID matches your ACC Project ID and that Model Coordination is enabled under project Settings → Products & Services.',
+    };
     res.json({
       ok:      false,
-      status:  status === 403 ? 'forbidden' : status === 401 ? 'unauthorized' : 'error',
+      status:  status === 403 ? 'forbidden' : status === 401 ? 'unauthorized' : status === 404 ? 'not_found' : 'error',
       message: err.message,
+      hint:    hints[status] ?? 'Unexpected error — check server logs for details.',
       code:    status,
     });
   }
@@ -1414,7 +1460,6 @@ app.post('/api/workflow/run', async (req, res) => {
 
     // ── Step 1 — Auth ───────────────────────────────────────────────────
     emit('info', '── Step 1 / 6  Authenticating with APS');
-    const { APSClient } = await import('./src/api/aps-client.js');
     const { ModelCoordinationClient } = await import('./src/api/model-coordination.js');
     const { ModelDerivativeClient }   = await import('./src/api/model-derivative.js');
     const { DisciplineClassifier }    = await import('./src/model-identification/discipline-classifier.js');
@@ -1422,9 +1467,15 @@ app.post('/api/workflow/run', async (req, res) => {
     const { ClashTestConfigurator }   = await import('./src/clash-tests/clash-test-configurator.js');
     const { ClashResultsProcessor }   = await import('./src/results/clash-results-processor.js');
 
-    const apsClient = new APSClient();
+    // Use makeAPSClient so the workflow uses a stored 3-legged token when
+    // available — MC API requires 3-legged and will 403 with 2-legged only.
+    const apsClient = await makeAPSClient();
     await apsClient.getToken();
-    emit('info', '✓ APS authentication successful');
+    const usingThreeLeg = !!(await getThreeLeggedToken());
+    if (!usingThreeLeg) {
+      emit('warn', '⚠ No 3-legged service account token found — MC API calls may fail (403). Log in via the Service Account card on the Connect tab.');
+    }
+    emit('info', `✓ APS authentication successful (${usingThreeLeg ? '3-legged' : '2-legged'})`);
 
     // ── Step 2 — Model Set ──────────────────────────────────────────────
     emit('info', '── Step 2 / 6  Fetching model set');
