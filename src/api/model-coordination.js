@@ -133,22 +133,28 @@ export class ModelCoordinationClient {
    * @param {number} [pollIntervalMs=5000]
    * @param {number} [maxWaitMs=300000]  5-minute default timeout
    */
-  async waitForClashTest(modelSetId, versionIndex, testId, pollIntervalMs = 5000, maxWaitMs = 300_000) {
+  async waitForClashTest(modelSetId, versionIndex, testId, pollIntervalMs = 5000, maxWaitMs = 300_000, onStatus = null) {
     const deadline = Date.now() + maxWaitMs;
     let attempt = 0;
+    let lastStatus = null;
     while (Date.now() < deadline) {
       attempt++;
       const test = await this.getClashTest(modelSetId, versionIndex, testId);
-      const status = test?.status ?? test?.data?.status;
+      const status = test?.status ?? test?.data?.status ?? 'UNKNOWN';
       logger.debug('Clash test %s — status: %s (attempt %d)', testId, status, attempt);
+      if (status !== lastStatus) {
+        lastStatus = status;
+        if (onStatus) onStatus(status, attempt);
+      }
 
-      if (status === 'COMPLETE' || status === 'complete') return test;
-      if (status === 'FAILED' || status === 'ERROR') {
+      const norm = String(status).toUpperCase();
+      if (norm === 'COMPLETE' || norm === 'COMPLETED' || norm === 'SUCCESS') return test;
+      if (norm === 'FAILED' || norm === 'ERROR' || norm === 'CANCELLED') {
         throw new Error(`Clash test ${testId} failed with status: ${status}`);
       }
       await sleep(pollIntervalMs);
     }
-    throw new Error(`Clash test ${testId} timed out after ${maxWaitMs}ms`);
+    throw new Error(`Clash test ${testId} timed out after ${maxWaitMs}ms (last status: ${lastStatus ?? 'unknown'})`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────

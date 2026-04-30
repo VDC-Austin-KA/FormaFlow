@@ -1618,14 +1618,18 @@ app.post('/api/workflow/run', async (req, res) => {
       dryRun,
     });
     const ssResults = await ssGen.generateForDisciplines(modelSetId, disciplines);
+    if (ssGen.listExistingError) {
+      emit('warn', `⚠ Could not list existing Search Sets — ${ssGen.listExistingError} (proceeding without conflict check)`);
+    }
     const ssCreated  = ssResults.filter(r => r.created || r.dryRun).length;
     const ssSkipped  = ssResults.filter(r => r.skipped).length;
     const ssFailed   = ssResults.filter(r => r.error).length;
     emit('info', `✓ Search Sets — ${ssCreated} created, ${ssSkipped} reused, ${ssFailed} failed`);
-    if (ssFailed) {
-      for (const r of ssResults.filter(x => x.error)) {
-        emit('warn', `  ✗ ${r.name}: ${r.error}`);
-      }
+    for (const r of ssResults) {
+      if (r.error)        emit('warn', `  ✗ ${r.name}: ${r.error}`);
+      else if (r.skipped) emit('info', `  ↻ ${r.name} (reused, remote id: ${r.remoteId ?? '—'})`);
+      else if (r.created) emit('info', `  ＋ ${r.name} (remote id: ${r.remoteId ?? '—'})`);
+      else if (r.dryRun)  emit('info', `  • ${r.name} (dry run)`);
     }
 
     // KEY FIX: clash-test templates reference search sets by library ID
@@ -1641,6 +1645,7 @@ app.post('/api/workflow/run', async (req, res) => {
       emit('warn', '   • App lacks 3-legged token / write permission for MC API');
       emit('warn', '   • V2 coordination spaces do not support Search Sets API');
       emit('warn', '   • Existing sets list could not be fetched and create calls failed');
+      emit('warn', '   • Create calls returned no remote id (response shape mismatch)');
     }
 
     // ── Step 5 — Clash Tests ────────────────────────────────────────────
@@ -1660,10 +1665,16 @@ app.post('/api/workflow/run', async (req, res) => {
     const testsSkipped = testResults.filter(r => !r.created && !r.dryRun && !r.error).length;
     const testsFailed  = testResults.filter(r => r.error).length;
     emit('info', `✓ Clash tests — ${testsCreated} created, ${testsSkipped} skipped (unresolved sets), ${testsFailed} failed`);
-    if (testsFailed) {
-      for (const r of testResults.filter(x => x.error)) {
-        emit('warn', `  ✗ ${r.name}: ${r.error}`);
-      }
+    for (const r of testResults) {
+      const sides = r.resolved
+        ? ` [A: ${r.resolved.sideAKeys.join('+') || '—'} | B: ${r.resolved.sideBKeys.join('+') || '—'}]`
+        : '';
+      if (r.error)        emit('warn', `  ✗ ${r.name}${sides}: ${r.error}`);
+      else if (r.created) emit('info', `  ＋ ${r.name}${sides} (remote id: ${r.remoteId ?? '—'})`);
+      else if (r.dryRun)  emit('info', `  • ${r.name}${sides} (dry run)`);
+    }
+    if (!testsCreated && !testsFailed && disciplines.length >= 2) {
+      emit('warn', '⚠ No clash tests created. Most common cause: the search-set IDs referenced by the clash-test templates do not match any successfully-created Search Sets above. Check the per-test side resolution logs for missing IDs.');
     }
 
     // ── Step 6 — Results ────────────────────────────────────────────────
@@ -1672,7 +1683,14 @@ app.post('/api/workflow/run', async (req, res) => {
       emit('info', '── Step 6 / 6  Waiting for results');
       for (const t of testResults.filter(r => r.created && r.remoteId)) {
         try {
-          await mcClient.waitForClashTest(modelSetId, versionIndex, t.remoteId, 5000, 300_000);
+          await mcClient.waitForClashTest(
+            modelSetId,
+            versionIndex,
+            t.remoteId,
+            5000,
+            config.workflow.clashTestTimeoutMs ?? 300_000,
+            (status, attempt) => emit('info', `  … ${t.name} — ${status} (attempt ${attempt})`),
+          );
           emit('info', `  ✓ ${t.name}`);
         } catch (e) {
           emit('warn', `  ✗ ${t.name}: ${e.message}`);
@@ -1685,6 +1703,11 @@ app.post('/api/workflow/run', async (req, res) => {
         dryRun,
       });
       report = await processor.processAll(modelSetId, versionIndex, testResults);
+      for (const t of testResults.filter(r => r.created && r.remoteId)) {
+        const groupsForTest = report.groups.filter(g => g.testId === t.remoteId);
+        const clashCount = groupsForTest.reduce((n, g) => n + g.clashCount, 0);
+        emit('info', `  ▸ ${t.name}: ${groupsForTest.length} group(s), ${clashCount} clash(es)`);
+      }
     } else {
       emit('info', dryRun ? '── Step 6 / 6  Skipped (dry run)' : '── Step 6 / 6  No tests to poll');
     }
