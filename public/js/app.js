@@ -1611,17 +1611,34 @@ async function loadSelectedView() {
       docs = resp?.documents ?? [];
     }
 
-    // Build a list of items to load
+    // Build a list of items to load. MC view modelIds can be document UUIDs,
+    // version URNs, derivative URNs, or urn:-prefixed strings — try all formats.
     const targets = [];
+    const seen = new Set();
     for (const id of v.modelIds ?? []) {
-      const doc = docs.find(d => d.id === id || d.rawUrn === id);
-      if (doc?.viewerUrn) {
+      const stripped = id.replace(/^urn:/i, '');
+      const doc = docs.find(d =>
+        d.id === id || d.id === stripped ||
+        d.rawUrn === id || d.rawUrn === stripped ||
+        d.derivativeUrn === id || d.derivativeUrn === stripped ||
+        d.viewerUrn === id || d.viewerUrn === stripped
+      );
+      if (doc?.viewerUrn && !seen.has(doc.viewerUrn)) {
+        seen.add(doc.viewerUrn);
         targets.push({ name: doc.name, viewerUrn: doc.viewerUrn, discipline: guessDiscFromName(doc.name) });
       }
     }
 
+    // If still nothing (modelIds empty or MC view only uses document names),
+    // log a clear message so the user knows WHY it failed.
+    if (!targets.length && (v.modelIds?.length ?? 0) > 0) {
+      const tried = v.modelIds.join(', ');
+      toast(`No loadable models found for view "${v.name}" — IDs tried: ${tried.slice(0, 80)}`, 'error');
+      el('viewer-status-text').textContent = '';
+      return;
+    }
     if (!targets.length) {
-      toast('No matching loadable models found in this view', 'error');
+      toast('This view has no model references — save a view with loaded models to populate it', 'error');
       el('viewer-status-text').textContent = '';
       return;
     }
@@ -1650,6 +1667,8 @@ async function loadSelectedView() {
 
     toast(`View loaded: ${targets.length} model(s)`);
     el('viewer-status-text').textContent = `View "${v.name}" applied`;
+    // Show issue pushpin markers for the models just loaded
+    showIssuePushpinsInViewer().catch(() => {});
   } catch (err) {
     toast('View load failed: ' + err.message, 'error');
   } finally {
@@ -2115,6 +2134,8 @@ async function toggleViewerModel(itemEl, modelDef) {
           // Apply any saved manual alignment for this model
           const matchedItem = _coordState.models.find(cm => cm.viewerUrn === modelDef.viewerUrn);
           if (matchedItem?.id) maybeApplyAlignmentToViewer(matchedItem.id);
+          // Refresh issue pushpin markers whenever a model finishes loading
+          showIssuePushpinsInViewer().catch(() => {});
           resolve();
         },
         (code, msg) => reject(new Error(`Viewer load error ${code}: ${msg}`))
@@ -2289,6 +2310,108 @@ function clearClashMarkers() {
 function showAllClashMarkers() {
   if (!_viewerState.clashGroups.length) { toast('Load clash results first', 'error'); return; }
   _viewerState.clashGroups.forEach(g => showClashMarkersForGroup(g));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue Pushpin Markers in Viewer
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ISSUE_OVERLAY_SCENE  = 'issue-markers';
+const ISSUE_MARKER_COLOR   = 0xf59e0b;   // amber — distinct from clash red
+const ISSUE_MARKER_RADIUS  = 0.25;
+
+// Stored so we can navigate to issues from marker clicks
+let _issuePushpins = [];
+let _issueMarkersShown = false;
+
+/**
+ * Fetch issues that have 3D pushpin locations and display them as amber
+ * spheres in the viewer. Called automatically after each model load and
+ * after a view is loaded. Results are filtered to the currently loaded models.
+ */
+async function showIssuePushpinsInViewer() {
+  if (!_viewerState.viewer || !_viewerState.loadedModels.length) return;
+  const projectId = el('inp-project-id')?.value?.trim();
+  if (!projectId) return;
+
+  try {
+    const qs = new URLSearchParams({ projectId });
+    // Send loaded viewer URNs so the server can filter by linkedDocumentId
+    const urns = _viewerState.loadedModels.map(m => m.urn).join(',');
+    if (urns) qs.set('urns', urns);
+
+    const data = await api('GET', `/api/issues/with-location?${qs}`);
+    const issues = data?.issues ?? [];
+    _issuePushpins = issues;
+
+    if (!issues.length) return;
+    _renderIssuePushpins(issues);
+  } catch {
+    // Silent — issue markers are best-effort
+  }
+}
+
+function _renderIssuePushpins(issues) {
+  if (!_viewerState.viewer) return;
+  const THREE = Autodesk?.Viewing?.Private?.THREE;
+  if (!THREE) return;
+
+  if (_viewerState.viewer.overlays.hasScene(ISSUE_OVERLAY_SCENE)) {
+    _viewerState.viewer.overlays.clearScene(ISSUE_OVERLAY_SCENE);
+  } else {
+    _viewerState.viewer.overlays.addScene(ISSUE_OVERLAY_SCENE);
+  }
+
+  issues.forEach(issue => {
+    const { x, y, z } = issue.location;
+    const geo  = new THREE.SphereGeometry(ISSUE_MARKER_RADIUS, 8, 8);
+    const mat  = new THREE.MeshBasicMaterial({ color: ISSUE_MARKER_COLOR, transparent: true, opacity: 0.9 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, y, z);
+    mesh.userData = { issueId: issue.id, issueTitle: issue.title };
+    _viewerState.viewer.overlays.addMesh(mesh, ISSUE_OVERLAY_SCENE);
+  });
+
+  _issueMarkersShown = true;
+  toast(`Showing ${issues.length} issue location(s) in viewer`, 'info');
+  updateIssuePushpinBadge();
+}
+
+function clearIssuePushpins() {
+  if (!_viewerState.viewer) return;
+  if (_viewerState.viewer.overlays.hasScene(ISSUE_OVERLAY_SCENE)) {
+    _viewerState.viewer.overlays.clearScene(ISSUE_OVERLAY_SCENE);
+  }
+  _issueMarkersShown = false;
+  updateIssuePushpinBadge();
+}
+
+function updateIssuePushpinBadge() {
+  const badge = el('issue-marker-count');
+  if (!badge) return;
+  if (_issueMarkersShown && _issuePushpins.length) {
+    badge.textContent = _issuePushpins.length;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+/** Navigate viewer camera to a specific issue pushpin by id */
+function flyToIssuePushpin(issueId) {
+  if (!_viewerState.viewer) return;
+  const issue = _issuePushpins.find(i => i.id === issueId);
+  if (!issue) return;
+  const THREE = Autodesk?.Viewing?.Private?.THREE;
+  if (!THREE) return;
+  const { x, y, z } = issue.location;
+  const center = new THREE.Vector3(x, y, z);
+  const box = new THREE.Box3(
+    new THREE.Vector3(x - 3, y - 3, z - 3),
+    new THREE.Vector3(x + 3, y + 3, z + 3),
+  );
+  _viewerState.viewer.navigation.fitBounds(false, box, true);
+  toast(`Navigating to: ${issue.title ?? issue.identifier ?? 'issue'}`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3382,6 +3505,13 @@ function renderIssueDetail(issue) {
 
     ${issue.description ? `<div class="text-sm text-slate-700 mb-4 whitespace-pre-wrap">${escapeHtml(issue.description)}</div>` : ''}
 
+    ${_issuePushpins.some(p => p.id === issue.id) ? `
+    <div class="mb-3">
+      <button id="btn-fly-to-issue" class="btn-secondary text-xs py-1 px-3" data-id="${issue.id}">
+        📍 Show in 3D Viewer
+      </button>
+    </div>` : ''}
+
     <hr class="my-4 border-slate-200"/>
     <h4 class="text-xs font-semibold text-slate-700 mb-2">Comments</h4>
     <div id="issue-comments" class="space-y-2 mb-3"></div>
@@ -3391,6 +3521,10 @@ function renderIssueDetail(issue) {
       <button id="btn-add-comment" class="btn-secondary text-sm">Send</button>
     </div>
   `;
+
+  el('btn-fly-to-issue')?.addEventListener('click', e => {
+    flyToIssuePushpin(e.currentTarget.dataset.id);
+  });
 
   el('sel-issue-status-change').addEventListener('change', async e => {
     const newStatus = e.target.value;
@@ -3730,6 +3864,11 @@ async function init() {
   el('btn-show-clashes').addEventListener('click', showAllClashMarkers);
   el('btn-clear-markers').addEventListener('click', clearClashMarkers);
   el('btn-load-clash-results').addEventListener('click', loadClashResultsForViewer);
+  el('btn-show-issue-markers')?.addEventListener('click', () => {
+    if (_issueMarkersShown) { clearIssuePushpins(); }
+    else { showIssuePushpinsInViewer(); }
+  });
+  el('btn-clear-issue-markers')?.addEventListener('click', clearIssuePushpins);
   el('inp-clash-filter').addEventListener('input', () => renderClashGroups(_viewerState.clashGroups));
 
   // Coordination space

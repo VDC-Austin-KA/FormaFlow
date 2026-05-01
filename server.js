@@ -1093,16 +1093,23 @@ app.get('/api/mc/space-documents', async (req, res) => {
 
     if (!latest) return res.json({ versionIndex: null, documents: [] });
 
+    const b64url = s => Buffer.from(s).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+
     const docs = (latest.documents ?? []).map(d => {
-      const rawUrn = d.urn ?? d.derivativeUrn ?? null;
-      const viewerUrn = rawUrn
-        ? Buffer.from(rawUrn).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'')
-        : null;
-      const name = d.name ?? d.fileName ?? d.displayName ?? rawUrn ?? 'Unknown';
+      // derivativeUrn is the viewable derivative URN (base64url of this gives the viewer urn).
+      // urn is the version lineage URN. Prefer derivativeUrn for the viewer; expose both so
+      // the client can match MC view modelIds (which are document-level IDs, not URNs).
+      const derivativeUrn = d.derivativeUrn ?? null;
+      const versionUrn    = d.urn ?? null;
+      // For the viewer we prefer the derivative URN; fall back to version URN.
+      const viewableRaw   = derivativeUrn ?? versionUrn;
+      const viewerUrn     = viewableRaw ? b64url(viewableRaw) : null;
+      const name = d.name ?? d.fileName ?? d.displayName ?? viewableRaw ?? 'Unknown';
       return {
-        id:           d.id ?? rawUrn,
+        id:           d.id ?? versionUrn,    // document UUID from MC — matches view.modelIds
         name,
-        rawUrn,
+        rawUrn:       versionUrn,
+        derivativeUrn,
         viewerUrn,
         size:         d.size ?? null,
         lastModified: d.lastModifiedTime ?? d.modifiedAt ?? null,
@@ -1187,6 +1194,57 @@ app.get('/api/issues', async (req, res) => {
       offset:       req.query.offset,
     });
     res.json(issues);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/**
+ * Return issues that have a 3D pushpin location, optionally filtered to a set
+ * of model URNs (viewer URNs or rawUrns). This powers the in-viewer issue
+ * markers overlay.
+ *
+ * Each returned item includes:
+ *   { id, title, identifier, status, location: {x,y,z}, linkedDocumentId,
+ *     objectId, viewerStateId }
+ */
+app.get('/api/issues/with-location', async (req, res) => {
+  try {
+    const client = await buildIssuesClient(req);
+    const raw = await client.list({
+      status: req.query.status ? String(req.query.status).split(',') : undefined,
+      limit:  500,
+    });
+    const all = raw?.results ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
+
+    // Filter to issues that carry pushpin position data
+    const withLocation = [];
+    for (const issue of all) {
+      const attrs = issue.attributes ?? issue;
+      const pushpin = attrs.pushpinAttributes ?? attrs.pushpin_attributes ?? null;
+      const loc = pushpin?.location ?? pushpin?.position ?? null;
+      if (!loc || (loc.x === undefined && loc.y === undefined)) continue;
+
+      withLocation.push({
+        id:               issue.id,
+        title:            attrs.title ?? attrs.name ?? 'Untitled',
+        identifier:       attrs.identifier ?? attrs.displayId ?? '',
+        status:           attrs.status ?? 'open',
+        assignedTo:       attrs.assignedTo ?? null,
+        location:         { x: loc.x ?? 0, y: loc.y ?? 0, z: loc.z ?? 0 },
+        linkedDocumentId: pushpin.linkedDocumentId ?? pushpin.document_urn ?? null,
+        objectId:         pushpin.objectId ?? pushpin.object_id ?? null,
+        viewerStateId:    pushpin.viewerStateId ?? pushpin.viewer_state_id ?? null,
+      });
+    }
+
+    // Optionally filter by model URN(s): ?urns=urn1,urn2,...
+    const urnFilter = req.query.urns ? String(req.query.urns).split(',').map(s => s.trim()) : null;
+    const result = urnFilter
+      ? withLocation.filter(i => !i.linkedDocumentId || urnFilter.some(u => i.linkedDocumentId.includes(u)))
+      : withLocation;
+
+    res.json({ count: result.length, issues: result });
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
   }
@@ -1679,9 +1737,45 @@ app.post('/api/workflow/run', async (req, res) => {
 
     // ── Step 6 — Results ────────────────────────────────────────────────
     let report = { totalGroups: 0, totalClashes: 0, groups: [] };
-    if (!dryRun && testResults.some(r => r.created)) {
+
+    // Build the list of tests to poll: prefer newly-created ones; when none
+    // were created (API unavailable or all sets unresolved) fall back to
+    // existing clash tests already in ACC — those created via the web UI still
+    // have results we can read and export.
+    let testsForResults = testResults.filter(r => r.created && r.remoteId);
+
+    if (!dryRun && !testsForResults.length) {
+      emit('info', '── Step 6 / 6  Falling back to existing clash tests in ACC…');
+      try {
+        const existingData = await mcClient.listClashTests(modelSetId, versionIndex);
+        const existing = toArray(existingData, 'tests', 'clashTests');
+        const completed = existing.filter(t => {
+          const s = String(t.status ?? '').toUpperCase();
+          return s === 'COMPLETE' || s === 'COMPLETED' || s === 'SUCCESS';
+        });
+        if (completed.length) {
+          emit('info', `  Found ${completed.length} completed clash test(s) in ACC`);
+          testsForResults = completed.map(t => ({
+            name:     t.name ?? t.id,
+            created:  true,
+            remoteId: t.id ?? t.testId,
+          }));
+        } else if (existing.length) {
+          emit('warn', `  ${existing.length} clash test(s) found in ACC but none are COMPLETE (statuses: ${[...new Set(existing.map(t => t.status))].join(', ')})`);
+        } else {
+          emit('warn', '  No existing clash tests found in ACC — create tests via the ACC web UI or ensure Search Sets are resolvable.');
+        }
+      } catch (e) {
+        emit('warn', `  Could not read existing ACC clash tests: ${e.message}`);
+      }
+    }
+
+    if (!dryRun && testsForResults.length) {
       emit('info', '── Step 6 / 6  Waiting for results');
-      for (const t of testResults.filter(r => r.created && r.remoteId)) {
+
+      // Only wait on tests that aren't already COMPLETE
+      const newlyCreated = testsForResults.filter(t => testResults.find(r => r.remoteId === t.remoteId));
+      for (const t of newlyCreated) {
         try {
           await mcClient.waitForClashTest(
             modelSetId,
@@ -1691,25 +1785,26 @@ app.post('/api/workflow/run', async (req, res) => {
             config.workflow.clashTestTimeoutMs ?? 300_000,
             (status, attempt) => emit('info', `  … ${t.name} — ${status} (attempt ${attempt})`),
           );
-          emit('info', `  ✓ ${t.name}`);
+          emit('info', `  ✓ ${t.name} complete`);
         } catch (e) {
           emit('warn', `  ✗ ${t.name}: ${e.message}`);
         }
       }
+
       const processor = new ClashResultsProcessor(mcClient, {
         groupByLevel:  config.results.groupByLevel,
         groupBySystem: config.results.groupBySystemClassification,
         outputPath:    config.results.exportPath,
         dryRun,
       });
-      report = await processor.processAll(modelSetId, versionIndex, testResults);
-      for (const t of testResults.filter(r => r.created && r.remoteId)) {
+      report = await processor.processAll(modelSetId, versionIndex, testsForResults);
+      for (const t of testsForResults) {
         const groupsForTest = report.groups.filter(g => g.testId === t.remoteId);
         const clashCount = groupsForTest.reduce((n, g) => n + g.clashCount, 0);
         emit('info', `  ▸ ${t.name}: ${groupsForTest.length} group(s), ${clashCount} clash(es)`);
       }
     } else {
-      emit('info', dryRun ? '── Step 6 / 6  Skipped (dry run)' : '── Step 6 / 6  No tests to poll');
+      emit('info', dryRun ? '── Step 6 / 6  Skipped (dry run)' : '── Step 6 / 6  No completed tests to process');
     }
 
     emit('info', '');
