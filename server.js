@@ -1107,6 +1107,9 @@ app.get('/api/mc/space-documents', async (req, res) => {
     const b64url = s => Buffer.from(s).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
 
     const docs = (versionObj.documents ?? []).map(d => {
+    const b64url = s => Buffer.from(s).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+
+    const docs = (latest.documents ?? []).map(d => {
       // derivativeUrn is the viewable derivative URN (base64url of this gives the viewer urn).
       // urn is the version lineage URN. Prefer derivativeUrn for the viewer; expose both so
       // the client can match MC view modelIds (which are document-level IDs, not URNs).
