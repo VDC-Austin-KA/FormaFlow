@@ -33,7 +33,7 @@ app.use(express.static(resolve(__dirname, 'public')));
 const ENV_KEYS = [
   'APS_CLIENT_ID', 'APS_CLIENT_SECRET',
   'ACC_ACCOUNT_ID', 'ACC_PROJECT_ID',
-  'MC_CONTAINER_ID', 'TARGET_FOLDER_URN',
+  'MC_CONTAINER_ID', 'MC_MODEL_SET_ID', 'TARGET_FOLDER_URN',
   'LOG_LEVEL', 'DRY_RUN',
 ];
 
@@ -139,6 +139,7 @@ app.get('/api/config', (_req, res) => {
       ACC_ACCOUNT_ID:   env.ACC_ACCOUNT_ID   ?? '',
       ACC_PROJECT_ID:   env.ACC_PROJECT_ID   ?? '',
       MC_CONTAINER_ID:  env.MC_CONTAINER_ID  ?? '',
+      MC_MODEL_SET_ID:  env.MC_MODEL_SET_ID  ?? '',
       TARGET_FOLDER_URN: env.TARGET_FOLDER_URN ?? '',
       LOG_LEVEL: env.LOG_LEVEL ?? 'info',
       DRY_RUN:   env.DRY_RUN   ?? 'false',
@@ -158,7 +159,7 @@ app.post('/api/config/env', (req, res) => {
     const ALLOWED = [
       'APS_CLIENT_ID', 'APS_CLIENT_SECRET',
       'ACC_ACCOUNT_ID', 'ACC_PROJECT_ID',
-      'MC_CONTAINER_ID', 'TARGET_FOLDER_URN',
+      'MC_CONTAINER_ID', 'MC_MODEL_SET_ID', 'TARGET_FOLDER_URN',
       'LOG_LEVEL', 'DRY_RUN',
     ];
     const toSave = {};
@@ -278,8 +279,10 @@ app.get('/api/project/containers', async (req, res) => {
     if (!accountId) return res.status(400).json({ error: 'accountId required' });
 
     const client = await makeAPSClient();
-    const MC_MODELSET_BASE = process.env.MC_MODELSET_API_BASE
-      ?? 'https://developer.api.autodesk.com/bim360/modelcoordination/modelset/v3';
+    // Use the correct v3 base URL (without the erroneous /modelcoordination/ segment)
+    const MC_MODELSET_BASE = (process.env.MC_MODELSET_API_BASE
+      ?? 'https://developer.api.autodesk.com/bim360/modelset/v3'
+    ).replace('/bim360/modelcoordination/', '/bim360/');
 
     // ── Strategy 1: ACC v3 — containerId = projectId ──────────────────────
     try {
@@ -444,6 +447,19 @@ app.get('/api/project/modelsets', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Normalise APS list responses — handles data[], results[], items[], named keys, or bare arrays. */
+function toArray(raw, ...extraKeys) {
+  if (Array.isArray(raw)) return raw;
+  for (const k of ['data', 'results', 'items', 'sets', ...extraKeys]) {
+    if (Array.isArray(raw?.[k])) return raw[k];
+  }
+  return [];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Routes — Workflow (SSE streaming)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -471,7 +487,8 @@ app.get('/api/workflow/stream', (req, res) => {
 
 /** Start the workflow — responds immediately with sessionId, then streams logs */
 app.post('/api/workflow/run', async (req, res) => {
-  const sessionId = `run-${Date.now()}`;
+  // Use client-provided sessionId so the SSE subscriber and emitter share the same channel.
+  const sessionId = req.body?.sessionId || `run-${Date.now()}`;
   res.json({ sessionId });
 
   const emit = (level, message, label = 'Workflow') =>
@@ -506,18 +523,42 @@ app.post('/api/workflow/run', async (req, res) => {
     emit('info', '── Step 2 / 6  Fetching model set');
     const mcClient = new ModelCoordinationClient(apsClient);
     const setsResp = await mcClient.listModelSets();
-    const modelSets = setsResp?.data ?? setsResp ?? [];
-    if (!modelSets.length) { emit('error', '✗ No model sets found — check MC_CONTAINER_ID'); return done(false); }
+    const modelSets = toArray(setsResp, 'modelsets', 'modelSets');
+    if (!modelSets.length) { emit('error', '✗ No model sets found — check MC_CONTAINER_ID and ensure Model Coordination is enabled for this project'); return done(false); }
 
-    const ms = modelSets[0];
+    // Prefer the space saved in env (set via Connect tab); fall back to first
+    const selectedId = process.env.MC_MODEL_SET_ID;
+    let ms = selectedId ? modelSets.find(s => (s.id ?? s.modelSetId) === selectedId) : null;
+    if (!ms && selectedId) emit('warn', `⚠ Saved coordination space (${selectedId}) not found — using first available`);
+    ms ??= modelSets[0];
     const modelSetId = ms.id ?? ms.modelSetId;
-    emit('info', `✓ Model set: ${ms.name ?? modelSetId}`);
+    emit('info', `✓ Coordination space: ${ms.name ?? modelSetId}`);
 
     const versResp = await mcClient.getModelSetVersions(modelSetId);
-    const versions = versResp?.data ?? versResp ?? [];
+    const versions = toArray(versResp, 'versions');
     const latest   = versions[versions.length - 1];
     const versionIndex = latest?.versionIndex ?? 1;
-    const docs = latest?.documents ?? [];
+
+    // The versions-list endpoint returns lightweight objects — documents[] is often absent.
+    // Fall back to the individual version endpoint to get the full manifest.
+    let versionObj = latest ?? {};
+    if (!versionObj.documents?.length) {
+      try {
+        emit('info', `  Fetching full version manifest for version ${versionIndex}…`);
+        const fullVer = await mcClient.getModelSetVersion(modelSetId, versionIndex);
+        const candidate = fullVer?.data ?? fullVer?.version ?? fullVer ?? {};
+        if (candidate.documents?.length) {
+          emit('info', `  ✓ Full manifest: ${candidate.documents.length} document(s)`);
+          versionObj = candidate;
+        } else {
+          const keys = [fullVer, fullVer?.data, fullVer?.version].filter(Boolean).map(o => Object.keys(o).join(', ')).join(' | ');
+          emit('warn', `  ⚠ Full manifest also returned 0 documents. Response keys: [${keys}]`);
+        }
+      } catch (err) {
+        emit('warn', `  ⚠ Could not fetch full version manifest: ${err.message}`);
+      }
+    }
+    const docs = versionObj.documents ?? [];
     emit('info', `✓ Version ${versionIndex} — ${docs.length} document(s)`);
 
     // ── Step 3 — Extract + Classify ─────────────────────────────────────
@@ -550,7 +591,15 @@ app.post('/api/workflow/run', async (req, res) => {
     const ssResults = await ssGen.generateForDisciplines(modelSetId, disciplines);
     const ssCreated  = ssResults.filter(r => r.created || r.dryRun).length;
     const ssSkipped  = ssResults.filter(r => r.skipped).length;
-    emit('info', `✓ Search Sets — ${ssCreated} created, ${ssSkipped} already existed`);
+    const ssErrors   = ssResults.filter(r => r.error);
+
+    if (ssGen.listExistingError) {
+      emit('warn', `⚠ Could not list existing Search Sets — ${ssGen.listExistingError}`);
+    }
+    if (ssErrors.length) {
+      for (const r of ssErrors) emit('warn', `  ⚠ Search Set "${r.name}": ${r.error}`);
+    }
+    emit('info', `✓ Search Sets — ${ssCreated} created, ${ssSkipped} already existed, ${ssErrors.length} errors`);
 
     const ssNameToId = new Map(ssResults.filter(r => r.remoteId).map(r => [r.name, r.remoteId]));
 
@@ -564,16 +613,41 @@ app.post('/api/workflow/run', async (req, res) => {
     const testResults = await testConfigurator.configureForDisciplines(
       modelSetId, versionIndex, disciplines, ssNameToId
     );
-    const testsCreated = testResults.filter(r => r.created || r.dryRun).length;
+    let testsCreated = testResults.filter(r => r.created || r.dryRun).length;
+    const testsErrored = testResults.filter(r => r.error);
+    if (testsErrored.length) {
+      for (const r of testsErrored) emit('warn', `  ⚠ Clash test "${r.name}": ${r.error}`);
+    }
     emit('info', `✓ Clash tests — ${testsCreated} created`);
+
+    // When Search Sets API is unavailable (404) or no tests were created, fall back
+    // to existing ACC clash tests that were created directly in the ACC platform.
+    let testsForResults = testResults.filter(r => (r.created || r.dryRun) && r.remoteId);
+    if (!testsForResults.length && !dryRun) {
+      try {
+        emit('info', '  No new tests — reading existing ACC clash tests as fallback');
+        const existingData = await mcClient.listClashTests(modelSetId, versionIndex);
+        const existing = toArray(existingData, 'tests', 'clashTests');
+        if (existing.length) {
+          testsForResults = existing.map(t => ({ name: t.name ?? t.id, remoteId: t.id ?? t.clashTestId, created: false }));
+          emit('info', `  ✓ Found ${existing.length} existing clash test(s) in ACC`);
+          testsCreated = 0; // none were newly created
+        } else {
+          emit('warn', '  ⚠ No clash tests found in ACC — nothing to process');
+        }
+      } catch (err) {
+        emit('warn', `  ⚠ Could not fetch existing clash tests: ${err.message}`);
+      }
+    }
 
     // ── Step 6 — Results ────────────────────────────────────────────────
     let report = { totalGroups: 0, totalClashes: 0, groups: [] };
-    if (!dryRun && testResults.some(r => r.created)) {
+    if (!dryRun && testsForResults.length) {
       emit('info', '── Step 6 / 6  Waiting for results');
-      for (const t of testResults.filter(r => r.created && r.remoteId)) {
+      for (const t of testsForResults) {
         try {
-          await mcClient.waitForClashTest(modelSetId, versionIndex, t.remoteId, 5000, 300_000);
+          await mcClient.waitForClashTest(modelSetId, versionIndex, t.remoteId, 5000, 300_000,
+            (status) => emit('info', `    ${t.name}: ${status}`));
           emit('info', `  ✓ ${t.name}`);
         } catch (e) {
           emit('warn', `  ✗ ${t.name}: ${e.message}`);
@@ -585,7 +659,7 @@ app.post('/api/workflow/run', async (req, res) => {
         outputPath:    config.results.exportPath,
         dryRun,
       });
-      report = await processor.processAll(modelSetId, versionIndex, testResults);
+      report = await processor.processAll(modelSetId, versionIndex, testsForResults);
     } else {
       emit('info', dryRun ? '── Step 6 / 6  Skipped (dry run)' : '── Step 6 / 6  No tests to poll');
     }

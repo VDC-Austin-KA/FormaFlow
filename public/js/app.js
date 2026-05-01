@@ -97,13 +97,56 @@ function populateConnect(cfg) {
   el('inp-folder-urn').value    = cfg.env.TARGET_FOLDER_URN || '';
   if (cfg.env.TARGET_FOLDER_URN) {
     el('folder-urn-row').classList.remove('hidden');
-    // Try to pre-populate the select
     const sel = el('sel-folder');
     if (sel.options.length <= 1) {
       const opt = new Option(cfg.env.TARGET_FOLDER_URN.split(':').pop(), cfg.env.TARGET_FOLDER_URN);
       sel.add(opt);
       sel.value = cfg.env.TARGET_FOLDER_URN;
     }
+  }
+  if (cfg.env.MC_MODEL_SET_ID) {
+    const sel = el('sel-coord-space');
+    if (sel && !sel.querySelector(`option[value="${cfg.env.MC_MODEL_SET_ID}"]`)) {
+      sel.add(new Option('Saved space — click Load to refresh', cfg.env.MC_MODEL_SET_ID));
+    }
+    if (sel) sel.value = cfg.env.MC_MODEL_SET_ID;
+    const hint = el('coord-space-hint');
+    if (hint) { hint.textContent = 'Saved — click Load to refresh and verify.'; hint.classList.remove('hidden'); }
+  }
+}
+
+async function loadCoordinationSpaces() {
+  const containerId = el('inp-container-id').value.trim();
+  if (!containerId) { toast('Enter and Detect MC Container ID first', 'error'); return; }
+  const btn = el('btn-load-coord-spaces');
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  try {
+    const data = await api('GET', `/api/project/modelsets?containerId=${encodeURIComponent(containerId)}`);
+    const sets = data?.data ?? data?.modelsets ?? (Array.isArray(data) ? data : []);
+    const sel = el('sel-coord-space');
+    sel.innerHTML = '<option value="">— select a coordination space —</option>';
+    for (const s of sets) {
+      const id   = s.id ?? s.modelSetId;
+      const name = s.name ?? id;
+      sel.add(new Option(name, id));
+    }
+    if (sets.length) {
+      // Re-select saved value if it still exists
+      const saved = State.config?.env?.MC_MODEL_SET_ID;
+      if (saved && sel.querySelector(`option[value="${saved}"]`)) sel.value = saved;
+      else if (sets.length === 1) sel.value = sets[0].id ?? sets[0].modelSetId;
+      const hint = el('coord-space-hint');
+      if (hint) { hint.textContent = `${sets.length} space(s) loaded — select one then Save.`; hint.classList.remove('hidden'); }
+      toast(`Loaded ${sets.length} coordination space(s)`);
+    } else {
+      toast('No coordination spaces found in this container', 'error');
+    }
+  } catch (err) {
+    toast('Failed to load coordination spaces: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Load';
   }
 }
 
@@ -312,6 +355,7 @@ async function saveEnv() {
     ACC_ACCOUNT_ID:    el('inp-account-id').value,
     ACC_PROJECT_ID:    el('inp-project-id').value,
     MC_CONTAINER_ID:   el('inp-container-id').value,
+    MC_MODEL_SET_ID:   el('sel-coord-space')?.value ?? '',
     TARGET_FOLDER_URN: folderUrn,
   };
 
@@ -1003,7 +1047,7 @@ function inferStep(message) {
   if (message.includes('Step 5')) return { step: 'clashtests', state: 'active' };
   if (message.includes('Step 6')) return { step: 'results',    state: 'active' };
   if (message.includes('✓ APS auth'))   return { step: 'auth',       state: 'done' };
-  if (message.includes('✓ Model set'))  return { step: 'modelset',   state: 'done' };
+  if (message.includes('✓ Model set') || message.includes('✓ Coordination space'))  return { step: 'modelset', state: 'done' };
   if (message.includes('Disciplines'))  return { step: 'identify',   state: 'done' };
   if (message.includes('Search Sets'))  return { step: 'searchsets', state: 'done' };
   if (message.includes('Clash tests'))  return { step: 'clashtests', state: 'done' };
@@ -1142,6 +1186,7 @@ async function init() {
   el('btn-test-conn').addEventListener('click', testConnection);
   el('btn-load-folders').addEventListener('click', loadFolders);
   el('btn-detect-container').addEventListener('click', detectContainer);
+  el('btn-load-coord-spaces').addEventListener('click', loadCoordinationSpaces);
   el('btn-save-env').addEventListener('click', saveEnv);
   el('btn-refresh-caps').addEventListener('click', loadCapabilities);
   el('btn-toggle-secret').addEventListener('click', () => {
