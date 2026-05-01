@@ -2783,6 +2783,13 @@ async function loadCoordinationData() {
     }
 
     if (!_coordState.models.length) {
+      const hasSpace = !!getActiveCoordSpaceId();
+      const emptyMsg = el('coord-empty').querySelector('p.text-slate-500');
+      const emptyHint = el('coord-empty').querySelector('p.text-slate-400');
+      if (hasSpace && emptyMsg) {
+        emptyMsg.textContent = 'No model documents found in this coordination space';
+        if (emptyHint) emptyHint.innerHTML = 'The coordination space returned 0 documents. Verify models have been added to the space in ACC, then click <strong>Refresh from Space</strong>.';
+      }
       el('coord-empty').classList.remove('hidden');
       _coordState.loaded = true;
       return;

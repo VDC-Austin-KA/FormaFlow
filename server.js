@@ -1093,6 +1093,20 @@ app.get('/api/mc/space-documents', async (req, res) => {
 
     if (!latest) return res.json({ versionIndex: null, documents: [] });
 
+    // The versions-list endpoint often returns lightweight objects without documents[].
+    // Fall back to the individual version endpoint to get the full manifest.
+    let versionObj = latest;
+    if (!versionObj.documents?.length && versionIndex != null) {
+      try {
+        const fullVer = await mc.getModelSetVersion(modelSetId, versionIndex);
+        // Try multiple response shapes: direct, data-wrapped, version-wrapped
+        versionObj = fullVer?.data ?? fullVer?.version ?? fullVer ?? versionObj;
+      } catch (_) { /* keep latest if full fetch fails */ }
+    }
+
+    const b64url = s => Buffer.from(s).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+
+    const docs = (versionObj.documents ?? []).map(d => {
     const b64url = s => Buffer.from(s).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
 
     const docs = (latest.documents ?? []).map(d => {
@@ -1577,7 +1591,28 @@ app.post('/api/workflow/run', async (req, res) => {
     const versions = toArray(versResp, 'versions');
     const latest   = versions[versions.length - 1];
     const versionIndex = latest?.versionIndex ?? 1;
-    const allDocs = latest?.documents ?? [];
+    // The versions-list endpoint returns lightweight objects — documents[] is often absent.
+    // Fall back to the individual version endpoint to get the full manifest.
+    let versionObj = latest ?? {};
+    if (!versionObj.documents?.length) {
+      try {
+        emit('info', `  Fetching full version manifest for version ${versionIndex}…`);
+        const fullVer = await mcClient.getModelSetVersion(modelSetId, versionIndex);
+        // Try multiple response shapes: direct, data-wrapped, version-wrapped
+        const candidate = fullVer?.data ?? fullVer?.version ?? fullVer ?? {};
+        if (candidate.documents?.length) {
+          emit('info', `  ✓ Full manifest returned ${candidate.documents.length} document(s)`);
+          versionObj = candidate;
+        } else {
+          const allKeys = [fullVer, fullVer?.data, fullVer?.version].filter(Boolean)
+            .map(o => Object.keys(o).join(', ')).join(' | ');
+          emit('warn', `  ⚠ Full manifest also returned 0 documents. Response keys: [${allKeys}]`);
+        }
+      } catch (err) {
+        emit('warn', `  ⚠ Could not fetch full version manifest: ${err.message}`);
+      }
+    }
+    const allDocs = versionObj.documents ?? [];
 
     // Apply user clash-include filter and discipline overrides from coordination-assignments.json
     let coord;
