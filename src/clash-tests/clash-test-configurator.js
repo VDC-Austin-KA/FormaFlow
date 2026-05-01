@@ -92,11 +92,18 @@ export class ClashTestConfigurator {
   }
 
   _buildTestPayload(template, ssMap) {
-    const sideAIds = this._resolveSearchSetIds(template.sideA.searchSetIds, template.sideA.fallbackSearchSetIds, ssMap);
-    const sideBIds = this._resolveSearchSetIds(template.sideB.searchSetIds, template.sideB.fallbackSearchSetIds, ssMap);
+    const sideA = this._resolveSearchSetIds(template.sideA.searchSetIds, template.sideA.fallbackSearchSetIds, ssMap);
+    const sideB = this._resolveSearchSetIds(template.sideB.searchSetIds, template.sideB.fallbackSearchSetIds, ssMap);
 
-    if (!sideAIds.length || !sideBIds.length) {
-      logger.warn('Skipping test %s — could not resolve all Search Set IDs', template.name);
+    if (!sideA.ids.length || !sideB.ids.length) {
+      const missing = [...sideA.missing, ...sideB.missing];
+      const available = [...ssMap.keys()];
+      logger.warn(
+        'Skipping test %s — could not resolve Search Set ID(s): [%s]. Available: [%s]',
+        template.name,
+        missing.join(', '),
+        available.join(', ')
+      );
       return null;
     }
 
@@ -104,17 +111,25 @@ export class ClashTestConfigurator {
       name: template.name,
       type: template.clashType,
       tolerance: template.tolerance,
-      selectionA: sideAIds,
-      selectionB: sideBIds
+      selectionA: sideA.ids,
+      selectionB: sideB.ids,
+      _resolved: { sideA: sideA.ids, sideB: sideB.ids, sideAKeys: sideA.keys, sideBKeys: sideB.keys },
     };
   }
 
   _buildSubTestPayload(subTest, parentTemplate, ssMap) {
-    const sideAIds = this._resolveSearchSetIds(subTest.sideASearchSetIds, [], ssMap);
-    const sideBIds = this._resolveSearchSetIds(subTest.sideBSearchSetIds, [], ssMap);
+    const sideA = this._resolveSearchSetIds(subTest.sideASearchSetIds, [], ssMap);
+    const sideB = this._resolveSearchSetIds(subTest.sideBSearchSetIds, [], ssMap);
 
-    if (!sideAIds.length || !sideBIds.length) {
-      logger.warn('Skipping sub-test %s — could not resolve Search Set IDs', subTest.name);
+    if (!sideA.ids.length || !sideB.ids.length) {
+      const missing = [...sideA.missing, ...sideB.missing];
+      const available = [...ssMap.keys()];
+      logger.warn(
+        'Skipping sub-test %s — could not resolve Search Set ID(s): [%s]. Available: [%s]',
+        subTest.name,
+        missing.join(', '),
+        available.join(', ')
+      );
       return null;
     }
 
@@ -122,43 +137,65 @@ export class ClashTestConfigurator {
       name: subTest.name,
       type: parentTemplate.clashType,
       tolerance: parentTemplate.tolerance,
-      selectionA: sideAIds,
-      selectionB: sideBIds
+      selectionA: sideA.ids,
+      selectionB: sideB.ids,
+      _resolved: { sideA: sideA.ids, sideB: sideB.ids, sideAKeys: sideA.keys, sideBKeys: sideB.keys },
     };
   }
 
   /**
-   * Resolve Search Set names to remote IDs from the name→id map.
-   * Falls back to fallbackIds if primary names are not found.
+   * Resolve Search Set names/IDs to remote IDs from the map.
+   * Returns {ids, keys, missing} so the caller can report what wasn't found.
+   * Falls back to fallback list if every primary key is missing.
    */
   _resolveSearchSetIds(primaryNames, fallbackNames, ssMap) {
-    // ssMap might be keyed by search-set-library ID or by name
-    const resolved = primaryNames
-      .map(name => ssMap.get(name))
-      .filter(Boolean);
-
-    if (resolved.length > 0) return resolved;
-
-    // Try fallbacks
-    return fallbackNames
-      .map(name => ssMap.get(name))
-      .filter(Boolean);
+    const primaryHits = primaryNames.filter(n => ssMap.has(n));
+    if (primaryHits.length > 0) {
+      return {
+        ids: primaryHits.map(n => ssMap.get(n)),
+        keys: primaryHits,
+        missing: primaryNames.filter(n => !ssMap.has(n)),
+      };
+    }
+    const fallbackHits = fallbackNames.filter(n => ssMap.has(n));
+    return {
+      ids: fallbackHits.map(n => ssMap.get(n)),
+      keys: fallbackHits,
+      missing: [...primaryNames, ...fallbackNames].filter(n => !ssMap.has(n)),
+    };
   }
 
   async _createOne(modelSetId, versionIndex, payload, templateId) {
+    // Strip diagnostic-only fields before sending to the API
+    const { _resolved, ...apiPayload } = payload;
+
     if (this._dryRun) {
-      logger.info('[DRY RUN] Would create clash test: %s', payload.name);
-      return { templateId, name: payload.name, created: false, dryRun: true };
+      logger.info('[DRY RUN] Would create clash test: %s', apiPayload.name);
+      return { templateId, name: apiPayload.name, created: false, dryRun: true, resolved: _resolved };
     }
 
     try {
-      const response = await this._mc.createClashTest(modelSetId, versionIndex, payload);
-      const remoteId = response?.id ?? response?.data?.id;
-      logger.info('Created clash test: %s (id: %s)', payload.name, remoteId);
-      return { templateId, name: payload.name, created: true, remoteId };
+      const response = await this._mc.createClashTest(modelSetId, versionIndex, apiPayload);
+      const remoteId = response?.id ?? response?.data?.id ?? response?.testId;
+      if (!remoteId) {
+        logger.warn(
+          'Create clash test %s returned no id — response: %s',
+          apiPayload.name,
+          JSON.stringify(response)?.slice(0, 200)
+        );
+        return {
+          templateId,
+          name: apiPayload.name,
+          created: false,
+          error: 'API response did not include a remote id (clash test may not have been persisted)',
+          resolved: _resolved,
+        };
+      }
+      logger.info('Created clash test: %s (id: %s)', apiPayload.name, remoteId);
+      return { templateId, name: apiPayload.name, created: true, remoteId, resolved: _resolved };
     } catch (err) {
-      logger.error('Failed to create clash test %s: %s', payload.name, err.message);
-      return { templateId, name: payload.name, created: false, error: err.message };
+      logger.error('Failed to create clash test %s: %s', apiPayload.name, err.message);
+      return { templateId, name: apiPayload.name, created: false, error: err.message, resolved: _resolved };
     }
   }
 }

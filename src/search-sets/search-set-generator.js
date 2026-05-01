@@ -52,11 +52,14 @@ export class SearchSetGenerator {
     // Fetch existing sets so we can: (a) detect duplicates by name, AND
     // (b) recover their remote IDs so clash tests can still reference them.
     let existingSets = [];
+    this.listExistingError = null;
     try {
       const res = await this._mc.listSearchSets(modelSetId);
       existingSets = res?.data ?? res?.results ?? res?.searchSets ?? (Array.isArray(res) ? res : []);
-    } catch {
-      logger.warn('Could not fetch existing Search Sets — proceeding without conflict check');
+      logger.info('Fetched %d existing Search Set(s) for conflict check', existingSets.length);
+    } catch (err) {
+      this.listExistingError = err.message;
+      logger.warn('Could not fetch existing Search Sets (%s) — proceeding without conflict check', err.message);
     }
     const existingByName = new Map(existingSets.map(s => [s.name, s.id ?? s.searchSetId]));
 
@@ -108,7 +111,20 @@ export class SearchSetGenerator {
 
     try {
       const response = await this._mc.createSearchSet(modelSetId, payload);
-      const remoteId = response?.id ?? response?.data?.id ?? template.id;
+      const remoteId = response?.id ?? response?.data?.id ?? response?.searchSetId;
+      if (!remoteId) {
+        logger.warn(
+          'Create Search Set %s returned no id — response: %s',
+          template.name,
+          JSON.stringify(response)?.slice(0, 200)
+        );
+        return {
+          id: template.id,
+          name: template.name,
+          created: false,
+          error: 'API response did not include a remote id (search set may not have been persisted)',
+        };
+      }
       logger.info('Created Search Set: %s (remote id: %s)', template.name, remoteId);
       return { id: template.id, remoteId, name: template.name, created: true };
     } catch (err) {
