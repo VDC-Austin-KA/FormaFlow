@@ -19,13 +19,31 @@ import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('ModelCoordination');
 
-const MC_MODELSET_BASE =
-  process.env.MC_MODELSET_API_BASE ??
-  'https://developer.api.autodesk.com/bim360/modelcoordination/modelset/v3';
+// Model Coordination v3 — official Autodesk base URLs.
+// NB: paths are `bim360/modelset/v3/...` and `bim360/clash/v3/...`,
+// NOT `bim360/modelcoordination/...` (that extra segment returns 404).
+//
+// Auto-correct any env override that still contains the old path so a stale
+// .env file from a pre-fix install can't silently break MC calls.
+function normalizeMcBase(raw, fallback) {
+  if (!raw) return fallback;
+  const fixed = raw.replace('/bim360/modelcoordination/', '/bim360/');
+  if (fixed !== raw) {
+    // Best-effort warning — logger may not yet be wired in some import orders
+    try { logger.warn('Auto-correcting stale MC base URL: %s → %s', raw, fixed); } catch (_) {}
+  }
+  return fixed;
+}
 
-const MC_CLASH_BASE =
-  process.env.MC_CLASH_API_BASE ??
-  'https://developer.api.autodesk.com/bim360/modelcoordination/clash/v3';
+const MC_MODELSET_BASE = normalizeMcBase(
+  process.env.MC_MODELSET_API_BASE,
+  'https://developer.api.autodesk.com/bim360/modelset/v3'
+);
+
+const MC_CLASH_BASE = normalizeMcBase(
+  process.env.MC_CLASH_API_BASE,
+  'https://developer.api.autodesk.com/bim360/clash/v3'
+);
 
 export class ModelCoordinationClient {
   /**
@@ -115,22 +133,28 @@ export class ModelCoordinationClient {
    * @param {number} [pollIntervalMs=5000]
    * @param {number} [maxWaitMs=300000]  5-minute default timeout
    */
-  async waitForClashTest(modelSetId, versionIndex, testId, pollIntervalMs = 5000, maxWaitMs = 300_000) {
+  async waitForClashTest(modelSetId, versionIndex, testId, pollIntervalMs = 5000, maxWaitMs = 300_000, onStatus = null) {
     const deadline = Date.now() + maxWaitMs;
     let attempt = 0;
+    let lastStatus = null;
     while (Date.now() < deadline) {
       attempt++;
       const test = await this.getClashTest(modelSetId, versionIndex, testId);
-      const status = test?.status ?? test?.data?.status;
+      const status = test?.status ?? test?.data?.status ?? 'UNKNOWN';
       logger.debug('Clash test %s — status: %s (attempt %d)', testId, status, attempt);
+      if (status !== lastStatus) {
+        lastStatus = status;
+        if (onStatus) onStatus(status, attempt);
+      }
 
-      if (status === 'COMPLETE' || status === 'complete') return test;
-      if (status === 'FAILED' || status === 'ERROR') {
+      const norm = String(status).toUpperCase();
+      if (norm === 'COMPLETE' || norm === 'COMPLETED' || norm === 'SUCCESS') return test;
+      if (norm === 'FAILED' || norm === 'ERROR' || norm === 'CANCELLED') {
         throw new Error(`Clash test ${testId} failed with status: ${status}`);
       }
       await sleep(pollIntervalMs);
     }
-    throw new Error(`Clash test ${testId} timed out after ${maxWaitMs}ms`);
+    throw new Error(`Clash test ${testId} timed out after ${maxWaitMs}ms (last status: ${lastStatus ?? 'unknown'})`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────

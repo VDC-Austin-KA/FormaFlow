@@ -49,15 +49,19 @@ export class SearchSetGenerator {
       detectedDisciplines.join(', ')
     );
 
-    // Fetch existing sets once to avoid duplicates
+    // Fetch existing sets so we can: (a) detect duplicates by name, AND
+    // (b) recover their remote IDs so clash tests can still reference them.
     let existingSets = [];
+    this.listExistingError = null;
     try {
       const res = await this._mc.listSearchSets(modelSetId);
-      existingSets = res?.data ?? res ?? [];
-    } catch {
-      logger.warn('Could not fetch existing Search Sets — proceeding without conflict check');
+      existingSets = res?.data ?? res?.results ?? res?.searchSets ?? (Array.isArray(res) ? res : []);
+      logger.info('Fetched %d existing Search Set(s) for conflict check', existingSets.length);
+    } catch (err) {
+      this.listExistingError = err.message;
+      logger.warn('Could not fetch existing Search Sets (%s) — proceeding without conflict check', err.message);
     }
-    const existingNames = new Set(existingSets.map(s => s.name));
+    const existingByName = new Map(existingSets.map(s => [s.name, s.id ?? s.searchSetId]));
 
     const results = [];
     for (const disc of detectedDisciplines) {
@@ -70,16 +74,16 @@ export class SearchSetGenerator {
         if (template.systemBased && !this._createSystemBased) continue;
         if (!template.systemBased && !this._createFallback) continue;
 
-        const result = await this._createOne(modelSetId, template, existingNames);
+        const result = await this._createOne(modelSetId, template, existingByName);
         results.push(result);
 
-        // Track created names to avoid double-creating within the same run
-        if (result.created) existingNames.add(template.name);
+        // Track created names + IDs to avoid double-creating within the same run
+        if (result.created && result.remoteId) existingByName.set(template.name, result.remoteId);
       }
     }
 
     const created = results.filter(r => r.created).length;
-    const skipped = results.filter(r => !r.created).length;
+    const skipped = results.filter(r => r.skipped).length;
     logger.info('Search Sets: %d created, %d skipped (already exist)', created, skipped);
     return results;
   }
@@ -88,10 +92,14 @@ export class SearchSetGenerator {
   // Private helpers
   // ─────────────────────────────────────────────────────────────────────────
 
-  async _createOne(modelSetId, template, existingNames) {
-    if (existingNames.has(template.name) && !this._overwrite) {
-      logger.debug('Skipping existing Search Set: %s', template.name);
-      return { id: template.id, name: template.name, created: false, skipped: true };
+  async _createOne(modelSetId, template, existingByName) {
+    // If a Search Set with this name already exists, reuse its remote ID so
+    // clash-test creation can still reference it. Without this the workflow
+    // silently dropped clash tests because every "skipped" set lost its id.
+    if (existingByName.has(template.name) && !this._overwrite) {
+      const remoteId = existingByName.get(template.name);
+      logger.debug('Reusing existing Search Set: %s (remote id: %s)', template.name, remoteId);
+      return { id: template.id, remoteId, name: template.name, created: false, skipped: true };
     }
 
     const payload = this._buildPayload(template);
@@ -103,7 +111,20 @@ export class SearchSetGenerator {
 
     try {
       const response = await this._mc.createSearchSet(modelSetId, payload);
-      const remoteId = response?.id ?? response?.data?.id ?? template.id;
+      const remoteId = response?.id ?? response?.data?.id ?? response?.searchSetId;
+      if (!remoteId) {
+        logger.warn(
+          'Create Search Set %s returned no id — response: %s',
+          template.name,
+          JSON.stringify(response)?.slice(0, 200)
+        );
+        return {
+          id: template.id,
+          name: template.name,
+          created: false,
+          error: 'API response did not include a remote id (search set may not have been persisted)',
+        };
+      }
       logger.info('Created Search Set: %s (remote id: %s)', template.name, remoteId);
       return { id: template.id, remoteId, name: template.name, created: true };
     } catch (err) {
