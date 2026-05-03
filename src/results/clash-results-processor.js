@@ -48,7 +48,9 @@ export class ClashResultsProcessor {
    * @returns {Promise<ProcessedClashReport>}
    */
   async processAll(modelSetId, versionIndex, clashTests) {
-    const completedTests = clashTests.filter(t => t.created && t.remoteId);
+    // Include any test with a remote ID — covers both newly-created tests and
+    // existing ACC tests used as fallback (where created is false).
+    const completedTests = clashTests.filter(t => t.remoteId);
     logger.info('Processing results for %d clash test(s)', completedTests.length);
 
     const allGroups = [];

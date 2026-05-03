@@ -564,8 +564,26 @@ app.post('/api/workflow/run', async (req, res) => {
     // ── Step 3 — Extract + Classify ─────────────────────────────────────
     emit('info', '── Step 3 / 6  Identifying disciplines');
     const mdClient = new ModelDerivativeClient(apsClient);
+
+    // Model Derivative API expects the base64url-encoded derivative URN.
+    // MC documents expose it as derivativeUrn; d.urn is the lineage URN and
+    // is NOT accepted by the MD API — so we prefer derivativeUrn, then urn.
+    const b64url = s => Buffer.from(s).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    const resolveDerivativeUrn = d => {
+      const raw = d.derivativeUrn ?? d.urn ?? null;
+      if (!raw) return null;
+      // If already base64url-encoded (no colon), return as-is; otherwise encode it.
+      return raw.includes(':') ? b64url(raw) : raw;
+    };
+
     const descriptors = await Promise.all(
-      docs.map(d => mdClient.extractModelDescriptor(d.urn ?? d.derivativeUrn, d.name ?? d.fileName ?? 'Unknown'))
+      docs.map(d => {
+        const urn = resolveDerivativeUrn(d);
+        const name = d.name ?? d.fileName ?? d.displayName ?? 'Unknown';
+        return urn
+          ? mdClient.extractModelDescriptor(urn, name)
+          : Promise.resolve({ id: d.id ?? name, urn: '', fileName: name, categories: [], systemClassifications: [], systemTypes: [], properties: {} });
+      })
     );
 
     const classifier = new DisciplineClassifier();
