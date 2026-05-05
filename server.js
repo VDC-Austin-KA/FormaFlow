@@ -282,12 +282,13 @@ function normalizeDocuments(versionObj) {
   return raw.map(d => ({
     id:            d.documentId ?? d.id ?? d.versionUrn ?? d.urn ?? null,
     name:          d.name ?? d.fileName ?? d.displayName ?? null,
-    urn:           d.versionUrn ?? d.urn ?? null,        // lineage / version URN (needs b64url for MD API)
-    derivativeUrn: d.derivativeUrn ?? null,              // already-encoded derivative URN if present
+    urn:           d.versionUrn ?? d.urn ?? null,
+    derivativeUrn: d.derivativeUrn ?? null,
     size:          d.size ?? null,
     lastModified:  d.lastModifiedTime ?? d.modifiedAt ?? d.createTime ?? null,
   }));
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // APS client factory — prefers 3-legged service-account token, falls back to 2-legged
@@ -1124,8 +1125,6 @@ app.get('/api/mc/space-documents', async (req, res) => {
     const b64url = s => Buffer.from(s).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
 
     const docs = normalizeDocuments(versionObj).map(d => {
-      // For the viewer we prefer the derivative URN (already encoded); fall back to the
-      // version URN (which contains colons and must be b64url-encoded for the viewer).
       const derivativeUrn = d.derivativeUrn ?? null;
       const versionUrn    = d.urn ?? null;
       const viewableRaw   = derivativeUrn ?? versionUrn;
