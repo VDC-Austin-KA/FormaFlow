@@ -24,7 +24,7 @@ const State = {
 const DISC_COLOR = {
   ARCH: '#f59e0b', STRUCT: '#3b82f6', MECH: '#10b981',
   PLUMB: '#06b6d4', ELEC: '#f97316', FP: '#ef4444',
-  CIVIL: '#78716c', INT: '#8b5cf6', UNKNOWN: '#9ca3af',
+  CIVIL: '#78716c', INT: '#8b5cf6', TECH: '#607D8B', UNKNOWN: '#9ca3af',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1399,7 +1399,8 @@ function showRunSummary(data) {
 
 const DISC_COLORS_HEX = {
   ARCH:'#f59e0b', STRUCT:'#3b82f6', MECH:'#10b981', PLUMB:'#06b6d4',
-  ELEC:'#f97316', FP:'#ef4444',    CIVIL:'#78716c', INT:'#8b5cf6', UNKNOWN:'#9ca3af',
+  ELEC:'#f97316', FP:'#ef4444',    CIVIL:'#78716c', INT:'#8b5cf6',
+  TECH:'#607D8B', UNKNOWN:'#9ca3af',
 };
 
 const _viewerState = {
@@ -2633,7 +2634,7 @@ async function loadModels() {
 const DISC_LABEL = {
   ARCH: 'Architecture', STRUCT: 'Structure', MECH: 'Mechanical',
   PLUMB: 'Plumbing', ELEC: 'Electrical', FP: 'Fire Protection',
-  CIVIL: 'Civil / Site', INT: 'Interiors', UNKNOWN: 'Unknown',
+  CIVIL: 'Civil / Site', INT: 'Interiors', TECH: 'Technology / ICT', UNKNOWN: 'Unknown',
 };
 
 function renderModels() {
@@ -2758,7 +2759,7 @@ const ALIGN_MODES = [
   { value: 'manual',   label: 'Manual Offset' },
 ];
 
-const COORD_DISC_KEYS = ['ARCH','STRUCT','MECH','PLUMB','ELEC','FP','CIVIL','INT'];
+const COORD_DISC_KEYS = ['ARCH','STRUCT','MECH','PLUMB','ELEC','FP','CIVIL','INT','TECH'];
 
 async function loadCoordinationData() {
   el('coord-empty').classList.add('hidden');

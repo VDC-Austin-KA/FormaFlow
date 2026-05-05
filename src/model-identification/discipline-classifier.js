@@ -82,7 +82,13 @@ export class DisciplineClassifier {
     let score = 0;
 
     // 1. File-name pattern — strongest single signal (weight: 1.0)
-    if (this._matchesFileNamePattern(def, evidence.fileName)) {
+    // NWC single-letter patterns (e.g. " M.nwc$") are treated as definitive:
+    // they get a large bonus so content-based scoring from mixed-discipline
+    // NWC files (e.g. a Mechanical model with hydronic pipes) can't override them.
+    const nwcBonus = this._matchesNwcLetterPattern(def, evidence.fileName);
+    if (nwcBonus) {
+      score += 4.0; // overwhelms any content-based scoring; max possible was 3.4
+    } else if (this._matchesFileNamePattern(def, evidence.fileName)) {
       score += 1.0;
     }
 
@@ -143,6 +149,14 @@ export class DisciplineClassifier {
     }
 
     return Math.max(0, score);
+  }
+
+  _matchesNwcLetterPattern(def, fileName) {
+    if (!def.fileNamePatterns?.length) return false;
+    const name = fileName.toUpperCase();
+    // Only patterns that include nw[cd] (the NWC/NWD suffix check)
+    const nwcPatterns = def.fileNamePatterns.filter(p => /nw\[cd\]/.test(p));
+    return nwcPatterns.some(p => new RegExp(p, 'i').test(name));
   }
 
   _matchesFileNamePattern(def, fileName) {
