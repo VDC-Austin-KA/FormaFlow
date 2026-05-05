@@ -1088,8 +1088,11 @@ app.get('/api/project/modelsets', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildMcClient(req) {
-  const containerId = req.query.containerId ?? process.env.MC_CONTAINER_ID;
-  if (!containerId) throw Object.assign(new Error('containerId required'), { status: 400 });
+  // readEnv() covers both the .env file and process.env so settings saved
+  // via the Connect tab UI (written to .env) are visible here.
+  const env = readEnv();
+  const containerId = req.query.containerId ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID;
+  if (!containerId) throw Object.assign(new Error('containerId required (set MC_CONTAINER_ID on the Connect tab)'), { status: 400 });
   return import('./src/api/model-coordination.js').then(async ({ ModelCoordinationClient }) => {
     const client = await makeAPSClient();
     return new ModelCoordinationClient(client, containerId);
@@ -1099,8 +1102,9 @@ function buildMcClient(req) {
 /** List documents (models) inside a coordination space's latest version */
 app.get('/api/mc/space-documents', async (req, res) => {
   try {
-    const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
-    if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
+    const env = readEnv();
+    const modelSetId = req.query.modelSetId ?? env.MC_MODEL_SET_ID ?? process.env.MC_MODEL_SET_ID;
+    if (!modelSetId) return res.status(400).json({ error: 'modelSetId required (set MC_MODEL_SET_ID on the Connect tab)' });
     const mc = await buildMcClient(req);
 
     const versResp = await mc.getModelSetVersions(modelSetId);
@@ -1860,7 +1864,9 @@ app.post('/api/workflow/run', async (req, res) => {
         emit('info', `  ▸ ${t.name}: ${groupsForTest.length} group(s), ${clashCount} clash(es)`);
       }
     } else {
-      emit('info', dryRun ? '── Step 6 / 6  Skipped (dry run)' : '── Step 6 / 6  No completed tests to process');
+      emit('info', dryRun
+        ? '── Step 6 / 6  Skipped (dry run) — set DRY_RUN=false to read existing ACC clash tests'
+        : '── Step 6 / 6  No completed tests to process');
     }
 
     emit('info', '');
