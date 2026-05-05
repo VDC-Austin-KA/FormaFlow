@@ -1605,9 +1605,10 @@ async function loadSelectedView() {
     const containerId = el('inp-container-id').value.trim();
     const modelSetId  = v.modelSetId || getActiveCoordSpaceId();
     let docs = [];
-    if (containerId && modelSetId) {
-      const resp = await api('GET',
-        `/api/mc/space-documents?modelSetId=${encodeURIComponent(modelSetId)}&containerId=${encodeURIComponent(containerId)}`);
+    if (modelSetId) {
+      const qs = new URLSearchParams({ modelSetId });
+      if (containerId) qs.set('containerId', containerId);
+      const resp = await api('GET', `/api/mc/space-documents?${qs}`);
       docs = resp?.documents ?? [];
     }
 
@@ -1702,10 +1703,11 @@ async function saveCurrentAsView() {
   const containerId = el('inp-container-id').value.trim();
   const modelSetId  = getActiveCoordSpaceId();
   let docs = [];
-  if (containerId && modelSetId) {
+  if (modelSetId) {
     try {
-      const resp = await api('GET',
-        `/api/mc/space-documents?modelSetId=${encodeURIComponent(modelSetId)}&containerId=${encodeURIComponent(containerId)}`);
+      const qs = new URLSearchParams({ modelSetId });
+      if (containerId) qs.set('containerId', containerId);
+      const resp = await api('GET', `/api/mc/space-documents?${qs}`);
       docs = resp?.documents ?? [];
     } catch (_) {}
   }
@@ -1923,12 +1925,11 @@ function mergeDisciplinedModels(sourceModels) {
 
 async function fetchSpaceViewerModels() {
   const modelSetId = getActiveCoordSpaceId();
-  const containerId = el('inp-container-id').value.trim();
   if (!modelSetId)  { toast('Pick a Coordination Space on the Connect tab first', 'error'); return null; }
-  if (!containerId) { toast('Set MC Container ID on the Connect tab first', 'error'); return null; }
-
-  const data = await api('GET',
-    `/api/mc/space-documents?modelSetId=${encodeURIComponent(modelSetId)}&containerId=${encodeURIComponent(containerId)}`);
+  const containerId = el('inp-container-id').value.trim();
+  const qs = new URLSearchParams({ modelSetId });
+  if (containerId) qs.set('containerId', containerId);
+  const data = await api('GET', `/api/mc/space-documents?${qs}`);
   return (data?.documents ?? []).map(d => ({
     name:       d.name,
     viewerUrn:  d.viewerUrn,
@@ -2813,10 +2814,11 @@ async function loadCoordinationData() {
 
 async function fetchCoordSpaceModels() {
   const modelSetId  = getActiveCoordSpaceId();
+  if (!modelSetId) return [];
   const containerId = el('inp-container-id').value.trim();
-  if (!modelSetId || !containerId) return [];
-  const data = await api('GET',
-    `/api/mc/space-documents?modelSetId=${encodeURIComponent(modelSetId)}&containerId=${encodeURIComponent(containerId)}`);
+  const qs = new URLSearchParams({ modelSetId });
+  if (containerId) qs.set('containerId', containerId);
+  const data = await api('GET', `/api/mc/space-documents?${qs}`);
   return (data?.documents ?? []).map(d => ({
     id:         d.id,
     name:       d.name,

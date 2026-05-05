@@ -14,7 +14,8 @@
         "\\-ARCH[_\\-\\.]",
         "_ARCH\\.",
         "ARCHITECTURAL",
-        "ARCHITECTURE"
+        "ARCHITECTURE",
+        "[ \\t_\\-]A\\.nw[cd]$"
       ],
       "revitCategories": [
         "Walls",
@@ -57,7 +58,8 @@
         "\\-STRUCT[_\\-\\.]",
         "_STRUCT\\.",
         "STRUCTURAL",
-        "STRUCTURE"
+        "STRUCTURE",
+        "[ \\t_\\-]S\\.nw[cd]$"
       ],
       "revitCategories": [
         "Structural Columns",
@@ -94,7 +96,8 @@
         "^M[_\\-]",
         "\\-MECH[_\\-\\.]",
         "MECHANICAL",
-        "HVAC"
+        "HVAC",
+        "[ \\t_\\-]M\\.nw[cd]$"
       ],
       "revitCategories": [
         "Ducts",
@@ -146,7 +149,8 @@
         "^MEP[_\\-]PLUMB[_\\-]",
         "^P[_\\-]",
         "\\-PLUMB[_\\-\\.]",
-        "PLUMBING"
+        "PLUMBING",
+        "[ \\t_\\-]P\\.nw[cd]$"
       ],
       "revitCategories": [
         "Pipes",
@@ -207,7 +211,8 @@
         "^E[_\\-]",
         "^MEP[_\\-]ELEC[_\\-]",
         "\\-ELEC[_\\-\\.]",
-        "ELECTRICAL"
+        "ELECTRICAL",
+        "[ \\t_\\-]E\\.nw[cd]$"
       ],
       "revitCategories": [
         "Cable Trays",
@@ -253,7 +258,8 @@
         "^MEP[_\\-]FP[_\\-]",
         "\\-FP[_\\-\\.]",
         "FIRE.PROTECTION",
-        "FIRE.SPRINKLER"
+        "FIRE.SPRINKLER",
+        "[ \\t_\\-]F\\.nw[cd]$"
       ],
       "revitCategories": [
         "Sprinklers",
@@ -336,6 +342,50 @@
         { "property": "Category", "operator": "in", "values": ["Furniture", "Furniture Systems", "Casework"] }
       ]
     },
+    "TECH": {
+      "label": "Technology / ICT",
+      "abbreviation": "TECH",
+      "color": "#607D8B",
+      "priority": 5,
+      "fileNamePatterns": [
+        "^TECH[_\\-]",
+        "^ICT[_\\-]",
+        "^IT[_\\-]",
+        "^TELE[_\\-]",
+        "^COMM[_\\-]",
+        "^LV[_\\-]",
+        "TELECOM",
+        "TECHNOLOGY",
+        "[ \\t_\\-]T\\.nw[cd]$"
+      ],
+      "revitCategories": [
+        "Communication Devices",
+        "Data Devices",
+        "Telephone Devices",
+        "Nurse Call Devices",
+        "Security Devices",
+        "Cable Trays",
+        "Conduits"
+      ],
+      "systemClassifications": [
+        "Data",
+        "Communications",
+        "Security",
+        "Nurse Call",
+        "Telephone"
+      ],
+      "systemTypePatterns": [
+        "DATA",
+        "COMMS",
+        "ICT",
+        "LAN",
+        "CCTV",
+        "ACCESS CONTROL"
+      ],
+      "dominantCategoryThreshold": 0.40,
+      "requiredCategories": [],
+      "propertySignatures": []
+    },
     "UNKNOWN": {
       "label": "Unknown / Unclassified",
       "abbreviation": "UNK",
@@ -350,7 +400,7 @@
   },
   "classificationStrategy": {
     "order": ["fileName", "requiredCategories", "systemClassification", "propertySignature", "dominantCategory", "fallback"],
-    "minimumConfidence": 0.60,
+    "minimumConfidence": 0.20,
     "ambiguityThreshold": 0.15,
     "allowMultipleDisciplines": false,
     "fallbackDiscipline": "UNKNOWN"
