@@ -1760,10 +1760,11 @@ app.post('/api/workflow/run', async (req, res) => {
     emit('info', `  ${ssIdToRemoteId.size} Search Set(s) available for clash test references`);
     if (!ssIdToRemoteId.size && disciplines.length) {
       emit('warn', '⚠ No Search Sets resolved — clash tests will be skipped. Possible causes:');
+      emit('warn', '   • Search Sets API not available for this container (returns 404)');
+      emit('warn', '   • ACC project may not have Model Coordination / Clash Detection enabled');
       emit('warn', '   • App lacks 3-legged token / write permission for MC API');
-      emit('warn', '   • V2 coordination spaces do not support Search Sets API');
-      emit('warn', '   • Existing sets list could not be fetched and create calls failed');
       emit('warn', '   • Create calls returned no remote id (response shape mismatch)');
+      emit('warn', '   → Step 6 will attempt to read any clash tests already created in the ACC web UI');
     }
 
     // ── Step 5 — Clash Tests ────────────────────────────────────────────
@@ -1826,7 +1827,14 @@ app.post('/api/workflow/run', async (req, res) => {
           emit('warn', '  No existing clash tests found in ACC — create tests via the ACC web UI or ensure Search Sets are resolvable.');
         }
       } catch (e) {
+        const is404 = String(e.message).includes('404');
         emit('warn', `  Could not read existing ACC clash tests: ${e.message}`);
+        if (is404) {
+          emit('warn', '  → The Clash API returned 404 for this container. Possible causes:');
+          emit('warn', '    • Model Coordination / Clash Detection is not enabled for this ACC project');
+          emit('warn', '    • The app may lack the required scope (data:read on Model Coordination)');
+          emit('warn', '    • Log in to ACC → Project Admin → Services → Model Coordination and verify the feature is active');
+        }
       }
     }
 
