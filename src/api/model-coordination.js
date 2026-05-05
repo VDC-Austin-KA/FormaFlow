@@ -89,7 +89,32 @@ export class ModelCoordinationClient {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Clash Tests (Clash Sets in ACC terminology)
+  // Clash Sets
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * List all clash sets in the container.
+   * In ACC/BIM360 v3, a clash set must exist (tied to a model set) before
+   * search sets or tests can be created under it.
+   */
+  async listClashSets() {
+    return this._client.get(
+      `${MC_CLASH_BASE}/containers/${this._container}/clashsets`
+    );
+  }
+
+  /**
+   * Create a clash set for an existing model set.
+   * Required before any search-set or clash-test operations on that model set.
+   */
+  async createClashSet(modelSetId) {
+    return this._client.post(
+      `${MC_CLASH_BASE}/containers/${this._container}/clashsets`,
+      { modelSetId }
+    );
+  }
+
+  // Clash Tests
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
