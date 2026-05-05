@@ -400,7 +400,13 @@
       "MECH+FP":       ["ct-fp-mech"],
       "PLUMB+ELEC":    ["ct-plumb-elec"],
       "PLUMB+FP":      [],
-      "ELEC+FP":       []
+      "ELEC+FP":       [],
+      "ARCH+TECH":     [],
+      "STRUCT+TECH":   [],
+      "MECH+TECH":     [],
+      "PLUMB+TECH":    [],
+      "ELEC+TECH":     [],
+      "FP+TECH":       []
     }
   }
 }
