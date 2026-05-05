@@ -273,6 +273,23 @@ function toArray(raw, ...extraKeys) {
   return [];
 }
 
+// The MC API v3 getModelSetVersion endpoint returns documents under `documentVersions`
+// (not `documents`). This helper normalises both shapes into a consistent format.
+function normalizeDocuments(versionObj) {
+  if (!versionObj) return [];
+  const raw = versionObj.documents ?? versionObj.documentVersions ?? [];
+  if (!Array.isArray(raw)) return [];
+  return raw.map(d => ({
+    id:            d.documentId ?? d.id ?? d.versionUrn ?? d.urn ?? null,
+    name:          d.name ?? d.fileName ?? d.displayName ?? null,
+    urn:           d.versionUrn ?? d.urn ?? null,
+    derivativeUrn: d.derivativeUrn ?? null,
+    size:          d.size ?? null,
+    lastModified:  d.lastModifiedTime ?? d.modifiedAt ?? d.createTime ?? null,
+  }));
+}
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // APS client factory — prefers 3-legged service-account token, falls back to 2-legged
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1095,27 +1112,26 @@ app.get('/api/mc/space-documents', async (req, res) => {
 
     // The versions-list endpoint often returns lightweight objects without documents[].
     // Fall back to the individual version endpoint to get the full manifest.
+    // The full manifest may return documents under `documentVersions` (MC API v3) or
+    // `documents` (older shape) — normalizeDocuments() handles both.
     let versionObj = latest;
-    if (!versionObj.documents?.length && versionIndex != null) {
+    if (!normalizeDocuments(versionObj).length && versionIndex != null) {
       try {
         const fullVer = await mc.getModelSetVersion(modelSetId, versionIndex);
-        // Try multiple response shapes: direct, data-wrapped, version-wrapped
-        versionObj = fullVer?.data ?? fullVer?.version ?? fullVer ?? versionObj;
+        versionObj = fullVer?.data ?? fullVer ?? versionObj;
       } catch (_) { /* keep latest if full fetch fails */ }
     }
 
     const b64url = s => Buffer.from(s).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
 
-    const docs = (versionObj.documents ?? []).map(d => {
-      // derivativeUrn is the viewable derivative URN (base64url of this gives the viewer urn).
-      // urn is the version lineage URN. Prefer derivativeUrn for the viewer; expose both so
-      // the client can match MC view modelIds (which are document-level IDs, not URNs).
+    const docs = normalizeDocuments(versionObj).map(d => {
       const derivativeUrn = d.derivativeUrn ?? null;
       const versionUrn    = d.urn ?? null;
-      // For the viewer we prefer the derivative URN; fall back to version URN.
       const viewableRaw   = derivativeUrn ?? versionUrn;
-      const viewerUrn     = viewableRaw ? b64url(viewableRaw) : null;
-      const name = d.name ?? d.fileName ?? d.displayName ?? viewableRaw ?? 'Unknown';
+      const viewerUrn     = viewableRaw
+        ? (viewableRaw.includes(':') ? b64url(viewableRaw) : viewableRaw)
+        : null;
+      const name = d.name ?? viewableRaw ?? 'Unknown';
       return {
         id:           d.id ?? versionUrn,    // document UUID from MC — matches view.modelIds
         name,
@@ -1123,7 +1139,7 @@ app.get('/api/mc/space-documents', async (req, res) => {
         derivativeUrn,
         viewerUrn,
         size:         d.size ?? null,
-        lastModified: d.lastModifiedTime ?? d.modifiedAt ?? null,
+        lastModified: d.lastModified ?? null,
       };
     });
 
@@ -1591,25 +1607,27 @@ app.post('/api/workflow/run', async (req, res) => {
     // The versions-list endpoint returns lightweight objects — documents[] is often absent.
     // Fall back to the individual version endpoint to get the full manifest.
     let versionObj = latest ?? {};
-    if (!versionObj.documents?.length) {
+    // The MC API v3 version manifest returns documents under `documentVersions` (not `documents`).
+    // normalizeDocuments() handles both keys so we don't accidentally report 0 docs.
+    if (!normalizeDocuments(versionObj).length) {
       try {
         emit('info', `  Fetching full version manifest for version ${versionIndex}…`);
         const fullVer = await mcClient.getModelSetVersion(modelSetId, versionIndex);
-        // Try multiple response shapes: direct, data-wrapped, version-wrapped
-        const candidate = fullVer?.data ?? fullVer?.version ?? fullVer ?? {};
-        if (candidate.documents?.length) {
-          emit('info', `  ✓ Full manifest returned ${candidate.documents.length} document(s)`);
+        const candidate = fullVer?.data ?? fullVer ?? {};
+        const candidateDocs = normalizeDocuments(candidate);
+        if (candidateDocs.length) {
+          emit('info', `  ✓ Full manifest returned ${candidateDocs.length} document(s)`);
           versionObj = candidate;
         } else {
-          const allKeys = [fullVer, fullVer?.data, fullVer?.version].filter(Boolean)
+          const allKeys = [fullVer, fullVer?.data].filter(o => o && typeof o === 'object')
             .map(o => Object.keys(o).join(', ')).join(' | ');
-          emit('warn', `  ⚠ Full manifest also returned 0 documents. Response keys: [${allKeys}]`);
+          emit('warn', `  ⚠ Full manifest returned 0 documents. Response keys: [${allKeys}]`);
         }
       } catch (err) {
         emit('warn', `  ⚠ Could not fetch full version manifest: ${err.message}`);
       }
     }
-    const allDocs = versionObj.documents ?? [];
+    const allDocs = normalizeDocuments(versionObj);
 
     // Apply user clash-include filter and discipline overrides from coordination-assignments.json
     let coord;
