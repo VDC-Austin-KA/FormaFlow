@@ -66,35 +66,54 @@ export class ModelCoordinationClient {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Fallback Fetcher
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Automatically falls back between bim360/modelset/v3 and modelcoordination/v3
+   * if the configured default fails with 404/403. This protects against ephemeral
+   * config loss on Railway restarts.
+   */
+  async _fetchModelset(pathSuffix) {
+    const defaultBase = getMcModelsetBase();
+    const candidates = [defaultBase, ...MC_CANDIDATE_BASES].filter((v, i, a) => a.indexOf(v) === i);
+
+    let lastError;
+    for (const base of candidates) {
+      const url = `${base}${pathSuffix}`;
+      try {
+        logger.debug('GET %s', url);
+        return await this._client.get(url);
+      } catch (err) {
+        lastError = err;
+        if (err.status !== 404 && err.status !== 403) throw err;
+      }
+    }
+    throw lastError;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Model Sets
   // ─────────────────────────────────────────────────────────────────────────
 
   /** List all model sets in the container */
   async listModelSets() {
-    const url = `${getMcModelsetBase()}/containers/${this._container}/modelsets?limit=100`;
-    logger.debug('GET %s', url);
-    return this._client.get(url);
+    return this._fetchModelset(`/containers/${this._container}/modelsets?limit=100`);
   }
 
   /** Get a specific model set */
   async getModelSet(modelSetId) {
-    return this._client.get(
-      `${getMcModelsetBase()}/containers/${this._container}/modelsets/${modelSetId}`
-    );
+    return this._fetchModelset(`/containers/${this._container}/modelsets/${modelSetId}`);
   }
 
   /** Get the latest version info for a model set */
   async getModelSetVersions(modelSetId) {
-    return this._client.get(
-      `${getMcModelsetBase()}/containers/${this._container}/modelsets/${modelSetId}/versions`
-    );
+    return this._fetchModelset(`/containers/${this._container}/modelsets/${modelSetId}/versions`);
   }
 
   /** Get properties/manifest for a specific model set version */
   async getModelSetVersion(modelSetId, versionIndex) {
-    return this._client.get(
-      `${getMcModelsetBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}`
-    );
+    return this._fetchModelset(`/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -103,17 +122,12 @@ export class ModelCoordinationClient {
 
   /** List all saved views for a model set */
   async listModelSetViews(modelSetId) {
-    const url = `${getMcModelsetBase()}/containers/${this._container}/modelsets/${modelSetId}/views`;
-    logger.debug('GET %s', url);
-    return this._client.get(url);
+    return this._fetchModelset(`/containers/${this._container}/modelsets/${modelSetId}/views`);
   }
-
 
   /** Get details for a specific model set view */
   async getModelSetView(modelSetId, viewId) {
-    return this._client.get(
-      `${getMcModelsetBase()}/containers/${this._container}/modelsets/${modelSetId}/views/${viewId}`
-    );
+    return this._fetchModelset(`/containers/${this._container}/modelsets/${modelSetId}/views/${viewId}`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
