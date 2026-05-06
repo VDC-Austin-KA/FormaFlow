@@ -310,7 +310,7 @@ function selectFolderNode(folderId, folderName, nodeEl) {
 let _coordSpaces = [];
 
 async function loadCoordinationSpaces() {
-  const containerId = el('inp-container-id').value.trim();
+  const containerId = el('inp-container-id').value.trim() || State.config?.env?.MC_CONTAINER_ID || '';
   hideCoordSpaceError();
   if (!containerId) { toast('Set MC Container ID first (click Detect)', 'error'); return; }
 
@@ -467,8 +467,18 @@ async function detectContainer() {
       const id = containers[0].id ?? containers[0];
       el('inp-container-id').value = id;
 
+      // Auto-persist so MC_CONTAINER_ID is available to all backend routes
+      const savePayload = { MC_CONTAINER_ID: id };
+      // If the server found a working MC base URL, persist it too
+      if (data.workingBaseUrl) {
+        savePayload.MC_MODELSET_API_BASE = data.workingBaseUrl;
+      }
+      try {
+        await api('POST', '/api/config/env', savePayload);
+        if (State.config?.env) State.config.env.MC_CONTAINER_ID = id;
+      } catch (_) { /* best-effort persist */ }
+
       if (data.warning) {
-        // Inferred (not verified) — show amber warning, not red error
         errPanel.className = 'mt-2 p-3 rounded text-sm bg-amber-900/40 border border-amber-700 text-amber-200';
         errPanel.textContent = `⚠ ${data.warning}`;
         errPanel.classList.remove('hidden');
@@ -477,11 +487,13 @@ async function detectContainer() {
         errPanel.classList.add('hidden');
         toast(`Container detected: ${id}`);
       }
+
+      // Auto-load coordination spaces now that the container is known
+      loadCoordinationSpaces();
     } else {
       toast('No containers found — ensure your app is provisioned in ACC Admin', 'error');
     }
   } catch (err) {
-    // Build a persistent, readable error panel
     const lines = [err.message || 'Container detection failed'];
     if (err.hint)    lines.push(`\n💡 ${err.hint}`);
     if (err.apsBody) lines.push(`\nAutodesk response: ${err.apsBody}`);

@@ -459,7 +459,7 @@ app.get('/api/debug/mc-config', async (_req, res) => {
     resolved: { MC_MODELSET_BASE: ms, MC_CLASH_BASE: cl },
     container:        env.MC_CONTAINER_ID || process.env.MC_CONTAINER_ID || env.ACC_PROJECT_ID || process.env.ACC_PROJECT_ID || null,
     activeModelSetId: env.MC_MODEL_SET_ID || process.env.MC_MODEL_SET_ID || null,
-    note: 'Leave MC_MODELSET_API_BASE and MC_CLASH_API_BASE UNSET — the defaults (bim360/modelset/v3 and bim360/clash/v3) are correct. Setting them to paths containing "modelcoordination/" will be auto-corrected.',
+    note: 'MC_MODELSET_API_BASE is auto-detected during Detect Container. If both bim360/modelset/v3 and modelcoordination/v3 fail, the container may not be onboarded to MC.',
   });
 });
 
@@ -498,7 +498,7 @@ app.post('/api/config/env', (req, res) => {
     const ALLOWED = [
       'APS_CLIENT_ID', 'APS_CLIENT_SECRET',
       'ACC_ACCOUNT_ID', 'ACC_PROJECT_ID',
-      'MC_CONTAINER_ID', 'MC_MODEL_SET_ID', 'TARGET_FOLDER_URN',
+      'MC_CONTAINER_ID', 'MC_MODEL_SET_ID', 'MC_MODELSET_API_BASE', 'TARGET_FOLDER_URN',
       'LOG_LEVEL', 'DRY_RUN',
     ];
     const toSave = {};
@@ -906,8 +906,7 @@ app.get('/api/project/containers', async (req, res) => {
     if (!accountId) return res.status(400).json({ error: 'accountId required' });
 
     const client = await makeAPSClient();
-    const { resolveMcBase } = await import('./src/api/model-coordination.js');
-    const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
+    const { resolveMcBase, MC_CANDIDATE_BASES } = await import('./src/api/model-coordination.js');
 
     // ── Strategy 0: HQ Admin API — works independently of MC provisioning ────
     // Pull the container ID from the BIM360/ACC project record. This succeeds
@@ -923,26 +922,47 @@ app.get('/api/project/containers', async (req, res) => {
         ?? null;
     } catch (_) { /* HQ API unavailable — continue */ }
 
-    // ── Strategy 1: ACC v3 — containerId = projectId ──────────────────────
+    // ── Strategy 1: Try each known MC base URL with projectId as containerId ──
+    // Different ACC accounts respond to different base URLs. Try both until one works.
     let mcStatus1 = null;
     let mcBody1   = null;
-    let mcUrl1    = `${MC_MODELSET_BASE}/containers/${projectId}/modelsets`;
-    try {
-      await client.get(mcUrl1);
-      // Verified: MC API accepts projectId as containerId
-      return res.json({ data: [{ id: projectId }] });
-    } catch (e1) {
-      mcStatus1 = e1.status || 0;
-      mcBody1   = e1.body ?? null;
-      if (mcStatus1 !== 403 && mcStatus1 !== 404) throw e1;
+    let mcUrl1    = null;
+    let workingBase = null;
+
+    // Build the candidate list: env-override (if set) first, then the hardcoded pair
+    const envBase = (process.env.MC_MODELSET_API_BASE ?? '').trim();
+    const candidateBases = envBase
+      ? [envBase, ...MC_CANDIDATE_BASES.filter(b => b !== envBase)]
+      : [...MC_CANDIDATE_BASES];
+
+    for (const base of candidateBases) {
+      const url = `${base}/containers/${projectId}/modelsets`;
+      try {
+        await client.get(url);
+        // Success — this base URL works for this project
+        workingBase = base;
+        return res.json({ data: [{ id: projectId }], workingBaseUrl: base });
+      } catch (e) {
+        mcStatus1 = e.status || 0;
+        mcBody1   = e.body ?? null;
+        mcUrl1    = url;
+        if (mcStatus1 !== 403 && mcStatus1 !== 404) {
+          // Unexpected error on the first candidate — don't try more
+          break;
+        }
+        // 403/404 — try the next candidate
+      }
     }
+
 
     // ── Strategy 2: verify HQ-derived containerId against MC API ──────────
     if (hqContainerId && hqContainerId !== projectId) {
-      try {
-        await client.get(`${MC_MODELSET_BASE}/containers/${hqContainerId}/modelsets`);
-        return res.json({ data: [{ id: hqContainerId }] });
-      } catch (_) { /* fall through */ }
+      for (const base of candidateBases) {
+        try {
+          await client.get(`${base}/containers/${hqContainerId}/modelsets`);
+          return res.json({ data: [{ id: hqContainerId }], workingBaseUrl: base });
+        } catch (_) { /* try next */ }
+      }
     }
 
     // ── Fallback: return best-guess containerId with a warning ────────────
@@ -1490,28 +1510,38 @@ app.get('/api/views', async (req, res) => {
     if (modelSetId && containerId) {
       try {
         const client = await makeAPSClient();
-        const url = `https://developer.api.autodesk.com/bim360/modelset/v3/containers/${containerId}/modelsets/${modelSetId}/views`;
-        try {
-          const data = await client.get(url);
-          mc = toArray(data, 'views').map(v => ({
-            id:          `mc:${v.id ?? v.viewId}`,
-            name:        v.name ?? v.title ?? `MC View ${v.id ?? ''}`,
-            source:      'mc',
-            modelSetId,
-            modelIds:    v.modelIds ?? v.documentIds ?? [],
-            clashTestId: v.clashTestId ?? null,
-            createdAt:   v.createdAt ?? v.created ?? null,
-            raw:         v,
-          }));
-          mcSupported = true;
-        } catch (e) {
-          if (e.status === 404 || e.status === 403) {
-            mcSupported = false;
-            mcReason = e.status === 404
-              ? 'MC Views API not available for this container'
-              : 'MC Views API not authorized for this app — add as Custom Integration';
-          } else {
-            throw e;
+        const { MC_CANDIDATE_BASES } = await import('./src/api/model-coordination.js');
+        const envBase = (process.env.MC_MODELSET_API_BASE ?? '').trim();
+        const bases = envBase
+          ? [envBase, ...MC_CANDIDATE_BASES.filter(b => b !== envBase)]
+          : [...MC_CANDIDATE_BASES];
+
+        for (const base of bases) {
+          const url = `${base}/containers/${containerId}/modelsets/${modelSetId}/views`;
+          try {
+            const data = await client.get(url);
+            mc = toArray(data, 'views').map(v => ({
+              id:          `mc:${v.id ?? v.viewId}`,
+              name:        v.name ?? v.title ?? `MC View ${v.id ?? ''}`,
+              source:      'mc',
+              modelSetId,
+              modelIds:    v.modelIds ?? v.documentIds ?? [],
+              clashTestId: v.clashTestId ?? null,
+              createdAt:   v.createdAt ?? v.created ?? null,
+              raw:         v,
+            }));
+            mcSupported = true;
+            break; // This base URL worked
+          } catch (e) {
+            if (e.status === 404 || e.status === 403) {
+              mcSupported = false;
+              mcReason = e.status === 404
+                ? 'MC Views API not available for this container'
+                : 'MC Views API not authorized for this app — add as Custom Integration';
+              // Try next base URL
+            } else {
+              throw e;
+            }
           }
         }
       } catch (err) {

@@ -19,30 +19,40 @@ import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('ModelCoordination');
 
-// Correct v3 API paths: bim360/modelset/v3 and bim360/clash/v3
-// Any URL containing 'modelcoordination/' is WRONG — that segment is not part
-// of any real Autodesk endpoint. Common malformed values seen in the wild:
-//   - .../bim360/modelcoordination/modelset/v3  (invented composite)
-//   - .../bim360/modelcoordination/clash/v3     (invented composite)
-//   - .../modelcoordination/v3                  (the "unified v3" myth)
-//   - .../bim360/modelcoordination/v2           (deprecated v2)
-// All of these get auto-corrected back to the working root.
+// ─────────────────────────────────────────────────────────────────────────────
+// URL resolution for Model Coordination v3 API
+// ─────────────────────────────────────────────────────────────────────────────
+// There are two known-working base URL patterns for MC v3:
+//   1. https://developer.api.autodesk.com/bim360/modelset/v3   (legacy BIM360 / early ACC)
+//   2. https://developer.api.autodesk.com/modelcoordination/v3 (modern ACC / Forma)
+//
+// Which one works depends on the specific ACC account configuration.
+// The MC_CANDIDATE_BASES array stores both so the container detection route
+// can try each until one succeeds, then persist the winner.
+//
+// The only path that's genuinely *wrong* is the deprecated v2:
+//   - .../bim360/modelcoordination/v2
+// That gets auto-corrected to the primary candidate.
+
+export const MC_CANDIDATE_BASES = [
+  'https://developer.api.autodesk.com/bim360/modelset/v3',
+  'https://developer.api.autodesk.com/modelcoordination/v3',
+];
+
 export function resolveMcBase(envVar, fallback) {
   const raw = (process.env[envVar] ?? '').trim();
   if (!raw) return fallback;
-  const isModelset = envVar.includes('MODELSET');
-  const correctRoot = isModelset
-    ? 'https://developer.api.autodesk.com/bim360/modelset/v3'
-    : 'https://developer.api.autodesk.com/bim360/clash/v3';
-  if (raw.includes('modelcoordination/')) {
-    logger.warn('Env var %s contains "modelcoordination/" — that segment is not a valid Autodesk path. Auto-correcting: %s → %s', envVar, raw, correctRoot);
-    return correctRoot;
+  // Auto-correct the deprecated v2 path only
+  if (raw.includes('/bim360/modelcoordination/v2')) {
+    const fixed = MC_CANDIDATE_BASES[0];
+    logger.warn('Env var %s contains deprecated v2 path — auto-correcting: %s → %s', envVar, raw, fixed);
+    return fixed;
   }
   return raw;
 }
 
-const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
-const MC_CLASH_BASE = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
+const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', MC_CANDIDATE_BASES[0]);
+const MC_CLASH_BASE    = resolveMcBase('MC_CLASH_API_BASE',     'https://developer.api.autodesk.com/bim360/clash/v3');
 
 export class ModelCoordinationClient {
   /**
