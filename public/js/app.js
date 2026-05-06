@@ -3860,9 +3860,10 @@ function renderAuthStatus(status) {
   const badge     = el('sa-status-badge');
   const callbackEl = el('sa-callback-display');
 
-  // Show callback URL so user knows what to register in APS app settings
+  // Use the server-provided callback URL (which auto-detects Railway public domain).
+  // Falls back to window.location.origin so local dev still works without config.
   if (callbackEl) {
-    callbackEl.textContent = `${window.location.origin}/api/auth/callback`;
+    callbackEl.textContent = State.config?.callbackUrl ?? `${window.location.origin}/api/auth/callback`;
   }
 
   if (!status?.loggedIn) {
