@@ -20,22 +20,27 @@ import { createLogger } from '../utils/logger.js';
 const logger = createLogger('ModelCoordination');
 
 // Correct v3 API paths: bim360/modelset/v3 and bim360/clash/v3
-// Some deployments still have env vars with the wrong '/bim360/modelcoordination/' prefix.
-// Auto-correct and warn so the app works without requiring manual env var cleanup.
+// The unified '/modelcoordination/v3/' path does NOT exist as a real Autodesk
+// endpoint — calls there return 404. Auto-correct any env var pointing at it
+// (or at the deprecated v2 path) so a stale .env file can't silently break MC.
 export function resolveMcBase(envVar, fallback) {
   const raw = process.env[envVar];
   if (!raw) return fallback;
-  // Auto-correct legacy/deprecated v2 or bim360-prefixed v3 paths to the modern unified v3 path.
-  if (raw.includes('/bim360/modelcoordination/v2') || raw.includes('/bim360/modelset/v3')) {
-    const fixed = raw.replace(/\/bim360\/(modelcoordination\/v2|modelset\/v3)/, '/modelcoordination/v3');
-    logger.warn('Env var %s contains legacy/deprecated path — auto-correcting to modern v3: %s → %s', envVar, raw, fixed);
-    return fixed;
+  const isModelset = envVar.includes('MODELSET');
+  const correctRoot = isModelset
+    ? 'https://developer.api.autodesk.com/bim360/modelset/v3'
+    : 'https://developer.api.autodesk.com/bim360/clash/v3';
+  // Strip the wrong '/modelcoordination/v3' or '/bim360/modelcoordination/v2' segments
+  // back to the working '/bim360/modelset/v3' or '/bim360/clash/v3' root.
+  if (raw.includes('/modelcoordination/v3') || raw.includes('/bim360/modelcoordination/v2')) {
+    logger.warn('Env var %s points at a non-existent Autodesk path — auto-correcting: %s → %s', envVar, raw, correctRoot);
+    return correctRoot;
   }
   return raw;
 }
 
-const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/modelcoordination/v3');
-const MC_CLASH_BASE = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/modelcoordination/v3');
+const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
+const MC_CLASH_BASE = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
 
 export class ModelCoordinationClient {
   /**

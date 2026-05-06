@@ -837,7 +837,7 @@ app.get('/api/project/containers', async (req, res) => {
 
     const client = await makeAPSClient();
     const { resolveMcBase } = await import('./src/api/model-coordination.js');
-    const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/modelcoordination/v3');
+    const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
 
     // ── Strategy 0: HQ Admin API — works independently of MC provisioning ────
     // Pull the container ID from the BIM360/ACC project record. This succeeds
