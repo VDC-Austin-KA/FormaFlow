@@ -377,6 +377,48 @@ app.get('/api/debug/auth-status', async (_req, res) => {
   });
 });
 
+/**
+ * Diagnostic: actually call the MC API and return the URL + response.
+ * Lets you see exactly what Autodesk returns for the listModelSets call —
+ * useful when the UI shows a generic "404 not found" but the underlying
+ * cause is hidden (e.g. stale env override, wrong containerId, deprecated path).
+ */
+app.get('/api/debug/mc-ping', async (req, res) => {
+  try {
+    const env = readEnv();
+    const containerId = (req.query.containerId
+      ?? env.MC_CONTAINER_ID
+      ?? process.env.MC_CONTAINER_ID
+      ?? env.ACC_PROJECT_ID
+      ?? process.env.ACC_PROJECT_ID
+      ?? '').replace(/^b\./, '');
+    if (!containerId) return res.status(400).json({ error: 'containerId required (set MC_CONTAINER_ID on the Connect tab)' });
+
+    const { resolveMcBase } = await import('./src/api/model-coordination.js');
+    const base = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
+    const url = `${base}/containers/${containerId}/modelsets`;
+
+    const client = await makeAPSClient();
+    const tokenKind = (await getThreeLeggedToken()) ? '3-legged' : '2-legged';
+    try {
+      const data = await client.get(url);
+      res.json({ ok: true, tokenKind, url, containerId, response: data });
+    } catch (err) {
+      res.json({
+        ok: false,
+        tokenKind,
+        url,
+        containerId,
+        status: err.status ?? null,
+        apsBody: err.body ?? null,
+        message: err.message,
+      });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /** Diagnostic: returns the actual URLs the server will use for MC calls */
 app.get('/api/debug/mc-config', (_req, res) => {
   const env = readEnv();
@@ -856,8 +898,9 @@ app.get('/api/project/containers', async (req, res) => {
     // ── Strategy 1: ACC v3 — containerId = projectId ──────────────────────
     let mcStatus1 = null;
     let mcBody1   = null;
+    let mcUrl1    = `${MC_MODELSET_BASE}/containers/${projectId}/modelsets`;
     try {
-      await client.get(`${MC_MODELSET_BASE}/containers/${projectId}/modelsets`);
+      await client.get(mcUrl1);
       // Verified: MC API accepts projectId as containerId
       return res.json({ data: [{ id: projectId }] });
     } catch (e1) {
@@ -886,6 +929,7 @@ app.get('/api/project/containers', async (req, res) => {
       return res.json({
         data: [{ id: inferredId }],
         warning: 'MC API returned 403 — container ID is inferred (not verified). To verify, an ACC Account Admin must add this app as a Custom Integration: acc.autodesk.com → Account Admin → Custom Integrations → Add Integration → paste Client ID → enable Model Coordination.',
+        triedUrl: mcUrl1,
         apsBody: mcBody1,
       });
     }
@@ -895,6 +939,8 @@ app.get('/api/project/containers', async (req, res) => {
       return res.json({
         data: [{ id: inferredId }],
         warning: 'Model Coordination could not be verified for this project (404). Container ID is inferred. Confirm MC is active in ACC → Settings → Products & Services.',
+        triedUrl: mcUrl1,
+        apsBody: mcBody1,
       });
     }
 
