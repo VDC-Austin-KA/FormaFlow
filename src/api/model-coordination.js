@@ -25,18 +25,17 @@ const logger = createLogger('ModelCoordination');
 export function resolveMcBase(envVar, fallback) {
   const raw = process.env[envVar];
   if (!raw) return fallback;
-  // Only auto-correct if it's the legacy v2 path. v3 and above often use 
-  // 'modelcoordination' or 'clash' depending on the specific endpoint.
-  if (raw.includes('/bim360/modelcoordination/v2')) {
-    const fixed = raw.replace('/bim360/modelcoordination/v2', '/bim360/modelset/v3');
-    logger.warn('Env var %s contains deprecated v2 path — auto-correcting to v3: %s → %s', envVar, raw, fixed);
+  // Auto-correct legacy/deprecated v2 or bim360-prefixed v3 paths to the modern unified v3 path.
+  if (raw.includes('/bim360/modelcoordination/v2') || raw.includes('/bim360/modelset/v3')) {
+    const fixed = raw.replace(/\/bim360\/(modelcoordination\/v2|modelset\/v3)/, '/modelcoordination/v3');
+    logger.warn('Env var %s contains legacy/deprecated path — auto-correcting to modern v3: %s → %s', envVar, raw, fixed);
     return fixed;
   }
   return raw;
 }
 
-const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
-const MC_CLASH_BASE = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
+const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/modelcoordination/v3');
+const MC_CLASH_BASE = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/modelcoordination/v3');
 
 export class ModelCoordinationClient {
   /**
