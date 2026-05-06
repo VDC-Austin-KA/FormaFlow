@@ -836,10 +836,8 @@ app.get('/api/project/containers', async (req, res) => {
     if (!accountId) return res.status(400).json({ error: 'accountId required' });
 
     const client = await makeAPSClient();
-    // Same path-normalization as in src/api/model-coordination.js — survives stale .env files.
-    const MC_MODELSET_BASE = (process.env.MC_MODELSET_API_BASE
-      ?? 'https://developer.api.autodesk.com/bim360/modelset/v3')
-      .replace('/bim360/modelcoordination/', '/bim360/');
+    const { resolveMcBase } = await import('./src/api/model-coordination.js');
+    const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
 
     // ── Strategy 0: HQ Admin API — works independently of MC provisioning ────
     // Pull the container ID from the BIM360/ACC project record. This succeeds
@@ -1755,25 +1753,8 @@ app.post('/api/workflow/run', async (req, res) => {
     // ── Step 4 — Search Sets ────────────────────────────────────────────
     emit('info', '── Step 4 / 6  Creating Search Sets');
 
-    // Ensure a clash set exists for this model set before attempting search-set
-    // or clash-test operations. In the v3 API the clash set must be explicitly
-    // created (POST /clashsets) if it hasn't been already; all sub-paths
-    // (searchsets, versions/{n}/tests) will 404 until this is done.
-    if (!dryRun) {
-      try {
-        const clashSets = await mcClient.listClashSets();
-        const csArr = clashSets?.data ?? clashSets?.clashSets ?? (Array.isArray(clashSets) ? clashSets : []);
-        const existing = csArr.find(cs => (cs.modelSetId ?? cs.id) === modelSetId);
-        if (!existing) {
-          emit('info', '  No clash set found for this model set — provisioning one now…');
-          await mcClient.createClashSet(modelSetId);
-          emit('info', '  ✓ Clash set provisioned');
-        }
-      } catch (csErr) {
-        emit('warn', `  ⚠ Could not verify/provision clash set: ${csErr.message}`);
-        emit('warn', '    → If search-set creates still 404, enable Clash Detection in ACC Project Admin → Services → Model Coordination');
-      }
-    }
+    // In the v3 API, search sets are managed directly under the model set.
+    // Legacy "clash set" provisioning is no longer required.
 
     const ssGen = new SearchSetGenerator(mcClient, {
       overwriteExisting: config.searchSets.overwriteExisting,
