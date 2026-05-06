@@ -89,17 +89,51 @@ export class ModelCoordinationClient {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Clash Tests (Clash Sets in ACC terminology)
+  // Clash Sets
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * List all clash sets in the container.
+   * In ACC/BIM360 v3, a clash set must exist (tied to a model set) before
+   * search sets or tests can be created under it.
+   */
+  async listClashSets() {
+    return this._client.get(
+      `${MC_CLASH_BASE}/containers/${this._container}/clashsets`
+    );
+  }
+
+  /**
+   * Create a clash set for an existing model set.
+   * Required before any search-set or clash-test operations on that model set.
+   */
+  async createClashSet(modelSetId) {
+    return this._client.post(
+      `${MC_CLASH_BASE}/containers/${this._container}/clashsets`,
+      { modelSetId }
+    );
+  }
+
+  // Clash Tests
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
    * List all clash tests for a model set version.
-   * Each "clash test" defines a pair of Search Sets to test against each other.
+   * Tries the v3 clash API first; if that 404s (BIM360 / older containers),
+   * retries using the legacy v2 modelcoordination path.
    */
   async listClashTests(modelSetId, versionIndex) {
-    return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/versions/${versionIndex}/tests`
-    );
+    const urlV3 = `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/versions/${versionIndex}/tests`;
+    try {
+      return await this._client.get(urlV3);
+    } catch (errV3) {
+      const is404 = errV3.status === 404 || String(errV3.message).includes('404');
+      if (!is404) throw errV3;
+      // Legacy BIM360 containers may only support the v2 modelcoordination path.
+      const urlV2 = `https://developer.api.autodesk.com/bim360/modelcoordination/v2/containers/${this._container}/clashsets/${modelSetId}/versions/${versionIndex}/tests`;
+      logger.debug('clash/v3 tests 404, falling back to modelcoordination/v2: %s', urlV2);
+      return this._client.get(urlV2);
+    }
   }
 
   /**

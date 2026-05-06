@@ -106,7 +106,9 @@ export class SearchSetGenerator {
 
     if (this._dryRun) {
       logger.info('[DRY RUN] Would create Search Set: %s', template.name);
-      return { id: template.id, name: template.name, created: false, dryRun: true };
+      // Assign a stable fake remoteId so ssIdToRemoteId is populated and
+      // Step 5 can resolve clash test sides in dry-run mode.
+      return { id: template.id, remoteId: `dry-run-${template.id}`, name: template.name, created: false, dryRun: true };
     }
 
     try {

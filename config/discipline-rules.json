@@ -13,8 +13,12 @@
         "^A[_\\-]",
         "\\-ARCH[_\\-\\.]",
         "_ARCH\\.",
+        "[_\\-]ARCH[_\\-\\.]",
+        "[_\\-]CLNG[_\\-\\.]",
+        "[_\\-]CEIL[_\\-\\.]",
         "ARCHITECTURAL",
         "ARCHITECTURE",
+        "CEILING",
         "[ \\t_\\-]A\\.nw[cd]$"
       ],
       "revitCategories": [
@@ -57,8 +61,14 @@
         "^S[_\\-]",
         "\\-STRUCT[_\\-\\.]",
         "_STRUCT\\.",
+        "[_\\-]STRUCT[_\\-\\.]",
+        "[_\\-]STR[_\\-\\.]",
+        "[_\\-]EMBED[_\\-\\.]",
+        "[_\\-]FRAM[_\\-\\.]",
         "STRUCTURAL",
         "STRUCTURE",
+        "EMBEDDED",
+        "FRAMING",
         "[ \\t_\\-]S\\.nw[cd]$"
       ],
       "revitCategories": [
@@ -95,6 +105,8 @@
         "^HVAC[_\\-]",
         "^M[_\\-]",
         "\\-MECH[_\\-\\.]",
+        "[_\\-]MECH[_\\-\\.]",
+        "[_\\-]MEP[_\\-\\.]",
         "MECHANICAL",
         "HVAC",
         "[ \\t_\\-]M\\.nw[cd]$"
@@ -299,6 +311,8 @@
         "^SITE[_\\-]",
         "^C[_\\-]",
         "\\-CIVIL[_\\-\\.]",
+        "[_\\-]CIVIL[_\\-\\.]",
+        "[_\\-]SITE[_\\-\\.]",
         "CIVIL",
         "SITE.WORK",
         "LANDSCAPE"
