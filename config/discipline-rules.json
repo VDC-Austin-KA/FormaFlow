@@ -19,6 +19,10 @@
         "ARCHITECTURAL",
         "ARCHITECTURE",
         "CEILING",
+        "[_\\-]ARCS[_\\-\\.]",
+        "[_\\-]ARIN[_\\-\\.]",
+        "[_\\-]MLN[_\\-\\.]",
+        "[_\\-]MULL[_\\-\\.]",
         "[ \\t_\\-]A\\.nw[cd]$"
       ],
       "revitCategories": [
@@ -314,6 +318,7 @@
         "[_\\-]CIVIL[_\\-\\.]",
         "[_\\-]SITE[_\\-\\.]",
         "CIVIL",
+        "SITE",
         "SITE.WORK",
         "LANDSCAPE"
       ],
