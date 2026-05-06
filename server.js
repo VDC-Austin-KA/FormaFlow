@@ -324,19 +324,11 @@ async function makeAPSClient(overrides = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const rawMs   = process.env.MC_MODELSET_API_BASE || '(default)';
-  const fixedMs = (process.env.MC_MODELSET_API_BASE
-    ?? 'https://developer.api.autodesk.com/bim360/modelset/v3')
-    .replace('/bim360/modelcoordination/', '/bim360/');
+  const fixedMs = process.env.MC_MODELSET_API_BASE ?? 'https://developer.api.autodesk.com/bim360/modelset/v3';
   const rawCl   = process.env.MC_CLASH_API_BASE || '(default)';
-  const fixedCl = (process.env.MC_CLASH_API_BASE
-    ?? 'https://developer.api.autodesk.com/bim360/clash/v3')
-    .replace('/bim360/modelcoordination/', '/bim360/');
-  console.log('[FormaFlow] MC_MODELSET_API_BASE: %s → %s', rawMs, fixedMs);
-  console.log('[FormaFlow] MC_CLASH_API_BASE:    %s → %s', rawCl, fixedCl);
-  if (rawMs.includes('modelcoordination/') || rawCl.includes('modelcoordination/')) {
-    console.warn('[FormaFlow] ⚠ Stale .env override detected — auto-correcting at runtime.');
-    console.warn('[FormaFlow]   Recommended: remove MC_MODELSET_API_BASE / MC_CLASH_API_BASE from .env');
-  }
+  const fixedCl = process.env.MC_CLASH_API_BASE ?? 'https://developer.api.autodesk.com/bim360/clash/v3';
+  console.log('[FormaFlow] MC_MODELSET_API_BASE: %s', fixedMs);
+  console.log('[FormaFlow] MC_CLASH_API_BASE:    %s', fixedCl);
 }
 
 /**
@@ -379,20 +371,18 @@ app.get('/api/debug/auth-status', async (_req, res) => {
 
 /** Diagnostic: returns the actual URLs the server will use for MC calls */
 app.get('/api/debug/mc-config', (_req, res) => {
-  const ms = (process.env.MC_MODELSET_API_BASE
-    ?? 'https://developer.api.autodesk.com/bim360/modelset/v3')
-    .replace('/bim360/modelcoordination/', '/bim360/');
-  const cl = (process.env.MC_CLASH_API_BASE
-    ?? 'https://developer.api.autodesk.com/bim360/clash/v3')
-    .replace('/bim360/modelcoordination/', '/bim360/');
+  const env = readEnv();
+  const ms = process.env.MC_MODELSET_API_BASE ?? 'https://developer.api.autodesk.com/bim360/modelset/v3';
+  const cl = process.env.MC_CLASH_API_BASE ?? 'https://developer.api.autodesk.com/bim360/clash/v3';
   res.json({
     rawEnv: {
       MC_MODELSET_API_BASE: process.env.MC_MODELSET_API_BASE || null,
       MC_CLASH_API_BASE:    process.env.MC_CLASH_API_BASE    || null,
     },
     resolved: { MC_MODELSET_BASE: ms, MC_CLASH_BASE: cl },
-    container:        process.env.MC_CONTAINER_ID || null,
-    activeModelSetId: process.env.MC_MODEL_SET_ID || null,
+    container:        env.MC_CONTAINER_ID || process.env.MC_CONTAINER_ID || null,
+    activeModelSetId: env.MC_MODEL_SET_ID || process.env.MC_MODEL_SET_ID || null,
+    note: 'Leave MC_MODELSET_API_BASE and MC_CLASH_API_BASE UNSET — the defaults (bim360/modelset/v3 and bim360/clash/v3) are correct. Setting them to paths containing "modelcoordination/" will cause 404 errors.',
   });
 });
 
@@ -1598,13 +1588,19 @@ app.post('/api/workflow/run', async (req, res) => {
 
     // ── Step 2 — Model Set ──────────────────────────────────────────────
     emit('info', '── Step 2 / 6  Fetching model set');
-    const mcClient = new ModelCoordinationClient(apsClient);
+    const wfEnv = readEnv();
+    const containerId = wfEnv.MC_CONTAINER_ID || process.env.MC_CONTAINER_ID;
+    if (!containerId) {
+      emit('error', '✗ MC_CONTAINER_ID is not set — configure it on the Connect tab or in Railway env vars');
+      return done(false);
+    }
+    const mcClient = new ModelCoordinationClient(apsClient, containerId);
     const setsResp = await mcClient.listModelSets();
     const modelSets = toArray(setsResp, 'modelsets', 'modelSets');
     if (!modelSets.length) { emit('error', '✗ No model sets found — check MC_CONTAINER_ID and ensure a Coordination Space exists in ACC'); return done(false); }
 
     // Prefer the user-selected coordination space; fall back to first if none chosen.
-    const selectedId = process.env.MC_MODEL_SET_ID;
+    const selectedId = wfEnv.MC_MODEL_SET_ID || process.env.MC_MODEL_SET_ID;
     let ms = selectedId
       ? modelSets.find(s => (s.id ?? s.modelSetId) === selectedId)
       : null;
