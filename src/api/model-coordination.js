@@ -19,8 +19,22 @@ import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('ModelCoordination');
 
-const MC_MODELSET_BASE = process.env.MC_MODELSET_API_BASE ?? 'https://developer.api.autodesk.com/bim360/modelset/v3';
-const MC_CLASH_BASE = process.env.MC_CLASH_API_BASE ?? 'https://developer.api.autodesk.com/bim360/clash/v3';
+// Correct v3 API paths: bim360/modelset/v3 and bim360/clash/v3
+// Some deployments still have env vars with the wrong '/bim360/modelcoordination/' prefix.
+// Auto-correct and warn so the app works without requiring manual env var cleanup.
+function resolveMcBase(envVar, fallback) {
+  const raw = process.env[envVar];
+  if (!raw) return fallback;
+  if (raw.includes('/bim360/modelcoordination/')) {
+    const fixed = raw.replace('/bim360/modelcoordination/', '/bim360/');
+    logger.warn('Env var %s contains deprecated "modelcoordination/" segment — auto-correcting: %s → %s. Please remove this env var; the code default is correct.', envVar, raw, fixed);
+    return fixed;
+  }
+  return raw;
+}
+
+const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
+const MC_CLASH_BASE = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
 
 export class ModelCoordinationClient {
   /**
