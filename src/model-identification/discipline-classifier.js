@@ -81,15 +81,18 @@ export class DisciplineClassifier {
   _scoreOneDiscipline(def, evidence) {
     let score = 0;
 
-    // 1. File-name pattern — strongest single signal (weight: 1.0)
+    // 1. File-name pattern — strongest single signal (weight: 2.0)
     // NWC single-letter patterns (e.g. " M.nwc$") are treated as definitive:
     // they get a large bonus so content-based scoring from mixed-discipline
     // NWC files (e.g. a Mechanical model with hydronic pipes) can't override them.
+    // The regular filename-pattern weight (2.0) is set high enough to beat the
+    // maximum realistic content score (~1.5 for a strongly typed model) while
+    // still losing to the NWC letter bonus (4.0).
     const nwcBonus = this._matchesNwcLetterPattern(def, evidence.fileName);
     if (nwcBonus) {
       score += 4.0; // overwhelms any content-based scoring; max possible was 3.4
     } else if (this._matchesFileNamePattern(def, evidence.fileName)) {
-      score += 1.0;
+      score += 2.0;
     }
 
     // 2. Required categories present (weight: 0.8)
@@ -189,7 +192,7 @@ export class DisciplineClassifier {
     }
 
     const [[topKey, topScore], second] = sorted;
-    const maxPossible = 3.4;  // sum of all weight ceilings
+    const maxPossible = 5.0;  // filename(2.0) + required-cat(0.8) + sys-class(0.7) + sys-type(0.5) + prop-sig(0.6) + dom-cat(0.4)
     const confidence = Math.min(topScore / maxPossible, 1);
 
     if (confidence < this.strategy.minimumConfidence) {
