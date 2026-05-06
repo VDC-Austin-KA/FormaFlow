@@ -38,9 +38,11 @@ async function api(method, path, body) {
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     const e = new Error(err.error || res.statusText);
-    e.hint    = err.hint    || null;
-    e.apsBody = err.apsBody || null;
-    e.status  = res.status;
+    e.hint     = err.hint     || null;
+    e.apsBody  = err.apsBody  || null;
+    e.details  = err.details  || null;   // APS error body from server-side catch
+    e.triedUrl = err.triedUrl || null;
+    e.status   = res.status;
     throw e;
   }
   return res.json().catch(() => null);
@@ -363,13 +365,16 @@ async function loadCoordinationSpaces() {
         ]
       );
     } else if (err.status === 404) {
+      const steps = [
+        'Your project hasn\'t been onboarded to ACC Model Coordination yet — open the MC app once in ACC web to enable',
+        'The Container ID is wrong — for ACC v3 projects it equals the Project ID (without the "b." prefix)',
+        'Stale MC_MODELSET_API_BASE / MC_CLASH_API_BASE env var — remove them so code defaults take effect',
+      ];
+      if (err.details) steps.push(`Autodesk responded: ${typeof err.details === 'string' ? err.details : JSON.stringify(err.details)}`);
       showCoordSpaceError(
         '404 Not Found — Container does not exist on the MC API',
         'The Container ID resolved is not registered with Model Coordination. Possible reasons:',
-        [
-          'Your project hasn\'t been onboarded to ACC Model Coordination yet — open the MC app once in ACC web to enable',
-          'The Container ID is wrong — for ACC v3 projects it equals the Project ID (without the "b." prefix)',
-        ]
+        steps,
       );
     } else if (err.status === 401) {
       showCoordSpaceError(
