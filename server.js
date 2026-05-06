@@ -1206,7 +1206,7 @@ app.get('/api/mc/search-sets', async (req, res) => {
 app.get('/api/mc/clash-sets', async (req, res) => {
   try {
     const mc = await buildMcClient(req);
-    const data = await mc.listClashSets();
+    const data = await mc.verifyModelSet(req.query.modelSetId || process.env.MC_MODEL_SET_ID);
     res.json(data);
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });

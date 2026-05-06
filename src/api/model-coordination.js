@@ -109,7 +109,7 @@ export class ModelCoordinationClient {
       const is404 = errV3.status === 404 || String(errV3.message).includes('404');
       if (!is404) throw errV3;
       // Legacy BIM360 containers may only support the v2 modelcoordination path.
-      const urlV2 = `https://developer.api.autodesk.com/bim360/modelcoordination/v2/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests`;
+      const urlV2 = `https://developer.api.autodesk.com/bim360/modelcoordination/v2/containers/${this._container}/clashsets/${modelSetId}/versions/${versionIndex}/tests`;
       logger.debug('clash/v3 tests 404, falling back to modelcoordination/v2: %s', urlV2);
       return this._client.get(urlV2);
     }
