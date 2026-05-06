@@ -54,10 +54,13 @@ function readEnv() {
     }
   }
 
-  // Merge: .env file value → process.env value → empty string
+  // Merge: .env file value → process.env value → empty string.
+  // Trim each value — Railway dashboard fields and pasted IDs commonly carry
+  // trailing whitespace, which silently breaks UUID-comparing API calls.
   const out = {};
   for (const key of ENV_KEYS) {
-    out[key] = fileValues[key] ?? process.env[key] ?? '';
+    const raw = fileValues[key] ?? process.env[key] ?? '';
+    out[key] = typeof raw === 'string' ? raw.trim() : raw;
   }
 
   // Apply aliases: if canonical key is still empty, check the alias name
@@ -322,20 +325,17 @@ async function makeAPSClient(overrides = {}) {
 // Startup diagnostic — log the resolved MC URLs so stale env overrides are
 // immediately visible in Railway/etc. logs.
 // ─────────────────────────────────────────────────────────────────────────────
-// Auto-correct known-bad 'modelcoordination/' in env var overrides
-function fixMcUrl(raw, fallback) {
-  if (!raw) return fallback;
-  return raw.includes('/bim360/modelcoordination/')
-    ? raw.replace('/bim360/modelcoordination/', '/bim360/')
-    : raw;
-}
+// Defer to resolveMcBase in model-coordination.js so server.js and the MC
+// client agree on the resolved URL. Both must produce identical output or
+// debug endpoints will report different paths than the live API client uses.
 {
-  const fixedMs = fixMcUrl(process.env.MC_MODELSET_API_BASE, 'https://developer.api.autodesk.com/bim360/modelset/v3');
-  const fixedCl = fixMcUrl(process.env.MC_CLASH_API_BASE, 'https://developer.api.autodesk.com/bim360/clash/v3');
+  const { resolveMcBase } = await import('./src/api/model-coordination.js');
+  const fixedMs = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
+  const fixedCl = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
   console.log('[FormaFlow] MC_MODELSET_API_BASE: %s', fixedMs);
   console.log('[FormaFlow] MC_CLASH_API_BASE:    %s', fixedCl);
   if (process.env.MC_MODELSET_API_BASE?.includes('modelcoordination/') || process.env.MC_CLASH_API_BASE?.includes('modelcoordination/')) {
-    console.warn('[FormaFlow] ⚠ Env vars contain deprecated "modelcoordination/" path — auto-corrected. Remove MC_MODELSET_API_BASE and MC_CLASH_API_BASE from env vars to silence this warning.');
+    console.warn('[FormaFlow] ⚠ Env vars contain "modelcoordination/" path — auto-corrected. Remove MC_MODELSET_API_BASE and MC_CLASH_API_BASE from env vars to silence this warning.');
   }
 }
 
@@ -420,10 +420,11 @@ app.get('/api/debug/mc-ping', async (req, res) => {
 });
 
 /** Diagnostic: returns the actual URLs the server will use for MC calls */
-app.get('/api/debug/mc-config', (_req, res) => {
+app.get('/api/debug/mc-config', async (_req, res) => {
   const env = readEnv();
-  const ms = fixMcUrl(process.env.MC_MODELSET_API_BASE, 'https://developer.api.autodesk.com/bim360/modelset/v3');
-  const cl = fixMcUrl(process.env.MC_CLASH_API_BASE, 'https://developer.api.autodesk.com/bim360/clash/v3');
+  const { resolveMcBase } = await import('./src/api/model-coordination.js');
+  const ms = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
+  const cl = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
   res.json({
     rawEnv: {
       MC_MODELSET_API_BASE: process.env.MC_MODELSET_API_BASE || null,

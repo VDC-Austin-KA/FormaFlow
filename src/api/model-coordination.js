@@ -20,20 +20,22 @@ import { createLogger } from '../utils/logger.js';
 const logger = createLogger('ModelCoordination');
 
 // Correct v3 API paths: bim360/modelset/v3 and bim360/clash/v3
-// The unified '/modelcoordination/v3/' path does NOT exist as a real Autodesk
-// endpoint — calls there return 404. Auto-correct any env var pointing at it
-// (or at the deprecated v2 path) so a stale .env file can't silently break MC.
+// Any URL containing 'modelcoordination/' is WRONG — that segment is not part
+// of any real Autodesk endpoint. Common malformed values seen in the wild:
+//   - .../bim360/modelcoordination/modelset/v3  (invented composite)
+//   - .../bim360/modelcoordination/clash/v3     (invented composite)
+//   - .../modelcoordination/v3                  (the "unified v3" myth)
+//   - .../bim360/modelcoordination/v2           (deprecated v2)
+// All of these get auto-corrected back to the working root.
 export function resolveMcBase(envVar, fallback) {
-  const raw = process.env[envVar];
+  const raw = (process.env[envVar] ?? '').trim();
   if (!raw) return fallback;
   const isModelset = envVar.includes('MODELSET');
   const correctRoot = isModelset
     ? 'https://developer.api.autodesk.com/bim360/modelset/v3'
     : 'https://developer.api.autodesk.com/bim360/clash/v3';
-  // Strip the wrong '/modelcoordination/v3' or '/bim360/modelcoordination/v2' segments
-  // back to the working '/bim360/modelset/v3' or '/bim360/clash/v3' root.
-  if (raw.includes('/modelcoordination/v3') || raw.includes('/bim360/modelcoordination/v2')) {
-    logger.warn('Env var %s points at a non-existent Autodesk path — auto-correcting: %s → %s', envVar, raw, correctRoot);
+  if (raw.includes('modelcoordination/')) {
+    logger.warn('Env var %s contains "modelcoordination/" — that segment is not a valid Autodesk path. Auto-correcting: %s → %s', envVar, raw, correctRoot);
     return correctRoot;
   }
   return raw;
