@@ -110,6 +110,33 @@ export class ModelCoordinationClient {
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
+   * List all model sets known to the Clash service for this container.
+   * A model set that exists in modelset/v3 but is absent here has NOT had
+   * clash detection enabled yet — open it in ACC → Model Coordination and
+   * run (or schedule) a clash test to register it with the clash service.
+   */
+  async listClashModelSets() {
+    return this._client.get(
+      `${MC_CLASH_BASE}/containers/${this._container}/modelsets`
+    );
+  }
+
+  /**
+   * Returns true if the given model set ID is registered with the clash service.
+   * Callers should call this before trying search-set or clash-test endpoints so
+   * they can surface a clear "enable clash detection" message instead of a raw 404.
+   */
+  async isClashEnabled(modelSetId) {
+    try {
+      const raw = await this.listClashModelSets();
+      const sets = raw?.modelSets ?? raw?.modelsets ?? raw?.data ?? raw?.results ?? (Array.isArray(raw) ? raw : []);
+      return sets.some(s => (s.id ?? s.modelSetId) === modelSetId);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Check if a coordination space (model set) has clash detection enabled.
    * In v3, we simply verify the model set exists.
    */

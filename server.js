@@ -123,10 +123,14 @@ function writeConfig(name, data) {
 const TOKENS_PATH = resolve(__dirname, 'config', 'auth-tokens.json');
 
 // The callback URL must be registered in the APS application's Callback URLs list.
-// Set APS_CALLBACK_URL in .env to match your deployed URL; defaults to localhost.
+// Priority: APS_CALLBACK_URL env var → Railway auto-detected URL → localhost fallback.
 function getCallbackUrl() {
-  return process.env.APS_CALLBACK_URL
-    || `http://localhost:${PORT}/api/auth/callback`;
+  if (process.env.APS_CALLBACK_URL) return process.env.APS_CALLBACK_URL;
+  // Railway provides RAILWAY_PUBLIC_DOMAIN (e.g. "formaflow.up.railway.app")
+  if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+    return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/api/auth/callback`;
+  }
+  return `http://localhost:${PORT}/api/auth/callback`;
 }
 
 function readTokens() {
@@ -400,20 +404,42 @@ app.get('/api/debug/mc-ping', async (req, res) => {
 
     const client = await makeAPSClient();
     const tokenKind = (await getThreeLeggedToken()) ? '3-legged' : '2-legged';
+
+    // Test modelset/v3 (list model sets)
+    let modelsetResult;
     try {
       const data = await client.get(url);
-      res.json({ ok: true, tokenKind, url, containerId, response: data });
+      modelsetResult = { ok: true, url, response: data };
     } catch (err) {
-      res.json({
-        ok: false,
-        tokenKind,
-        url,
-        containerId,
-        status: err.status ?? null,
-        apsBody: err.body ?? null,
-        message: err.message,
-      });
+      modelsetResult = { ok: false, url, status: err.status ?? null, apsBody: err.body ?? null, message: err.message };
     }
+
+    // Test clash/v3 (list clash-registered model sets) — reveals whether
+    // this container has any clash-enabled coordination spaces.
+    const { resolveMcBase: _rcb } = await import('./src/api/model-coordination.js');
+    const clashBase = _rcb('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
+    const clashUrl = `${clashBase}/containers/${containerId}/modelsets`;
+    let clashResult;
+    try {
+      const data = await client.get(clashUrl);
+      const sets = data?.modelSets ?? data?.data ?? (Array.isArray(data) ? data : []);
+      clashResult = { ok: true, url: clashUrl, clashEnabledCount: sets.length, modelSetIds: sets.map(s => s.id ?? s.modelSetId) };
+    } catch (err) {
+      clashResult = { ok: false, url: clashUrl, status: err.status ?? null, apsBody: err.body ?? null, message: err.message };
+    }
+
+    res.json({
+      ok: modelsetResult.ok,
+      tokenKind,
+      containerId,
+      modelset: modelsetResult,
+      clash: clashResult,
+      note: !clashResult.ok
+        ? 'clash/v3 returned an error — clash detection may not be provisioned for this container'
+        : (clashResult.clashEnabledCount === 0
+            ? 'clash/v3 returned 0 model sets — open ACC → Model Coordination and run a clash test to register the coordination space with the clash service'
+            : `${clashResult.clashEnabledCount} model set(s) registered with the clash service`),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -456,12 +482,13 @@ app.get('/api/config', (_req, res) => {
       LOG_LEVEL: env.LOG_LEVEL ?? 'info',
       DRY_RUN:   env.DRY_RUN   ?? 'false',
     },
-    hasSecret:   !!env.APS_CLIENT_SECRET,
-    searchSets:  readConfig('search-set-library.json'),
-    clashTests:  readConfig('clash-test-templates.json'),
-    workflow:    readConfig('workflow-config.json'),
-    naming:      readConfig('naming-conventions.json'),
-    disciplines: readConfig('discipline-rules.json'),
+    hasSecret:    !!env.APS_CLIENT_SECRET,
+    callbackUrl:  getCallbackUrl(),
+    searchSets:   readConfig('search-set-library.json'),
+    clashTests:   readConfig('clash-test-templates.json'),
+    workflow:     readConfig('workflow-config.json'),
+    naming:       readConfig('naming-conventions.json'),
+    disciplines:  readConfig('discipline-rules.json'),
   });
 });
 
@@ -1832,8 +1859,25 @@ app.post('/api/workflow/run', async (req, res) => {
     // ── Step 4 — Search Sets ────────────────────────────────────────────
     emit('info', '── Step 4 / 6  Creating Search Sets');
 
-    // In the v3 API, search sets are managed directly under the model set.
-    // Legacy "clash set" provisioning is no longer required.
+    // Pre-flight: verify this model set is registered with the Clash service.
+    // A coordination space that was created in ACC but has never had a clash
+    // test initiated (even from the web UI) may not appear in the clash/v3 API,
+    // causing every search-set and clash-test call to 404.
+    let clashReady = false;
+    try {
+      clashReady = await mcClient.isClashEnabled(modelSetId);
+      if (clashReady) {
+        emit('info', '  ✓ Model set is registered with the Clash service');
+      } else {
+        emit('warn', '  ⚠ Model set is NOT registered with the Clash service (bim360/clash/v3).');
+        emit('warn', '    Search Set and Clash Test API calls will return 404 until clash detection is enabled.');
+        emit('warn', '    To fix: open ACC → Model Coordination → select your Coordination Space → run any clash test.');
+        emit('warn', '    After the first clash test completes, re-run this workflow.');
+        emit('warn', '    Attempting search set creation anyway (in case the pre-flight check itself was blocked)…');
+      }
+    } catch (err) {
+      emit('warn', `  ⚠ Could not verify clash readiness: ${err.message}`);
+    }
 
     const ssGen = new SearchSetGenerator(mcClient, {
       overwriteExisting: config.searchSets.overwriteExisting,
