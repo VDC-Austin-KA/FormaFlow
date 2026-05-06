@@ -51,8 +51,8 @@ export function resolveMcBase(envVar, fallback) {
   return raw;
 }
 
-const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', MC_CANDIDATE_BASES[0]);
-const MC_CLASH_BASE    = resolveMcBase('MC_CLASH_API_BASE',     'https://developer.api.autodesk.com/bim360/clash/v3');
+const getMcModelsetBase = () => resolveMcBase('MC_MODELSET_API_BASE', MC_CANDIDATE_BASES[0]);
+const getMcClashBase    = () => resolveMcBase('MC_CLASH_API_BASE',     'https://developer.api.autodesk.com/bim360/clash/v3');
 
 export class ModelCoordinationClient {
   /**
@@ -71,7 +71,7 @@ export class ModelCoordinationClient {
 
   /** List all model sets in the container */
   async listModelSets() {
-    const url = `${MC_MODELSET_BASE}/containers/${this._container}/modelsets?limit=100`;
+    const url = `${getMcModelsetBase()}/containers/${this._container}/modelsets?limit=100`;
     logger.debug('GET %s', url);
     return this._client.get(url);
   }
@@ -79,21 +79,21 @@ export class ModelCoordinationClient {
   /** Get a specific model set */
   async getModelSet(modelSetId) {
     return this._client.get(
-      `${MC_MODELSET_BASE}/containers/${this._container}/modelsets/${modelSetId}`
+      `${getMcModelsetBase()}/containers/${this._container}/modelsets/${modelSetId}`
     );
   }
 
   /** Get the latest version info for a model set */
   async getModelSetVersions(modelSetId) {
     return this._client.get(
-      `${MC_MODELSET_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions`
+      `${getMcModelsetBase()}/containers/${this._container}/modelsets/${modelSetId}/versions`
     );
   }
 
   /** Get properties/manifest for a specific model set version */
   async getModelSetVersion(modelSetId, versionIndex) {
     return this._client.get(
-      `${MC_MODELSET_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}`
+      `${getMcModelsetBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}`
     );
   }
 
@@ -103,15 +103,16 @@ export class ModelCoordinationClient {
 
   /** List all saved views for a model set */
   async listModelSetViews(modelSetId) {
-    const url = `${MC_MODELSET_BASE}/containers/${this._container}/modelsets/${modelSetId}/views`;
+    const url = `${getMcModelsetBase()}/containers/${this._container}/modelsets/${modelSetId}/views`;
     logger.debug('GET %s', url);
     return this._client.get(url);
   }
 
+
   /** Get details for a specific model set view */
   async getModelSetView(modelSetId, viewId) {
     return this._client.get(
-      `${MC_MODELSET_BASE}/containers/${this._container}/modelsets/${modelSetId}/views/${viewId}`
+      `${getMcModelsetBase()}/containers/${this._container}/modelsets/${modelSetId}/views/${viewId}`
     );
   }
 
@@ -127,7 +128,7 @@ export class ModelCoordinationClient {
    */
   async listClashModelSets() {
     return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/modelsets`
+      `${getMcClashBase()}/containers/${this._container}/modelsets`
     );
   }
 
@@ -163,7 +164,7 @@ export class ModelCoordinationClient {
    * retries using the legacy v2 modelcoordination path.
    */
   async listClashTests(modelSetId, versionIndex) {
-    const urlV3 = `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests`;
+    const urlV3 = `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests`;
     try {
       return await this._client.get(urlV3);
     } catch (errV3) {
@@ -186,7 +187,7 @@ export class ModelCoordinationClient {
   async createClashTest(modelSetId, versionIndex, testDef) {
     logger.info('Creating clash test: %s', testDef.name);
     return this._client.post(
-      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests`,
+      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests`,
       testDef
     );
   }
@@ -194,7 +195,7 @@ export class ModelCoordinationClient {
   /** Get a specific clash test by ID */
   async getClashTest(modelSetId, versionIndex, testId) {
     return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}`
+      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}`
     );
   }
 
@@ -241,7 +242,7 @@ export class ModelCoordinationClient {
    */
   async getClashTestResources(modelSetId, versionIndex, testId) {
     return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/resources`
+      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/resources`
     );
   }
 
@@ -251,7 +252,7 @@ export class ModelCoordinationClient {
    */
   async getClashDocument(modelSetId, versionIndex, testId, documentKey) {
     return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/resources/${documentKey}`
+      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/resources/${documentKey}`
     );
   }
 
@@ -261,7 +262,7 @@ export class ModelCoordinationClient {
    */
   async getGroupedClashes(modelSetId, versionIndex, testId) {
     return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/groups`
+      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/groups`
     );
   }
 
@@ -276,7 +277,7 @@ export class ModelCoordinationClient {
    */
   async listSearchSets(modelSetId) {
     return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/searchsets`
+      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/searchsets`
     );
   }
 
@@ -289,7 +290,7 @@ export class ModelCoordinationClient {
   async createSearchSet(modelSetId, searchSetDef) {
     logger.info('Creating Search Set: %s', searchSetDef.name);
     return this._client.post(
-      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/searchsets`,
+      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/searchsets`,
       searchSetDef
     );
   }
@@ -299,7 +300,7 @@ export class ModelCoordinationClient {
    */
   async updateSearchSet(modelSetId, searchSetId, searchSetDef) {
     return this._client.patch(
-      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/searchsets/${searchSetId}`,
+      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/searchsets/${searchSetId}`,
       searchSetDef
     );
   }
@@ -309,7 +310,7 @@ export class ModelCoordinationClient {
    */
   async deleteSearchSet(modelSetId, searchSetId) {
     return this._client.delete(
-      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/searchsets/${searchSetId}`
+      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/searchsets/${searchSetId}`
     );
   }
 }
