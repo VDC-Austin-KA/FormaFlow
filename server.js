@@ -877,10 +877,12 @@ app.get('/api/project/containers', async (req, res) => {
     }
 
     // ── Fallback: return best-guess containerId with a warning ────────────
-    // For ACC v3, containerId always equals projectId even when the MC API
-    // returns 403 (app not yet provisioned). Return it unverified so the UI
-    // can pre-fill the field — the user can save and proceed once provisioned.
-    const inferredId = hqContainerId ?? projectId;
+    // For ACC/Forma v3, containerId ALWAYS equals projectId — the hqContainerId
+    // returned by the HQ API is the Docs-service container, NOT the MC container.
+    // We only use hqContainerId if Strategy 2 already verified it works with the
+    // MC API (in which case we returned early above). Beyond that, projectId is
+    // the authoritative fallback for both provisioned and unprovisioned apps.
+    const inferredId = projectId;
 
     if (mcStatus1 === 403) {
       return res.json({
@@ -1068,7 +1070,8 @@ app.get('/api/models/properties', async (req, res) => {
 /** List model sets in a container */
 app.get('/api/project/modelsets', async (req, res) => {
   try {
-    const containerId = req.query.containerId ?? process.env.MC_CONTAINER_ID;
+    // Strip "b." prefix — MC API rejects it; ACC project IDs may have it.
+    const containerId = (req.query.containerId ?? process.env.MC_CONTAINER_ID)?.replace(/^b\./, '');
     if (!containerId) return res.status(400).json({ error: 'containerId required' });
     const { ModelCoordinationClient } = await import('./src/api/model-coordination.js');
     const client = await makeAPSClient();
@@ -1091,7 +1094,10 @@ function buildMcClient(req) {
   // readEnv() covers both the .env file and process.env so settings saved
   // via the Connect tab UI (written to .env) are visible here.
   const env = readEnv();
-  const containerId = req.query.containerId ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID;
+  const rawId = req.query.containerId ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID;
+  // The MC API never accepts the "b." prefix — strip it so users who paste
+  // their full ACC Project ID (e.g. "b.abc123") don't get silent 404s.
+  const containerId = rawId?.replace(/^b\./, '') ?? null;
   if (!containerId) throw Object.assign(new Error('containerId required (set MC_CONTAINER_ID on the Connect tab)'), { status: 400 });
   return import('./src/api/model-coordination.js').then(async ({ ModelCoordinationClient }) => {
     const client = await makeAPSClient();
@@ -1598,13 +1604,19 @@ app.post('/api/workflow/run', async (req, res) => {
 
     // ── Step 2 — Model Set ──────────────────────────────────────────────
     emit('info', '── Step 2 / 6  Fetching model set');
-    const mcClient = new ModelCoordinationClient(apsClient);
+    // readEnv() reads the .env file directly so manual edits or mid-session
+    // saves via the Connect tab take effect without a server restart.
+    // Strip any "b." prefix — the MC API rejects it.
+    const wfEnv = readEnv();
+    const wfContainerId = (wfEnv.MC_CONTAINER_ID || process.env.MC_CONTAINER_ID || '').replace(/^b\./, '');
+    if (!wfContainerId) { emit('error', '✗ MC_CONTAINER_ID is not set — paste your Project ID on the Connect tab and click Save'); return done(false); }
+    const mcClient = new ModelCoordinationClient(apsClient, wfContainerId);
     const setsResp = await mcClient.listModelSets();
     const modelSets = toArray(setsResp, 'modelsets', 'modelSets');
     if (!modelSets.length) { emit('error', '✗ No model sets found — check MC_CONTAINER_ID and ensure a Coordination Space exists in ACC'); return done(false); }
 
     // Prefer the user-selected coordination space; fall back to first if none chosen.
-    const selectedId = process.env.MC_MODEL_SET_ID;
+    const selectedId = wfEnv.MC_MODEL_SET_ID || process.env.MC_MODEL_SET_ID || '';
     let ms = selectedId
       ? modelSets.find(s => (s.id ?? s.modelSetId) === selectedId)
       : null;
