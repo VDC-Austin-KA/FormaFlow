@@ -1072,10 +1072,34 @@ app.get('/api/project/modelsets', async (req, res) => {
     const client = await makeAPSClient();
     const mc = new ModelCoordinationClient(client, containerId);
     const raw = await mc.listModelSets();
-    // Normalize: MC API may return {data:[...]}, {results:[...]}, {modelsets:[...]}, or []
-    const items = raw?.data ?? raw?.results ?? raw?.modelsets ?? raw?.modelSets ?? raw?.sets ?? null;
+    // Normalize: MC API v3 uses 'modelSets' but we check all possible variations
+    // and merge them if multiple exist (unlikely but safe).
+    const items = raw?.modelSets ?? raw?.modelsets ?? raw?.data ?? raw?.results ?? raw?.sets ?? null;
     const data  = Array.isArray(items) ? items : Array.isArray(raw) ? raw : [];
     res.json({ data });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** List views in a model set */
+app.get('/api/mc/modelsets/:id/views', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const raw = await mc.listModelSetViews(req.params.id);
+    const data = raw?.views ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
+    res.json({ data });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Get details for a specific view */
+app.get('/api/mc/modelsets/:id/views/:viewId', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const data = await mc.getModelSetView(req.params.id, req.params.viewId);
+    res.json(data);
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
   }

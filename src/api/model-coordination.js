@@ -55,7 +55,7 @@ export class ModelCoordinationClient {
 
   /** List all model sets in the container */
   async listModelSets() {
-    const url = `${MC_MODELSET_BASE}/containers/${this._container}/modelsets`;
+    const url = `${MC_MODELSET_BASE}/containers/${this._container}/modelsets?limit=100`;
     logger.debug('GET %s', url);
     return this._client.get(url);
   }
@@ -78,6 +78,24 @@ export class ModelCoordinationClient {
   async getModelSetVersion(modelSetId, versionIndex) {
     return this._client.get(
       `${MC_MODELSET_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}`
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Model Set Views
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** List all saved views for a model set */
+  async listModelSetViews(modelSetId) {
+    const url = `${MC_MODELSET_BASE}/containers/${this._container}/modelsets/${modelSetId}/views`;
+    logger.debug('GET %s', url);
+    return this._client.get(url);
+  }
+
+  /** Get details for a specific model set view */
+  async getModelSetView(modelSetId, viewId) {
+    return this._client.get(
+      `${MC_MODELSET_BASE}/containers/${this._container}/modelsets/${modelSetId}/views/${viewId}`
     );
   }
 

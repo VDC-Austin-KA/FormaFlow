@@ -428,7 +428,9 @@ async function onCoordSpaceChange() {
 }
 
 function getActiveCoordSpaceId() {
-  return el('sel-coord-space')?.value || State.config?.env?.MC_MODEL_SET_ID || '';
+  const sel = el('sel-coord-space');
+  const fromSel = (sel && sel.value && !sel.value.includes('click Load')) ? sel.value : null;
+  return fromSel || State.config?.env?.MC_MODEL_SET_ID || '';
 }
 
 function getActiveCoordSpaceName() {
@@ -2097,58 +2099,63 @@ async function toggleViewerModel(itemEl, modelDef) {
   el('viewer-status-text').textContent = `Loading ${modelDef.name}…`;
 
   try {
-    await new Promise((resolve, reject) => {
-      Autodesk.Viewing.Document.load(
-        `urn:${modelDef.viewerUrn}`,
-        async (doc) => {
-          const geometry = doc.getRoot().getDefaultGeometry();
-          const loadOpts = {
-            keepCurrentModels: true,
-            loadAsHidden: false,
-            // Apply the captured global offset so this model aligns with
-            // any model already in the scene (shared origin from the first
-            // load). The viewer auto-computes a per-model offset otherwise,
-            // which is the root cause of "models don't align" symptoms.
-            ...(_viewerState.globalOffset ? { globalOffset: _viewerState.globalOffset } : {}),
-            // Treat shared coordinates as the source of truth — Revit-published
-            // ACC models carry survey/shared coordinates that should align them.
-            applyRefPoint: true,
-          };
-          const model = await _viewerState.viewer.loadDocumentNode(doc, geometry, loadOpts);
-          // Capture the global offset from the first loaded model so all
-          // subsequent loads use the same origin.
-          if (!_viewerState.globalOffset) {
-            const off = model.getData?.()?.globalOffset;
-            if (off && (off.x || off.y || off.z)) {
-              _viewerState.globalOffset = { x: off.x, y: off.y, z: off.z };
-            }
-          }
-          const finalDisc = getUserDiscipline(modelDef) || modelDef.discipline || guessDiscFromName(modelDef.name);
-          _viewerState.loadedModels.push({ urn: modelDef.viewerUrn, name: modelDef.name,
-            discipline: finalDisc, model });
-          itemEl.classList.remove('loading'); itemEl.classList.add('loaded');
-          const statusEl = itemEl.querySelector('.model-status');
-          if (statusEl) statusEl.textContent = '✓';
-          el('viewer-status-text').textContent = `${modelDef.name} loaded`;
-          updateViewerModelCounter();
-          el('btn-unload-all-models').classList.remove('hidden');
-          saveRecentModel(modelDef);
-          // Apply any saved manual alignment for this model
-          const matchedItem = _coordState.models.find(cm => cm.viewerUrn === modelDef.viewerUrn);
-          if (matchedItem?.id) maybeApplyAlignmentToViewer(matchedItem.id);
-          // Refresh issue pushpin markers whenever a model finishes loading
-          showIssuePushpinsInViewer().catch(() => {});
-          resolve();
-        },
-        (code, msg) => reject(new Error(`Viewer load error ${code}: ${msg}`))
-      );
-    });
+    await loadModelToViewer(modelDef);
+    itemEl.classList.remove('loading'); itemEl.classList.add('loaded');
+    const statusEl = itemEl.querySelector('.model-status');
+    if (statusEl) statusEl.textContent = '✓';
+    el('viewer-status-text').textContent = `${modelDef.name} loaded`;
   } catch (err) {
     itemEl.classList.remove('loading'); itemEl.classList.add('error');
     const statusEl = itemEl.querySelector('.model-status');
     if (statusEl) statusEl.textContent = '✗';
     toast('Load failed: ' + err.message, 'error');
   }
+}
+
+/** Standalone loader for a single model (no UI dependencies) */
+async function loadModelToViewer(modelDef) {
+  if (!_viewerState.viewer) throw new Error('Viewer not initialized');
+  
+  // Skip if already loaded
+  if (_viewerState.loadedModels.find(m => m.urn === modelDef.viewerUrn)) return;
+
+  return new Promise((resolve, reject) => {
+    Autodesk.Viewing.Document.load(
+      `urn:${modelDef.viewerUrn}`,
+      async (doc) => {
+        const geometry = doc.getRoot().getDefaultGeometry();
+        const loadOpts = {
+          keepCurrentModels: true,
+          loadAsHidden: false,
+          ...(_viewerState.globalOffset ? { globalOffset: _viewerState.globalOffset } : {}),
+          applyRefPoint: true,
+        };
+        const model = await _viewerState.viewer.loadDocumentNode(doc, geometry, loadOpts);
+        
+        if (!_viewerState.globalOffset) {
+          const off = model.getData?.()?.globalOffset;
+          if (off && (off.x || off.y || off.z)) {
+            _viewerState.globalOffset = { x: off.x, y: off.y, z: off.z };
+          }
+        }
+        
+        const finalDisc = getUserDiscipline(modelDef) || modelDef.discipline || guessDiscFromName(modelDef.name);
+        _viewerState.loadedModels.push({ urn: modelDef.viewerUrn, name: modelDef.name, discipline: finalDisc, model });
+        
+        updateViewerModelCounter();
+        el('btn-unload-all-models').classList.remove('hidden');
+        saveRecentModel(modelDef);
+        
+        // Post-load tasks
+        const matchedItem = _coordState.models.find(cm => cm.viewerUrn === modelDef.viewerUrn);
+        if (matchedItem?.id) maybeApplyAlignmentToViewer(matchedItem.id);
+        showIssuePushpinsInViewer().catch(() => {});
+        
+        resolve(model);
+      },
+      (code, msg) => reject(new Error(`Viewer load error ${code}: ${msg}`))
+    );
+  });
 }
 
 function updateViewerModelCounter() {
@@ -2766,9 +2773,11 @@ async function loadCoordinationData() {
   el('coord-sections').classList.add('hidden');
 
   try {
-    const [persisted, modelsResp] = await Promise.all([
+    const spaceId = getActiveCoordSpaceId();
+    const [persisted, modelsResp, viewsResp] = await Promise.all([
       api('GET', '/api/coordination/assignments').catch(() => ({})),
       fetchCoordSpaceModels(),
+      spaceId ? api('GET', `/api/mc/modelsets/${spaceId}/views`).catch(() => ({ data: [] })) : { data: [] }
     ]);
 
     _coordState.assignments      = persisted?.assignments      ?? {};
@@ -2777,6 +2786,16 @@ async function loadCoordinationData() {
     _coordState.alignSnap        = persisted?.alignSnap        ?? 1.0;
     _coordState.modelDisciplines = persisted?.modelDisciplines ?? {};
     _coordState.models           = modelsResp ?? [];
+
+    // Populate Views dropdown
+    const vSel = el('sel-coord-view');
+    if (vSel) {
+      const views = viewsResp?.data ?? [];
+      vSel.innerHTML = '<option value="">- select a view (optional) -</option>';
+      for (const v of views) {
+        vSel.add(new Option(v.name, v.id));
+      }
+    }
 
     // Apply persisted overrides on top of guesses
     for (const m of _coordState.models) {
@@ -2816,7 +2835,7 @@ async function loadCoordinationData() {
 async function fetchCoordSpaceModels() {
   const modelSetId  = getActiveCoordSpaceId();
   if (!modelSetId) return [];
-  const containerId = el('inp-container-id').value.trim();
+  const containerId = el('inp-container-id').value.trim() || State.config?.env?.MC_CONTAINER_ID;
   const qs = new URLSearchParams({ modelSetId });
   if (containerId) qs.set('containerId', containerId);
   const data = await api('GET', `/api/mc/space-documents?${qs}`);
@@ -2826,7 +2845,54 @@ async function fetchCoordSpaceModels() {
     rawUrn:     d.rawUrn,
     viewerUrn:  d.viewerUrn,
     discipline: guessDiscFromName(d.name),
+    version:    d.version, // Ensure version is captured for view matching
   }));
+}
+
+async function loadViewIntoViewer() {
+  const viewId = el('sel-coord-view').value;
+  const spaceId = getActiveCoordSpaceId();
+  if (!viewId) { toast('Select a view first', 'error'); return; }
+  
+  const btn = el('btn-load-view');
+  const oldText = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Loading View…';
+  
+  try {
+    const view = await api('GET', `/api/mc/modelsets/${spaceId}/views/${viewId}`);
+    const viewModels = view?.models ?? [];
+    if (!viewModels.length) throw new Error('Selected view contains no models');
+
+    // Map view models to our loaded space documents to get viewerUrns
+    const toLoad = [];
+    for (const vm of viewModels) {
+      // The View API returns modelId and versionIndex. 
+      // Space documents from Step 2 also have id and version.
+      const match = _coordState.models.find(m => m.id === vm.id);
+      if (match) toLoad.push(match);
+    }
+
+    if (!toLoad.length) throw new Error('Could not find matching models for this view in the current space');
+
+    toast(`Loading view "${view.name}" with ${toLoad.length} models…`);
+    
+    // Unload all first
+    if (window._viewer) {
+      const models = window._viewer.getAllModels();
+      models.forEach(m => window._viewer.unloadModel(m));
+    }
+
+    // Load sequentially
+    for (const m of toLoad) {
+      await loadModelToViewer(m);
+    }
+    
+    toast(`View "${view.name}" loaded successfully`);
+  } catch (err) {
+    toast('Failed to load view: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = oldText;
+  }
 }
 
 function renderCoordinationTab() {
@@ -3922,6 +3988,7 @@ async function init() {
     _coordState.loaded = false;
     loadCoordinationData();
   });
+  el('btn-load-view').addEventListener('click', loadViewIntoViewer);
   el('btn-clash-incl-all').addEventListener('click', () => {
     _coordState.clashIncludes = _coordState.models.map(m => m.id);
     renderCoordClashRows();
