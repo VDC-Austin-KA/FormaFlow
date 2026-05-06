@@ -19,31 +19,23 @@ import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('ModelCoordination');
 
-// Model Coordination v3 — official Autodesk base URLs.
-// NB: paths are `bim360/modelset/v3/...` and `bim360/clash/v3/...`,
-// NOT `bim360/modelcoordination/...` (that extra segment returns 404).
-//
-// Auto-correct any env override that still contains the old path so a stale
-// .env file from a pre-fix install can't silently break MC calls.
-function normalizeMcBase(raw, fallback) {
+// Correct v3 API paths: bim360/modelset/v3 and bim360/clash/v3
+// Some deployments still have env vars with the wrong '/bim360/modelcoordination/' prefix.
+// Auto-correct and warn so the app works without requiring manual env var cleanup.
+export function resolveMcBase(envVar, fallback) {
+  const raw = process.env[envVar];
   if (!raw) return fallback;
-  const fixed = raw.replace('/bim360/modelcoordination/', '/bim360/');
-  if (fixed !== raw) {
-    // Best-effort warning — logger may not yet be wired in some import orders
-    try { logger.warn('Auto-correcting stale MC base URL: %s → %s', raw, fixed); } catch (_) {}
+  // Auto-correct legacy/deprecated v2 or bim360-prefixed v3 paths to the modern unified v3 path.
+  if (raw.includes('/bim360/modelcoordination/v2') || raw.includes('/bim360/modelset/v3')) {
+    const fixed = raw.replace(/\/bim360\/(modelcoordination\/v2|modelset\/v3)/, '/modelcoordination/v3');
+    logger.warn('Env var %s contains legacy/deprecated path — auto-correcting to modern v3: %s → %s', envVar, raw, fixed);
+    return fixed;
   }
-  return fixed;
+  return raw;
 }
 
-const MC_MODELSET_BASE = normalizeMcBase(
-  process.env.MC_MODELSET_API_BASE,
-  'https://developer.api.autodesk.com/bim360/modelset/v3'
-);
-
-const MC_CLASH_BASE = normalizeMcBase(
-  process.env.MC_CLASH_API_BASE,
-  'https://developer.api.autodesk.com/bim360/clash/v3'
-);
+const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/modelcoordination/v3');
+const MC_CLASH_BASE = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/modelcoordination/v3');
 
 export class ModelCoordinationClient {
   /**
@@ -62,7 +54,7 @@ export class ModelCoordinationClient {
 
   /** List all model sets in the container */
   async listModelSets() {
-    const url = `${MC_MODELSET_BASE}/containers/${this._container}/modelsets`;
+    const url = `${MC_MODELSET_BASE}/containers/${this._container}/modelsets?limit=100`;
     logger.debug('GET %s', url);
     return this._client.get(url);
   }
@@ -89,29 +81,33 @@ export class ModelCoordinationClient {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Model Set Views
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** List all saved views for a model set */
+  async listModelSetViews(modelSetId) {
+    const url = `${MC_MODELSET_BASE}/containers/${this._container}/modelsets/${modelSetId}/views`;
+    logger.debug('GET %s', url);
+    return this._client.get(url);
+  }
+
+  /** Get details for a specific model set view */
+  async getModelSetView(modelSetId, viewId) {
+    return this._client.get(
+      `${MC_MODELSET_BASE}/containers/${this._container}/modelsets/${modelSetId}/views/${viewId}`
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Clash Sets
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * List all clash sets in the container.
-   * In ACC/BIM360 v3, a clash set must exist (tied to a model set) before
-   * search sets or tests can be created under it.
+   * Check if a coordination space (model set) has clash detection enabled.
+   * In v3, we simply verify the model set exists.
    */
-  async listClashSets() {
-    return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets`
-    );
-  }
-
-  /**
-   * Create a clash set for an existing model set.
-   * Required before any search-set or clash-test operations on that model set.
-   */
-  async createClashSet(modelSetId) {
-    return this._client.post(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets`,
-      { modelSetId }
-    );
+  async verifyModelSet(modelSetId) {
+    return this.getModelSet(modelSetId);
   }
 
   // Clash Tests
@@ -123,7 +119,7 @@ export class ModelCoordinationClient {
    * retries using the legacy v2 modelcoordination path.
    */
   async listClashTests(modelSetId, versionIndex) {
-    const urlV3 = `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/versions/${versionIndex}/tests`;
+    const urlV3 = `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests`;
     try {
       return await this._client.get(urlV3);
     } catch (errV3) {
@@ -146,7 +142,7 @@ export class ModelCoordinationClient {
   async createClashTest(modelSetId, versionIndex, testDef) {
     logger.info('Creating clash test: %s', testDef.name);
     return this._client.post(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/versions/${versionIndex}/tests`,
+      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests`,
       testDef
     );
   }
@@ -154,7 +150,7 @@ export class ModelCoordinationClient {
   /** Get a specific clash test by ID */
   async getClashTest(modelSetId, versionIndex, testId) {
     return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/versions/${versionIndex}/tests/${testId}`
+      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}`
     );
   }
 
@@ -201,7 +197,7 @@ export class ModelCoordinationClient {
    */
   async getClashTestResources(modelSetId, versionIndex, testId) {
     return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/resources`
+      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/resources`
     );
   }
 
@@ -211,7 +207,7 @@ export class ModelCoordinationClient {
    */
   async getClashDocument(modelSetId, versionIndex, testId, documentKey) {
     return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/resources/${documentKey}`
+      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/resources/${documentKey}`
     );
   }
 
@@ -221,7 +217,7 @@ export class ModelCoordinationClient {
    */
   async getGroupedClashes(modelSetId, versionIndex, testId) {
     return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/groups`
+      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/groups`
     );
   }
 
@@ -236,7 +232,7 @@ export class ModelCoordinationClient {
    */
   async listSearchSets(modelSetId) {
     return this._client.get(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/searchsets`
+      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/searchsets`
     );
   }
 
@@ -249,7 +245,7 @@ export class ModelCoordinationClient {
   async createSearchSet(modelSetId, searchSetDef) {
     logger.info('Creating Search Set: %s', searchSetDef.name);
     return this._client.post(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/searchsets`,
+      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/searchsets`,
       searchSetDef
     );
   }
@@ -259,7 +255,7 @@ export class ModelCoordinationClient {
    */
   async updateSearchSet(modelSetId, searchSetId, searchSetDef) {
     return this._client.patch(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/searchsets/${searchSetId}`,
+      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/searchsets/${searchSetId}`,
       searchSetDef
     );
   }
@@ -269,7 +265,7 @@ export class ModelCoordinationClient {
    */
   async deleteSearchSet(modelSetId, searchSetId) {
     return this._client.delete(
-      `${MC_CLASH_BASE}/containers/${this._container}/clashsets/${modelSetId}/searchsets/${searchSetId}`
+      `${MC_CLASH_BASE}/containers/${this._container}/modelsets/${modelSetId}/searchsets/${searchSetId}`
     );
   }
 }

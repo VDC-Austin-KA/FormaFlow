@@ -322,20 +322,20 @@ async function makeAPSClient(overrides = {}) {
 // Startup diagnostic — log the resolved MC URLs so stale env overrides are
 // immediately visible in Railway/etc. logs.
 // ─────────────────────────────────────────────────────────────────────────────
+// Auto-correct known-bad 'modelcoordination/' in env var overrides
+function fixMcUrl(raw, fallback) {
+  if (!raw) return fallback;
+  return raw.includes('/bim360/modelcoordination/')
+    ? raw.replace('/bim360/modelcoordination/', '/bim360/')
+    : raw;
+}
 {
-  const rawMs   = process.env.MC_MODELSET_API_BASE || '(default)';
-  const fixedMs = (process.env.MC_MODELSET_API_BASE
-    ?? 'https://developer.api.autodesk.com/bim360/modelset/v3')
-    .replace('/bim360/modelcoordination/', '/bim360/');
-  const rawCl   = process.env.MC_CLASH_API_BASE || '(default)';
-  const fixedCl = (process.env.MC_CLASH_API_BASE
-    ?? 'https://developer.api.autodesk.com/bim360/clash/v3')
-    .replace('/bim360/modelcoordination/', '/bim360/');
-  console.log('[FormaFlow] MC_MODELSET_API_BASE: %s → %s', rawMs, fixedMs);
-  console.log('[FormaFlow] MC_CLASH_API_BASE:    %s → %s', rawCl, fixedCl);
-  if (rawMs.includes('modelcoordination/') || rawCl.includes('modelcoordination/')) {
-    console.warn('[FormaFlow] ⚠ Stale .env override detected — auto-correcting at runtime.');
-    console.warn('[FormaFlow]   Recommended: remove MC_MODELSET_API_BASE / MC_CLASH_API_BASE from .env');
+  const fixedMs = fixMcUrl(process.env.MC_MODELSET_API_BASE, 'https://developer.api.autodesk.com/bim360/modelset/v3');
+  const fixedCl = fixMcUrl(process.env.MC_CLASH_API_BASE, 'https://developer.api.autodesk.com/bim360/clash/v3');
+  console.log('[FormaFlow] MC_MODELSET_API_BASE: %s', fixedMs);
+  console.log('[FormaFlow] MC_CLASH_API_BASE:    %s', fixedCl);
+  if (process.env.MC_MODELSET_API_BASE?.includes('modelcoordination/') || process.env.MC_CLASH_API_BASE?.includes('modelcoordination/')) {
+    console.warn('[FormaFlow] ⚠ Env vars contain deprecated "modelcoordination/" path — auto-corrected. Remove MC_MODELSET_API_BASE and MC_CLASH_API_BASE from env vars to silence this warning.');
   }
 }
 
@@ -379,20 +379,18 @@ app.get('/api/debug/auth-status', async (_req, res) => {
 
 /** Diagnostic: returns the actual URLs the server will use for MC calls */
 app.get('/api/debug/mc-config', (_req, res) => {
-  const ms = (process.env.MC_MODELSET_API_BASE
-    ?? 'https://developer.api.autodesk.com/bim360/modelset/v3')
-    .replace('/bim360/modelcoordination/', '/bim360/');
-  const cl = (process.env.MC_CLASH_API_BASE
-    ?? 'https://developer.api.autodesk.com/bim360/clash/v3')
-    .replace('/bim360/modelcoordination/', '/bim360/');
+  const env = readEnv();
+  const ms = fixMcUrl(process.env.MC_MODELSET_API_BASE, 'https://developer.api.autodesk.com/bim360/modelset/v3');
+  const cl = fixMcUrl(process.env.MC_CLASH_API_BASE, 'https://developer.api.autodesk.com/bim360/clash/v3');
   res.json({
     rawEnv: {
       MC_MODELSET_API_BASE: process.env.MC_MODELSET_API_BASE || null,
       MC_CLASH_API_BASE:    process.env.MC_CLASH_API_BASE    || null,
     },
     resolved: { MC_MODELSET_BASE: ms, MC_CLASH_BASE: cl },
-    container:        process.env.MC_CONTAINER_ID || null,
-    activeModelSetId: process.env.MC_MODEL_SET_ID || null,
+    container:        env.MC_CONTAINER_ID || process.env.MC_CONTAINER_ID || env.ACC_PROJECT_ID || process.env.ACC_PROJECT_ID || null,
+    activeModelSetId: env.MC_MODEL_SET_ID || process.env.MC_MODEL_SET_ID || null,
+    note: 'Leave MC_MODELSET_API_BASE and MC_CLASH_API_BASE UNSET — the defaults (bim360/modelset/v3 and bim360/clash/v3) are correct. Setting them to paths containing "modelcoordination/" will be auto-corrected.',
   });
 });
 
@@ -630,8 +628,10 @@ app.get('/api/admin/account-admins', async (req, res) => {
  */
 app.get('/api/admin/check-mc-access', async (req, res) => {
   try {
-    const modelSetId  = req.query.modelSetId  ?? process.env.MC_MODEL_SET_ID;
-    const containerId = req.query.containerId ?? process.env.MC_CONTAINER_ID;
+    const env = readEnv();
+    const modelSetId  = req.query.modelSetId  ?? env.MC_MODEL_SET_ID ?? process.env.MC_MODEL_SET_ID;
+    const containerId = req.query.containerId ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID
+      ?? env.ACC_PROJECT_ID ?? process.env.ACC_PROJECT_ID;
     if (!modelSetId || !containerId) {
       return res.json({ ok: false, status: 'missing_config', message: 'Set Coordination Space and Container ID first' });
     }
@@ -836,10 +836,8 @@ app.get('/api/project/containers', async (req, res) => {
     if (!accountId) return res.status(400).json({ error: 'accountId required' });
 
     const client = await makeAPSClient();
-    // Same path-normalization as in src/api/model-coordination.js — survives stale .env files.
-    const MC_MODELSET_BASE = (process.env.MC_MODELSET_API_BASE
-      ?? 'https://developer.api.autodesk.com/bim360/modelset/v3')
-      .replace('/bim360/modelcoordination/', '/bim360/');
+    const { resolveMcBase } = await import('./src/api/model-coordination.js');
+    const MC_MODELSET_BASE = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/modelcoordination/v3');
 
     // ── Strategy 0: HQ Admin API — works independently of MC provisioning ────
     // Pull the container ID from the BIM360/ACC project record. This succeeds
@@ -1077,10 +1075,34 @@ app.get('/api/project/modelsets', async (req, res) => {
     const client = await makeAPSClient();
     const mc = new ModelCoordinationClient(client, containerId);
     const raw = await mc.listModelSets();
-    // Normalize: MC API may return {data:[...]}, {results:[...]}, {modelsets:[...]}, or []
-    const items = raw?.data ?? raw?.results ?? raw?.modelsets ?? raw?.modelSets ?? raw?.sets ?? null;
+    // Normalize: MC API v3 uses 'modelSets' but we check all possible variations
+    // and merge them if multiple exist (unlikely but safe).
+    const items = raw?.modelSets ?? raw?.modelsets ?? raw?.data ?? raw?.results ?? raw?.sets ?? null;
     const data  = Array.isArray(items) ? items : Array.isArray(raw) ? raw : [];
     res.json({ data });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** List views in a model set */
+app.get('/api/mc/modelsets/:id/views', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const raw = await mc.listModelSetViews(req.params.id);
+    const data = raw?.views ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
+    res.json({ data });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Get details for a specific view */
+app.get('/api/mc/modelsets/:id/views/:viewId', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const data = await mc.getModelSetView(req.params.id, req.params.viewId);
+    res.json(data);
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
   }
@@ -1094,7 +1116,8 @@ function buildMcClient(req) {
   // readEnv() covers both the .env file and process.env so settings saved
   // via the Connect tab UI (written to .env) are visible here.
   const env = readEnv();
-  const rawId = req.query.containerId ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID;
+  const rawId = req.query.containerId ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID
+    ?? env.ACC_PROJECT_ID ?? process.env.ACC_PROJECT_ID;  // ACC projects: container ≈ project ID
   // The MC API never accepts the "b." prefix — strip it so users who paste
   // their full ACC Project ID (e.g. "b.abc123") don't get silent 404s.
   const containerId = rawId?.replace(/^b\./, '') ?? null;
@@ -1213,7 +1236,7 @@ app.get('/api/mc/search-sets', async (req, res) => {
 app.get('/api/mc/clash-sets', async (req, res) => {
   try {
     const mc = await buildMcClient(req);
-    const data = await mc.listClashSets();
+    const data = await mc.verifyModelSet(req.query.modelSetId || process.env.MC_MODEL_SET_ID);
     res.json(data);
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
@@ -1604,19 +1627,28 @@ app.post('/api/workflow/run', async (req, res) => {
 
     // ── Step 2 — Model Set ──────────────────────────────────────────────
     emit('info', '── Step 2 / 6  Fetching model set');
-    // readEnv() reads the .env file directly so manual edits or mid-session
-    // saves via the Connect tab take effect without a server restart.
-    // Strip any "b." prefix — the MC API rejects it.
     const wfEnv = readEnv();
-    const wfContainerId = (wfEnv.MC_CONTAINER_ID || process.env.MC_CONTAINER_ID || '').replace(/^b\./, '');
-    if (!wfContainerId) { emit('error', '✗ MC_CONTAINER_ID is not set — paste your Project ID on the Connect tab and click Save'); return done(false); }
-    const mcClient = new ModelCoordinationClient(apsClient, wfContainerId);
+    let containerId = wfEnv.MC_CONTAINER_ID || process.env.MC_CONTAINER_ID;
+    // For ACC projects the MC container ID is typically the same as the project ID
+    if (!containerId) {
+      containerId = wfEnv.ACC_PROJECT_ID || process.env.ACC_PROJECT_ID;
+      if (containerId) {
+        emit('info', '  MC_CONTAINER_ID not set — using ACC_PROJECT_ID as fallback (typical for ACC projects)');
+      }
+    }
+    if (!containerId) {
+      emit('error', '✗ MC_CONTAINER_ID is not set — configure it on the Connect tab or in Railway env vars');
+      return done(false);
+    }
+    // Strip any "b." prefix — the MC API rejects it.
+    containerId = containerId.replace(/^b\./, '');
+    const mcClient = new ModelCoordinationClient(apsClient, containerId);
     const setsResp = await mcClient.listModelSets();
     const modelSets = toArray(setsResp, 'modelsets', 'modelSets');
     if (!modelSets.length) { emit('error', '✗ No model sets found — check MC_CONTAINER_ID and ensure a Coordination Space exists in ACC'); return done(false); }
 
     // Prefer the user-selected coordination space; fall back to first if none chosen.
-    const selectedId = wfEnv.MC_MODEL_SET_ID || process.env.MC_MODEL_SET_ID || '';
+    const selectedId = wfEnv.MC_MODEL_SET_ID || process.env.MC_MODEL_SET_ID;
     let ms = selectedId
       ? modelSets.find(s => (s.id ?? s.modelSetId) === selectedId)
       : null;
@@ -1753,25 +1785,8 @@ app.post('/api/workflow/run', async (req, res) => {
     // ── Step 4 — Search Sets ────────────────────────────────────────────
     emit('info', '── Step 4 / 6  Creating Search Sets');
 
-    // Ensure a clash set exists for this model set before attempting search-set
-    // or clash-test operations. In the v3 API the clash set must be explicitly
-    // created (POST /clashsets) if it hasn't been already; all sub-paths
-    // (searchsets, versions/{n}/tests) will 404 until this is done.
-    if (!dryRun) {
-      try {
-        const clashSets = await mcClient.listClashSets();
-        const csArr = clashSets?.data ?? clashSets?.clashSets ?? (Array.isArray(clashSets) ? clashSets : []);
-        const existing = csArr.find(cs => (cs.modelSetId ?? cs.id) === modelSetId);
-        if (!existing) {
-          emit('info', '  No clash set found for this model set — provisioning one now…');
-          await mcClient.createClashSet(modelSetId);
-          emit('info', '  ✓ Clash set provisioned');
-        }
-      } catch (csErr) {
-        emit('warn', `  ⚠ Could not verify/provision clash set: ${csErr.message}`);
-        emit('warn', '    → If search-set creates still 404, enable Clash Detection in ACC Project Admin → Services → Model Coordination');
-      }
-    }
+    // In the v3 API, search sets are managed directly under the model set.
+    // Legacy "clash set" provisioning is no longer required.
 
     const ssGen = new SearchSetGenerator(mcClient, {
       overwriteExisting: config.searchSets.overwriteExisting,
