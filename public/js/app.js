@@ -4016,6 +4016,20 @@ function renderAuthStatus(status) {
       ? 'Token expired — will auto-refresh on next API call'
       : `Token valid · refreshes in ~${diffMin} min`;
   }
+
+  // Railway persistence: show the refresh token copy section only when the env
+  // var is NOT yet set (so the user knows they need to configure it once).
+  const persistEl = el('sa-railway-persist');
+  const envOkEl   = el('sa-railway-ok');
+  if (status.envVarSet) {
+    persistEl?.classList.add('hidden');
+    envOkEl?.classList.remove('hidden');
+  } else if (status.refreshToken) {
+    persistEl?.classList.remove('hidden');
+    envOkEl?.classList.add('hidden');
+    const tokenValueEl = el('sa-refresh-token-value');
+    if (tokenValueEl) tokenValueEl.textContent = status.refreshToken;
+  }
 }
 
 async function init() {
@@ -4176,6 +4190,15 @@ async function init() {
     await api('POST', '/api/auth/logout');
     renderAuthStatus({ loggedIn: false });
     toast('Service account signed out');
+  });
+
+  el('btn-copy-refresh-token')?.addEventListener('click', () => {
+    const val = el('sa-refresh-token-value')?.textContent ?? '';
+    if (!val) return;
+    navigator.clipboard.writeText(val).then(
+      () => toast('Refresh token copied — paste it as APS_REFRESH_TOKEN in your Railway dashboard', 'success'),
+      () => { el('sa-refresh-token-value')?.select?.(); toast('Select the token value and copy manually', 'warn'); }
+    );
   });
 
   // Connect tab — project access

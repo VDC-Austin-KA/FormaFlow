@@ -244,6 +244,24 @@
               <button id="btn-sa-logout" class="text-xs text-red-600 hover:text-red-800 font-medium flex-shrink-0">Sign out</button>
             </div>
             <p class="text-xs text-slate-500">All Model Coordination API calls now use this identity. The token refreshes automatically.</p>
+
+            <!-- Railway persistence helper — shown when APS_REFRESH_TOKEN is NOT yet set in env -->
+            <div id="sa-railway-persist" class="hidden mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+              <p class="text-xs font-semibold text-amber-800 mb-1">Session will be lost on redeploy</p>
+              <p class="text-xs text-amber-700 mb-2">
+                To survive Railway redeployments, add <code class="bg-amber-100 px-1 rounded">APS_REFRESH_TOKEN</code> to your
+                Railway environment variables. Copy the value below and paste it into the Railway dashboard.
+              </p>
+              <div class="flex items-center gap-2">
+                <code id="sa-refresh-token-value" class="text-xs bg-white border border-amber-300 rounded px-2 py-1 flex-1 overflow-x-auto font-mono select-all text-slate-700 break-all"></code>
+                <button id="btn-copy-refresh-token" class="text-xs bg-amber-600 text-white px-2 py-1 rounded hover:bg-amber-700 whitespace-nowrap flex-shrink-0">Copy</button>
+              </div>
+            </div>
+
+            <!-- Shown when APS_REFRESH_TOKEN env var is already set -->
+            <div id="sa-railway-ok" class="hidden mt-2">
+              <p class="text-xs text-emerald-600">Auto-reconnect on redeploy: <span class="font-medium">enabled</span> (APS_REFRESH_TOKEN is set)</p>
+            </div>
           </div>
 
         </div>
