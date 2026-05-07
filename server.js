@@ -1232,20 +1232,22 @@ app.get('/api/mc/space-documents', async (req, res) => {
 
     const versResp = await mc.getModelSetVersions(modelSetId);
     const versions = toArray(versResp, 'versions');
-    const latest   = versions[versions.length - 1] ?? null;
-    const versionIndex = latest?.versionIndex ?? null;
-
-    if (!latest) return res.json({ versionIndex: null, documents: [] });
+    const latest   = versions[versions.length - 1];
+    // Default to 1 like the workflow does. Some MC API responses omit the
+    // versionIndex field on the lightweight version object even though
+    // version 1 exists; without this default the UI silently shows 0 documents
+    // while the workflow still finds them via the full-manifest fallback.
+    const versionIndex = latest?.versionIndex ?? latest?.index ?? 1;
 
     // The versions-list endpoint often returns lightweight objects without documents[].
-    // Fall back to the individual version endpoint to get the full manifest.
-    // The full manifest may return documents under `documentVersions` (MC API v3) or
-    // `documents` (older shape) — normalizeDocuments() handles both.
-    let versionObj = latest;
-    if (!normalizeDocuments(versionObj).length && versionIndex != null) {
+    // Always try the full-manifest endpoint when the lightweight shape is empty —
+    // this is the same logic the workflow uses to reliably extract documentVersions.
+    let versionObj = latest ?? {};
+    if (!normalizeDocuments(versionObj).length) {
       try {
         const fullVer = await mc.getModelSetVersion(modelSetId, versionIndex);
-        versionObj = fullVer?.data ?? fullVer ?? versionObj;
+        const candidate = fullVer?.data ?? fullVer ?? {};
+        if (normalizeDocuments(candidate).length) versionObj = candidate;
       } catch (_) { /* keep latest if full fetch fails */ }
     }
 
@@ -1313,16 +1315,89 @@ app.get('/api/mc/clash-groups', async (req, res) => {
   }
 });
 
-/** List existing search sets for a coordination space */
+/** List existing search sets for a coordination space (version-aware). */
 app.get('/api/mc/search-sets', async (req, res) => {
   try {
     const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
     if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
     const mc = await buildMcClient(req);
-    const data = await mc.listSearchSets(modelSetId);
-    res.json(data);
+    let versionIndex = Number(req.query.versionIndex) || null;
+    if (!versionIndex) {
+      const versResp = await mc.getModelSetVersions(modelSetId);
+      const versions = toArray(versResp, 'versions');
+      const latest   = versions[versions.length - 1];
+      versionIndex   = latest?.versionIndex ?? latest?.index ?? 1;
+    }
+    const data = await mc.listSearchSets(modelSetId, versionIndex);
+    res.json({ versionIndex, data });
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/**
+ * Diagnostic: probe every plausible search-sets URL pattern against the live
+ * Autodesk API and report which one (if any) returns 200. Used to discover
+ * the correct endpoint shape since public docs are sparse for this surface.
+ */
+app.get('/api/debug/searchsets-probe', async (req, res) => {
+  try {
+    const env = readEnv();
+    const containerId = (req.query.containerId
+      ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID
+      ?? env.ACC_PROJECT_ID  ?? process.env.ACC_PROJECT_ID ?? '').replace(/^b\./, '');
+    const modelSetId = req.query.modelSetId ?? env.MC_MODEL_SET_ID ?? process.env.MC_MODEL_SET_ID;
+    if (!containerId || !modelSetId) {
+      return res.status(400).json({ error: 'containerId and modelSetId required' });
+    }
+
+    const { resolveMcBase, ModelCoordinationClient } = await import('./src/api/model-coordination.js');
+    const modelsetBase = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
+    const altModelsetBase = 'https://developer.api.autodesk.com/modelcoordination/v3';
+    const clashBase    = resolveMcBase('MC_CLASH_API_BASE',    'https://developer.api.autodesk.com/bim360/clash/v3');
+    const client = await makeAPSClient();
+    const tokenKind = (await getThreeLeggedToken()) ? '3-legged' : '2-legged';
+
+    // Resolve latest version index so we can test versioned paths properly.
+    let versionIndex = 1;
+    try {
+      const mc = new ModelCoordinationClient(client, containerId);
+      const versResp = await mc.getModelSetVersions(modelSetId);
+      const versions = toArray(versResp, 'versions');
+      const latest   = versions[versions.length - 1];
+      versionIndex   = latest?.versionIndex ?? latest?.index ?? 1;
+    } catch (_) { /* keep default 1 */ }
+
+    const candidates = [
+      // clash/v3 candidates
+      `${clashBase}/containers/${containerId}/modelsets/${modelSetId}/searchsets`,
+      `${clashBase}/containers/${containerId}/modelsets/${modelSetId}/versions/${versionIndex}/searchsets`,
+      `${clashBase}/containers/${containerId}/modelsets/${modelSetId}/search-sets`,
+      `${clashBase}/containers/${containerId}/modelsets/${modelSetId}/versions/${versionIndex}/search-sets`,
+      `${clashBase}/containers/${containerId}/modelsets/${modelSetId}/searchSets`,
+      // modelset/v3 candidates (in case search sets live under the modelset surface)
+      `${modelsetBase}/containers/${containerId}/modelsets/${modelSetId}/searchsets`,
+      `${modelsetBase}/containers/${containerId}/modelsets/${modelSetId}/versions/${versionIndex}/searchsets`,
+      `${modelsetBase}/containers/${containerId}/modelsets/${modelSetId}/search-sets`,
+      // modelcoordination/v3 candidates (alt base)
+      `${altModelsetBase}/containers/${containerId}/modelsets/${modelSetId}/searchsets`,
+      `${altModelsetBase}/containers/${containerId}/modelsets/${modelSetId}/versions/${versionIndex}/searchsets`,
+      // Known-good control: views works on modelset/v3
+      `${modelsetBase}/containers/${containerId}/modelsets/${modelSetId}/views`,
+    ];
+
+    const results = [];
+    for (const url of candidates) {
+      try {
+        const data = await client.get(url);
+        results.push({ url, ok: true, status: 200, sampleKeys: Object.keys(data ?? {}).slice(0, 8) });
+      } catch (err) {
+        results.push({ url, ok: false, status: err.status ?? null, message: String(err.message).slice(0, 200) });
+      }
+    }
+    res.json({ tokenKind, containerId, modelSetId, versionIndex, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1889,21 +1964,17 @@ app.post('/api/workflow/run', async (req, res) => {
     // ── Step 4 — Search Sets ────────────────────────────────────────────
     emit('info', '── Step 4 / 6  Creating Search Sets');
 
-    // Pre-flight: verify this model set is registered with the Clash service.
-    // A coordination space that was created in ACC but has never had a clash
-    // test initiated (even from the web UI) may not appear in the clash/v3 API,
-    // causing every search-set and clash-test call to 404.
-    let clashReady = false;
+    // Pre-flight: probe the Clash service for this model-set version. We use
+    // the per-version /tests endpoint as the readiness check because clash/v3
+    // doesn't expose a top-level "list model sets" endpoint.
     try {
-      clashReady = await mcClient.isClashEnabled(modelSetId);
+      const clashReady = await mcClient.isClashEnabled(modelSetId, versionIndex);
       if (clashReady) {
-        emit('info', '  ✓ Model set is registered with the Clash service');
+        emit('info', '  ✓ Clash service is reachable for this model set version');
       } else {
-        emit('warn', '  ⚠ Model set is NOT registered with the Clash service (bim360/clash/v3).');
-        emit('warn', '    Search Set and Clash Test API calls will return 404 until clash detection is enabled.');
-        emit('warn', '    To fix: open ACC → Model Coordination → select your Coordination Space → run any clash test.');
-        emit('warn', '    After the first clash test completes, re-run this workflow.');
-        emit('warn', '    Attempting search set creation anyway (in case the pre-flight check itself was blocked)…');
+        emit('warn', '  ⚠ Clash service does not respond for this model set version.');
+        emit('warn', '    Search Set / Clash Test API calls will likely 404.');
+        emit('warn', '    To fix: open ACC → Model Coordination → select your Coordination Space → run any clash test, then re-run this workflow.');
       }
     } catch (err) {
       emit('warn', `  ⚠ Could not verify clash readiness: ${err.message}`);
@@ -1915,7 +1986,7 @@ app.post('/api/workflow/run', async (req, res) => {
       createFallback:    config.searchSets.createFallbackCategorySets,
       dryRun,
     });
-    const ssResults = await ssGen.generateForDisciplines(modelSetId, disciplines);
+    const ssResults = await ssGen.generateForDisciplines(modelSetId, versionIndex, disciplines);
     if (ssGen.listExistingError) {
       emit('warn', `⚠ Could not list existing Search Sets — ${ssGen.listExistingError} (proceeding without conflict check)`);
     }
