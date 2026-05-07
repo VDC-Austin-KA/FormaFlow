@@ -120,7 +120,12 @@ function writeConfig(name, data) {
 // 3-legged OAuth — token store
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TOKENS_PATH = resolve(__dirname, 'config', 'auth-tokens.json');
+// On Railway and other ephemeral-filesystem hosts, $TOKENS_PATH should point
+// to a mounted volume (e.g. /data/auth-tokens.json) so the 3-legged OAuth
+// session survives redeploys. Falls back to a path inside the app dir for
+// local development. If the configured path is unwritable (read-only fs) we
+// fall back silently to the in-app path so the auth flow still functions.
+const TOKENS_PATH = process.env.TOKENS_PATH || resolve(__dirname, 'config', 'auth-tokens.json');
 
 // The callback URL must be registered in the APS application's Callback URLs list.
 // Priority: APS_CALLBACK_URL env var → Railway auto-detected URL → localhost fallback.
@@ -139,7 +144,10 @@ function readTokens() {
 }
 
 function writeTokensFile(data) {
-  mkdirSync(resolve(__dirname, 'config'), { recursive: true });
+  // mkdir the parent of the actual TOKENS_PATH (which may be a mounted volume)
+  // rather than always config/. This lets TOKENS_PATH=/data/auth-tokens.json
+  // work on Railway with a /data volume mount.
+  try { mkdirSync(dirname(TOKENS_PATH), { recursive: true }); } catch { /* may already exist */ }
   writeFileSync(TOKENS_PATH, JSON.stringify(data, null, 2));
 }
 
@@ -1368,34 +1376,86 @@ app.get('/api/debug/searchsets-probe', async (req, res) => {
       versionIndex   = latest?.versionIndex ?? latest?.index ?? 1;
     } catch (_) { /* keep default 1 */ }
 
-    const candidates = [
-      // clash/v3 candidates
-      `${clashBase}/containers/${containerId}/modelsets/${modelSetId}/searchsets`,
-      `${clashBase}/containers/${containerId}/modelsets/${modelSetId}/versions/${versionIndex}/searchsets`,
-      `${clashBase}/containers/${containerId}/modelsets/${modelSetId}/search-sets`,
-      `${clashBase}/containers/${containerId}/modelsets/${modelSetId}/versions/${versionIndex}/search-sets`,
-      `${clashBase}/containers/${containerId}/modelsets/${modelSetId}/searchSets`,
-      // modelset/v3 candidates (in case search sets live under the modelset surface)
-      `${modelsetBase}/containers/${containerId}/modelsets/${modelSetId}/searchsets`,
-      `${modelsetBase}/containers/${containerId}/modelsets/${modelSetId}/versions/${versionIndex}/searchsets`,
-      `${modelsetBase}/containers/${containerId}/modelsets/${modelSetId}/search-sets`,
-      // modelcoordination/v3 candidates (alt base)
-      `${altModelsetBase}/containers/${containerId}/modelsets/${modelSetId}/searchsets`,
-      `${altModelsetBase}/containers/${containerId}/modelsets/${modelSetId}/versions/${versionIndex}/searchsets`,
-      // Known-good control: views works on modelset/v3
-      `${modelsetBase}/containers/${containerId}/modelsets/${modelSetId}/views`,
+    // Expanded probe: all four bases × multiple sub-resource names.
+    // The model set response includes "hasContentFilters: true" — strong hint
+    // that Autodesk calls these "content filters" internally, not "search sets".
+    const bases = [
+      ['clash/v3',           clashBase],
+      ['modelset/v3',        modelsetBase],
+      ['modelcoordination',  altModelsetBase],
     ];
+    const subResources = [
+      'searchsets', 'search-sets', 'searchSets',
+      'contentfilters', 'content-filters', 'contentFilters',
+      'selectionsets', 'selection-sets', 'selectionSets',
+      'filters', 'queries', 'rules',
+    ];
+
+    const candidates = [];
+    for (const [, base] of bases) {
+      for (const sub of subResources) {
+        // model-set scope (no version)
+        candidates.push(`${base}/containers/${containerId}/modelsets/${modelSetId}/${sub}`);
+        // version-scoped
+        candidates.push(`${base}/containers/${containerId}/modelsets/${modelSetId}/versions/${versionIndex}/${sub}`);
+      }
+      // container-scope (rare, but try)
+      candidates.push(`${base}/containers/${containerId}/searchsets`);
+      candidates.push(`${base}/containers/${containerId}/contentfilters`);
+    }
+    // Known-good control: views works on modelset/v3 with 3-legged
+    candidates.push(`${modelsetBase}/containers/${containerId}/modelsets/${modelSetId}/views`);
 
     const results = [];
     for (const url of candidates) {
       try {
         const data = await client.get(url);
-        results.push({ url, ok: true, status: 200, sampleKeys: Object.keys(data ?? {}).slice(0, 8) });
+        results.push({ url, ok: true, status: 200, sampleKeys: Object.keys(data ?? {}).slice(0, 8), body: data });
       } catch (err) {
-        results.push({ url, ok: false, status: err.status ?? null, message: String(err.message).slice(0, 200) });
+        results.push({ url, ok: false, status: err.status ?? null, message: String(err.message).slice(0, 160) });
       }
     }
-    res.json({ tokenKind, containerId, modelSetId, versionIndex, results });
+    // Sort: successes first, then 403 (URL exists but auth wrong), then 404
+    const sortKey = r => r.ok ? 0 : r.status === 403 ? 1 : r.status === 404 ? 2 : 3;
+    results.sort((a, b) => sortKey(a) - sortKey(b));
+    const summary = {
+      hits200: results.filter(r => r.ok).length,
+      hits403: results.filter(r => !r.ok && r.status === 403).length,
+      hits404: results.filter(r => !r.ok && r.status === 404).length,
+    };
+    res.json({ tokenKind, containerId, modelSetId, versionIndex, summary, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Diagnostic: dump the raw model-set response with every field so we can
+ * see whether search sets / content filters are exposed as a sub-resource
+ * link, an embedded array, or a property hint.
+ */
+app.get('/api/debug/modelset-raw', async (req, res) => {
+  try {
+    const env = readEnv();
+    const containerId = (req.query.containerId
+      ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID
+      ?? env.ACC_PROJECT_ID  ?? process.env.ACC_PROJECT_ID ?? '').replace(/^b\./, '');
+    const modelSetId = req.query.modelSetId ?? env.MC_MODEL_SET_ID ?? process.env.MC_MODEL_SET_ID;
+    if (!containerId || !modelSetId) return res.status(400).json({ error: 'containerId and modelSetId required' });
+
+    const { ModelCoordinationClient } = await import('./src/api/model-coordination.js');
+    const client = await makeAPSClient();
+    const mc = new ModelCoordinationClient(client, containerId);
+
+    const out = {};
+    try { out.modelSet      = await mc.getModelSet(modelSetId); } catch (e) { out.modelSet      = { error: e.message, status: e.status }; }
+    try { out.versions      = await mc.getModelSetVersions(modelSetId); } catch (e) { out.versions      = { error: e.message, status: e.status }; }
+    const versionIndex = out.versions?.versions?.[out.versions?.versions?.length - 1]?.versionIndex
+      ?? out.versions?.data?.[out.versions?.data?.length - 1]?.versionIndex
+      ?? 1;
+    try { out.fullVersion   = await mc.getModelSetVersion(modelSetId, versionIndex); } catch (e) { out.fullVersion   = { error: e.message, status: e.status }; }
+    try { out.views         = await mc.listModelSetViews(modelSetId); } catch (e) { out.views         = { error: e.message, status: e.status }; }
+    res.json({ containerId, modelSetId, versionIndex, ...out });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
