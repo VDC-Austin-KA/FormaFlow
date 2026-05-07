@@ -1461,6 +1461,69 @@ app.get('/api/debug/modelset-raw', async (req, res) => {
   }
 });
 
+/**
+ * Diagnostic: dump the v3 clash-rules document and ALL existing clash-test
+ * details (including resources/groups). Used to reverse-engineer the rules
+ * schema since the public APS docs don't expose it.
+ */
+app.get('/api/debug/clash-anatomy', async (req, res) => {
+  try {
+    const env = readEnv();
+    const containerId = (req.query.containerId
+      ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID
+      ?? env.ACC_PROJECT_ID  ?? process.env.ACC_PROJECT_ID ?? '').replace(/^b\./, '');
+    const modelSetId = req.query.modelSetId ?? env.MC_MODEL_SET_ID ?? process.env.MC_MODEL_SET_ID;
+    if (!containerId || !modelSetId) return res.status(400).json({ error: 'containerId and modelSetId required' });
+
+    const { ModelCoordinationClient, resolveMcBase } = await import('./src/api/model-coordination.js');
+    const client = await makeAPSClient();
+    const mc = new ModelCoordinationClient(client, containerId);
+    const tokenKind = (await getThreeLeggedToken()) ? '3-legged' : '2-legged';
+
+    let versionIndex = 1;
+    try {
+      const versResp = await mc.getModelSetVersions(modelSetId);
+      const versions = toArray(versResp, 'versions');
+      const latest   = versions[versions.length - 1];
+      versionIndex   = latest?.versionIndex ?? latest?.index ?? 1;
+    } catch (_) {}
+
+    const out = { tokenKind, containerId, modelSetId, versionIndex };
+    try { out.rules = await mc.getClashRules(modelSetId); }
+    catch (e) { out.rules = { error: e.message, status: e.status }; }
+
+    // Versioned rules variant (in case there is a per-version document)
+    const clashBase = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
+    try {
+      out.versionedRules = await client.get(`${clashBase}/containers/${containerId}/modelsets/${modelSetId}/versions/${versionIndex}/rules`);
+    } catch (e) { out.versionedRules = { error: e.message, status: e.status }; }
+
+    // List + drill into each existing clash test
+    let testList = null;
+    try { testList = await mc.listClashTests(modelSetId, versionIndex); }
+    catch (e) { out.tests = { error: e.message, status: e.status }; }
+    if (testList) {
+      const tests = toArray(testList, 'tests', 'clashTests');
+      out.tests = [];
+      for (const t of tests) {
+        const testId = t.id ?? t.testId;
+        const entry = { id: testId, summary: t };
+        try { entry.detail = await mc.getClashTest(modelSetId, versionIndex, testId); }
+        catch (e) { entry.detail = { error: e.message, status: e.status }; }
+        try { entry.resources = await mc.getClashTestResources(modelSetId, versionIndex, testId); }
+        catch (e) { entry.resources = { error: e.message, status: e.status }; }
+        try { entry.groups = await mc.getGroupedClashes(modelSetId, versionIndex, testId); }
+        catch (e) { entry.groups = { error: e.message, status: e.status }; }
+        out.tests.push(entry);
+      }
+    }
+
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /** Diagnostic: list all clash sets in the container (helps verify clash-set IDs) */
 app.get('/api/mc/clash-sets', async (req, res) => {
   try {
@@ -2040,6 +2103,19 @@ app.post('/api/workflow/run', async (req, res) => {
       emit('warn', `  ⚠ Could not verify clash readiness: ${err.message}`);
     }
 
+    // Probe the v3 unified-rules endpoint up front. If present, log the current
+    // rules document so the user can see (in the workflow output) exactly what
+    // ACC is using to drive auto-clash on this model set. This is the modern
+    // replacement for per-discipline Search Sets.
+    try {
+      const v3RulesDoc = await mcClient.getClashRules(modelSetId);
+      const docRulesCount  = Object.keys(v3RulesDoc?.documentRules ?? {}).length;
+      const fileRulesCount = Object.keys(v3RulesDoc?.fileRules ?? {}).length;
+      emit('info', `  ✓ v3 unified-rules document: clashType=${v3RulesDoc?.clashType ?? '—'}, documentRules=${docRulesCount}, fileRules=${fileRulesCount}, disabled=${!!v3RulesDoc?.clashDisabled}`);
+    } catch (e) {
+      emit('info', `  (No v3 unified-rules document found: ${e.message})`);
+    }
+
     const ssGen = new SearchSetGenerator(mcClient, {
       overwriteExisting: config.searchSets.overwriteExisting,
       createSystemBased: config.searchSets.createSystemBasedSets,
@@ -2047,18 +2123,23 @@ app.post('/api/workflow/run', async (req, res) => {
       dryRun,
     });
     const ssResults = await ssGen.generateForDisciplines(modelSetId, versionIndex, disciplines);
-    if (ssGen.listExistingError) {
+    if (ssGen.endpointUnavailable) {
+      emit('info', '  ℹ This Coordination Space uses the v3 unified-rules clash model (no /searchsets endpoint).');
+      emit('info', '    Configure clash rules from the ACC Model Coordination web UI; the workflow will read the resulting tests below.');
+    } else if (ssGen.listExistingError) {
       emit('warn', `⚠ Could not list existing Search Sets — ${ssGen.listExistingError} (proceeding without conflict check)`);
     }
-    const ssCreated  = ssResults.filter(r => r.created || r.dryRun).length;
-    const ssSkipped  = ssResults.filter(r => r.skipped).length;
-    const ssFailed   = ssResults.filter(r => r.error).length;
-    emit('info', `✓ Search Sets — ${ssCreated} created, ${ssSkipped} reused, ${ssFailed} failed`);
-    for (const r of ssResults) {
-      if (r.error)        emit('warn', `  ✗ ${r.name}: ${r.error}`);
-      else if (r.skipped) emit('info', `  ↻ ${r.name} (reused, remote id: ${r.remoteId ?? '—'})`);
-      else if (r.created) emit('info', `  ＋ ${r.name} (remote id: ${r.remoteId ?? '—'})`);
-      else if (r.dryRun)  emit('info', `  • ${r.name} (dry run)`);
+    if (!ssGen.endpointUnavailable) {
+      const ssCreated  = ssResults.filter(r => r.created || r.dryRun).length;
+      const ssSkipped  = ssResults.filter(r => r.skipped).length;
+      const ssFailed   = ssResults.filter(r => r.error).length;
+      emit('info', `✓ Search Sets — ${ssCreated} created, ${ssSkipped} reused, ${ssFailed} failed`);
+      for (const r of ssResults) {
+        if (r.error)        emit('warn', `  ✗ ${r.name}: ${r.error}`);
+        else if (r.skipped) emit('info', `  ↻ ${r.name} (reused, remote id: ${r.remoteId ?? '—'})`);
+        else if (r.created) emit('info', `  ＋ ${r.name} (remote id: ${r.remoteId ?? '—'})`);
+        else if (r.dryRun)  emit('info', `  • ${r.name} (dry run)`);
+      }
     }
 
     // KEY FIX: clash-test templates reference search sets by library ID
@@ -2068,10 +2149,11 @@ app.post('/api/workflow/run', async (req, res) => {
     const ssIdToRemoteId = new Map(
       ssResults.filter(r => r.remoteId).map(r => [r.id, r.remoteId])
     );
-    emit('info', `  ${ssIdToRemoteId.size} Search Set(s) available for clash test references`);
-    if (!ssIdToRemoteId.size && disciplines.length) {
+    if (!ssGen.endpointUnavailable) {
+      emit('info', `  ${ssIdToRemoteId.size} Search Set(s) available for clash test references`);
+    }
+    if (!ssIdToRemoteId.size && disciplines.length && !ssGen.endpointUnavailable) {
       emit('warn', '⚠ No Search Sets resolved — clash tests will be skipped. Possible causes:');
-      emit('warn', '   • Search Sets API not available for this container (returns 404)');
       emit('warn', '   • ACC project may not have Model Coordination / Clash Detection enabled');
       emit('warn', '   • App lacks 3-legged token / write permission for MC API');
       emit('warn', '   • Create calls returned no remote id (response shape mismatch)');
@@ -2083,14 +2165,23 @@ app.post('/api/workflow/run', async (req, res) => {
     if (disciplines.length < 2) {
       emit('warn', `⚠ Only ${disciplines.length} discipline(s) detected — at least 2 are required for any clash pair (e.g. ARCH + STRUCT). Assign disciplines manually on the Coordination tab if auto-detection is incomplete.`);
     }
-    const testConfigurator = new ClashTestConfigurator(mcClient, {
-      subTestsEnabled: config.clashTests.subTestsEnabled,
-      dryRun,
-      disabledTestIds: config.clashTests.disabledTestIds,
-    });
-    const testResults = await testConfigurator.configureForDisciplines(
-      modelSetId, versionIndex, disciplines, ssIdToRemoteId
-    );
+    // When the v3 unified-rules model is in use there are no Search Sets to
+    // reference — clash tests are auto-generated by ACC against the rules
+    // document whenever a view is published. Skip the create loop and route
+    // straight to Step 6's "read existing tests" path.
+    let testResults = [];
+    if (ssGen.endpointUnavailable) {
+      emit('info', '  v3 unified-rules model in use — clash tests are auto-generated by ACC on view publish. Skipping create loop.');
+    } else {
+      const testConfigurator = new ClashTestConfigurator(mcClient, {
+        subTestsEnabled: config.clashTests.subTestsEnabled,
+        dryRun,
+        disabledTestIds: config.clashTests.disabledTestIds,
+      });
+      testResults = await testConfigurator.configureForDisciplines(
+        modelSetId, versionIndex, disciplines, ssIdToRemoteId
+      );
+    }
     const testsCreated = testResults.filter(r => r.created || r.dryRun).length;
     const testsSkipped = testResults.filter(r => !r.created && !r.dryRun && !r.error).length;
     const testsFailed  = testResults.filter(r => r.error).length;

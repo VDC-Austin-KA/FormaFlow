@@ -327,6 +327,54 @@ export class ModelCoordinationClient {
   async deleteSearchSet(modelSetId, versionIndex, searchSetId) {
     return this._searchSetRequest('DELETE', modelSetId, versionIndex, searchSetId);
   }
+
+  /**
+   * Probe the /searchsets endpoint once and cache the result. Used to
+   * short-circuit the bulk-create loop when the API surface for this
+   * container does not support /searchsets (which is the case for the
+   * modern v3 unified-rules model — see getClashRules below).
+   */
+  async isSearchSetsApiAvailable(modelSetId, versionIndex) {
+    if (this._searchSetsAvailable != null) return this._searchSetsAvailable;
+    try {
+      await this.listSearchSets(modelSetId, versionIndex);
+      this._searchSetsAvailable = true;
+    } catch (err) {
+      const is404 = err.status === 404 || String(err.message).includes('404');
+      this._searchSetsAvailable = !is404;
+      if (!is404) throw err;
+    }
+    return this._searchSetsAvailable;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Clash Rules (v3 unified-rules document)
+  //
+  // In the modern Forma / ACC v3 API, separate "search sets" + "clash tests"
+  // have been consolidated into a single /rules document per model set.
+  //   GET  /clash/v3/containers/{c}/modelsets/{m}/rules      → current rules
+  //   PUT  same URL with If-Match: <checksum>                → update rules
+  // The body shape is { checksum, documentRules, fileRules, clashType, clashDisabled }.
+  // Tests run automatically against the rules whenever a view is published.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  _rulesUrl(modelSetId) {
+    return `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/rules`;
+  }
+
+  /** Get the current clash-rules document for a model set. */
+  async getClashRules(modelSetId) {
+    return this._client.get(this._rulesUrl(modelSetId));
+  }
+
+  /**
+   * Replace the clash-rules document. Pass the checksum from a prior
+   * getClashRules() call so the API can detect concurrent edits via If-Match.
+   */
+  async putClashRules(modelSetId, rulesDoc, ifMatchChecksum) {
+    const headers = ifMatchChecksum ? { 'If-Match': ifMatchChecksum } : {};
+    return this._client.put(this._rulesUrl(modelSetId), rulesDoc, { headers });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
