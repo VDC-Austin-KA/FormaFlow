@@ -323,20 +323,23 @@ async function loadCoordinationSpaces() {
     const sets = Array.isArray(raw) ? raw : Array.isArray(data) ? data : [];
     _coordSpaces = sets;
 
-    const sel = el('sel-coord-space');
-    const previousValue = sel.value;
-    sel.innerHTML = sets.length
-      ? '<option value="">— select a coordination space —</option>'
-      : '<option value="">— no coordination spaces in this container —</option>';
+    const sels = [el('sel-coord-space'), el('sel-coord-space-mc')].filter(Boolean);
+    const previousValue = sels[0]?.value;
 
-    for (const s of sets) {
-      const id   = s.id ?? s.modelSetId;
-      const name = s.name ?? id;
-      const docCount = s.documentCount ?? s.size ?? null;
-      const label = docCount != null ? `${name}  (${docCount} models)` : name;
-      sel.add(new Option(label, id));
-    }
-    if (previousValue && sel.querySelector(`option[value="${previousValue}"]`)) sel.value = previousValue;
+    sels.forEach(sel => {
+      sel.innerHTML = sets.length
+        ? '<option value="">— select a coordination space —</option>'
+        : '<option value="">— no coordination spaces in this container —</option>';
+
+      for (const s of sets) {
+        const id   = s.id ?? s.modelSetId;
+        const name = s.name ?? id;
+        const docCount = s.documentCount ?? s.size ?? null;
+        const label = docCount != null ? `${name}  (${docCount} models)` : name;
+        sel.add(new Option(label, id));
+      }
+      if (previousValue && sel.querySelector(`option[value="${previousValue}"]`)) sel.value = previousValue;
+    });
 
     if (!sets.length) {
       showCoordSpaceError(
@@ -414,33 +417,54 @@ function hideCoordSpaceError() {
   el('coord-space-error')?.classList.add('hidden');
 }
 
-async function onCoordSpaceChange() {
-  const sel = el('sel-coord-space');
-  const id  = sel.value;
+async function onCoordSpaceChange(e) {
+  const id = e?.target?.value || el('sel-coord-space')?.value || el('sel-coord-space-mc')?.value;
   if (!id) return;
-  const name = sel.options[sel.selectedIndex]?.text ?? id;
+
+  // Sync all selectors
+  [el('sel-coord-space'), el('sel-coord-space-mc')].forEach(sel => {
+    if (sel && sel.value !== id) sel.value = id;
+  });
+
+  const name = getActiveCoordSpaceName();
   showCoordSpaceInfo(`Active: ${name}`);
-  // Persist immediately so the workflow uses it
+
   try {
     await api('POST', '/api/config/env', { MC_MODEL_SET_ID: id });
     if (State.config?.env) State.config.env.MC_MODEL_SET_ID = id;
-    toast('Coordination space saved');
-    // Refresh views (saved views are scoped to a space)
+    toast(`Coordination space "${name}" active`);
+    
+    // Refresh relevant data
     reloadViewsList().catch(() => {});
+    
+    // If on coordination tab, reload immediately
+    if (State.currentTab === 'coordination') {
+      _coordState.loaded = false;
+      loadCoordinationData();
+    }
+    
+    // If viewer is set to 'space', reload model list
+    if (_viewerState.source === 'space') {
+      loadViewerModels();
+    }
   } catch (err) {
     toast('Failed to save selection: ' + err.message, 'error');
   }
 }
 
 function getActiveCoordSpaceId() {
-  const sel = el('sel-coord-space');
-  const fromSel = (sel && sel.value && !sel.value.includes('click Load')) ? sel.value : null;
-  return fromSel || State.config?.env?.MC_MODEL_SET_ID || '';
+  const sel1 = el('sel-coord-space');
+  const sel2 = el('sel-coord-space-mc');
+  const val1 = (sel1 && sel1.value && !sel1.value.includes('select')) ? sel1.value : null;
+  const val2 = (sel2 && sel2.value && !sel2.value.includes('select')) ? sel2.value : null;
+  return val1 || val2 || State.config?.env?.MC_MODEL_SET_ID || '';
 }
 
 function getActiveCoordSpaceName() {
-  const sel = el('sel-coord-space');
-  if (sel?.selectedIndex > 0) return sel.options[sel.selectedIndex].text;
+  const sel1 = el('sel-coord-space');
+  const sel2 = el('sel-coord-space-mc');
+  if (sel1?.selectedIndex > 0) return sel1.options[sel1.selectedIndex].text;
+  if (sel2?.selectedIndex > 0) return sel2.options[sel2.selectedIndex].text;
   return getActiveCoordSpaceId() || '';
 }
 
@@ -2957,13 +2981,22 @@ async function loadViewIntoViewer() {
     const viewModels = view?.models ?? [];
     if (!viewModels.length) throw new Error('Selected view contains no models');
 
-    // Map view models to our loaded space documents to get viewerUrns
     const toLoad = [];
     for (const vm of viewModels) {
-      // The View API returns modelId and versionIndex. 
-      // Space documents from Step 2 also have id and version.
-      const match = _coordState.models.find(m => m.id === vm.id);
-      if (match) toLoad.push(match);
+      // Robust matching: Try ID first, then URN, then Name
+      let match = _coordState.models.find(m => m.id === vm.id);
+      if (!match && vm.urn) {
+        match = _coordState.models.find(m => m.viewerUrn === vm.urn || m.rawUrn === vm.urn);
+      }
+      if (!match && vm.name) {
+        match = _coordState.models.find(m => m.name === vm.name);
+      }
+      
+      if (match) {
+        toLoad.push(match);
+      } else {
+        console.warn(`View model "${vm.name || vm.id}" not found in current space documents`);
+      }
     }
 
     if (!toLoad.length) throw new Error('Could not find matching models for this view in the current space');
@@ -2971,9 +3004,11 @@ async function loadViewIntoViewer() {
     toast(`Loading view "${view.name}" with ${toLoad.length} models…`);
     
     // Unload all first
-    if (window._viewer) {
-      const models = window._viewer.getAllModels();
-      models.forEach(m => window._viewer.unloadModel(m));
+    if (_viewerState.viewer) {
+      const models = _viewerState.viewer.getAllModels();
+      models.forEach(m => _viewerState.viewer.unloadModel(m));
+      _viewerState.loadedModels = [];
+      _viewerState.globalOffset = null; // Reset offset for fresh view load
     }
 
     // Load sequentially
@@ -4044,7 +4079,9 @@ async function init() {
 
   // Coordination space
   el('btn-load-coord-spaces').addEventListener('click', loadCoordinationSpaces);
+  el('btn-load-coord-spaces-mc')?.addEventListener('click', loadCoordinationSpaces);
   el('sel-coord-space').addEventListener('change', onCoordSpaceChange);
+  el('sel-coord-space-mc')?.addEventListener('change', onCoordSpaceChange);
 
   // Saved Views
   el('sel-view').addEventListener('change', onViewSelected);
