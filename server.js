@@ -1354,7 +1354,8 @@ app.get('/api/mc/clash-groups', async (req, res) => {
   }
 });
 
-/** List existing search sets for a coordination space (version-aware). */
+/** List existing search sets for a coordination space (version-aware).
+ *  Falls back to the v3 /rules document when /searchsets returns 404. */
 app.get('/api/mc/search-sets', async (req, res) => {
   try {
     const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
@@ -1367,8 +1368,97 @@ app.get('/api/mc/search-sets', async (req, res) => {
       const latest   = versions[versions.length - 1];
       versionIndex   = latest?.versionIndex ?? latest?.index ?? 1;
     }
-    const data = await mc.listSearchSets(modelSetId, versionIndex);
-    res.json({ versionIndex, data });
+    try {
+      const data = await mc.listSearchSets(modelSetId, versionIndex);
+      res.json({ versionIndex, apiSurface: 'searchsets', data });
+    } catch (ssErr) {
+      const is404 = ssErr.status === 404 || String(ssErr.message).includes('404');
+      if (!is404) throw ssErr;
+      // v3 unified-rules: /searchsets doesn't exist; fetch /rules instead
+      try {
+        const rules = await mc.getClashRules(modelSetId);
+        res.json({ versionIndex, apiSurface: 'rules', rules });
+      } catch (rulesErr) {
+        res.status(404).json({
+          error: '/searchsets endpoint not available (404) and /rules also failed',
+          searchSetsError: ssErr.message,
+          rulesError: rulesErr.message,
+        });
+      }
+    }
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Fetch the v3 unified clash-rules document for a coordination space. */
+app.get('/api/mc/clash-rules', async (req, res) => {
+  try {
+    const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
+    if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
+    const mc = await buildMcClient(req);
+    const rules = await mc.getClashRules(modelSetId);
+    res.json({ modelSetId, rules });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Import our search set library templates into the coordination space.
+ *  For /searchsets containers: creates each set via POST.
+ *  For v3 /rules containers: first reads the rules document to discover the
+ *  schema, then maps templates into the documentRules/fileRules structure and
+ *  PUTs the result. The mapping requires the live schema (unknown until /rules
+ *  returns 200), so the import returns the current rules + planned templates
+ *  as a preview when the schema is not yet determined. */
+app.post('/api/mc/search-sets/import', async (req, res) => {
+  try {
+    const modelSetId = req.query.modelSetId ?? req.body?.modelSetId ?? process.env.MC_MODEL_SET_ID;
+    if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
+    const mc = await buildMcClient(req);
+    const { SearchSetGenerator } = await import('./src/search-sets/search-set-generator.js');
+    const disciplines = req.body?.disciplines ?? null;
+
+    // Try /searchsets first (legacy containers)
+    try {
+      const versResp = await mc.getModelSetVersions(modelSetId);
+      const versions = toArray(versResp, 'versions');
+      const latest   = versions[versions.length - 1];
+      const versionIndex = latest?.versionIndex ?? latest?.index ?? 1;
+
+      const ssGen = new SearchSetGenerator(mc, {
+        overwriteExisting: req.body?.overwrite ?? false,
+        dryRun: req.body?.dryRun ?? false,
+      });
+      const detectedDiscs = disciplines ?? Object.keys(ssGen._library.searchSetGroups);
+      const results = await ssGen.generateForDisciplines(modelSetId, versionIndex, detectedDiscs);
+
+      if (ssGen.endpointUnavailable) {
+        // v3 /rules path: read the current rules document, return it for schema discovery
+        let rules = null;
+        let rulesErr = null;
+        try { rules = await mc.getClashRules(modelSetId); } catch (e) { rulesErr = e.message; }
+        return res.json({
+          apiSurface: 'rules',
+          note: 'This container uses v3 /rules (no /searchsets). The rules document is returned below so the import schema can be determined. Re-POST with the schema once known.',
+          currentRules: rules,
+          rulesError: rulesErr,
+          templates: ssGen.getSearchSetNamesByDiscipline(),
+        });
+      }
+
+      const created = results.filter(r => r.created).length;
+      const skipped = results.filter(r => r.skipped).length;
+      const failed  = results.filter(r => r.error).length;
+      return res.json({ apiSurface: 'searchsets', versionIndex, created, skipped, failed, results });
+
+    } catch (err) {
+      res.status(err.status ?? 500).json({ error: err.message });
+    }
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message });
+  }
+});
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
   }
