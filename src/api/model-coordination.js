@@ -42,12 +42,24 @@ export const MC_CANDIDATE_BASES = [
 export function resolveMcBase(envVar, fallback) {
   const raw = (process.env[envVar] ?? '').trim();
   if (!raw) return fallback;
-  // Auto-correct the deprecated v2 path only
+
+  // Auto-correct the deprecated v2 path
   if (raw.includes('/bim360/modelcoordination/v2')) {
-    const fixed = MC_CANDIDATE_BASES[0];
-    logger.warn('Env var %s contains deprecated v2 path — auto-correcting: %s → %s', envVar, raw, fixed);
+    logger.warn('Env var %s contains deprecated v2 path — auto-correcting: %s → %s', envVar, raw, fallback);
+    return fallback;
+  }
+
+  // Auto-correct any URL with the spurious "modelcoordination/" segment.
+  // No real Autodesk endpoint contains "/bim360/modelcoordination/" — common bad
+  // overrides include "/bim360/modelcoordination/clash/v3" and
+  // "/bim360/modelcoordination/modelset/v3". Strip the segment so the URL
+  // becomes the canonical "/bim360/clash/v3" or "/bim360/modelset/v3".
+  if (/\/bim360\/modelcoordination\//.test(raw)) {
+    const fixed = raw.replace('/bim360/modelcoordination/', '/bim360/');
+    logger.warn('Env var %s contains spurious "modelcoordination/" segment — auto-correcting: %s → %s', envVar, raw, fixed);
     return fixed;
   }
+
   return raw;
 }
 
