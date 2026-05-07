@@ -55,12 +55,29 @@ export class SearchSetGenerator {
     // (b) recover their remote IDs so clash tests can still reference them.
     let existingSets = [];
     this.listExistingError = null;
+    this.endpointUnavailable = false;
     try {
       const res = await this._mc.listSearchSets(modelSetId, versionIndex);
       existingSets = res?.data ?? res?.results ?? res?.searchSets ?? (Array.isArray(res) ? res : []);
       logger.info('Fetched %d existing Search Set(s) for conflict check', existingSets.length);
     } catch (err) {
       this.listExistingError = err.message;
+      const is404 = err.status === 404 || String(err.message).includes('404');
+      if (is404) {
+        // Modern v3 ACC API exposes a unified /rules document per model set
+        // instead of separate /searchsets resources. Bail out cleanly with a
+        // single explanatory result rather than emitting 16 individual 404s.
+        this.endpointUnavailable = true;
+        logger.warn('Search Sets endpoint returned 404 — this container uses the v3 unified-rules model. Skipping per-set creation.');
+        return [{
+          id: '__endpoint-unavailable__',
+          name: 'Search Sets API',
+          created: false,
+          skipped: true,
+          endpointUnavailable: true,
+          error: 'v3 API surface uses /rules (unified clash rules), not /searchsets. Workflow will fall back to existing clash tests.',
+        }];
+      }
       logger.warn('Could not fetch existing Search Sets (%s) — proceeding without conflict check', err.message);
     }
     const existingByName = new Map(existingSets.map(s => [s.name, s.id ?? s.searchSetId]));
