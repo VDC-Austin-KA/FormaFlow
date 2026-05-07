@@ -35,6 +35,7 @@ const ENV_KEYS = [
   'ACC_ACCOUNT_ID', 'ACC_PROJECT_ID',
   'MC_CONTAINER_ID', 'MC_MODEL_SET_ID', 'TARGET_FOLDER_URN',
   'LOG_LEVEL', 'DRY_RUN',
+  'APS_REFRESH_TOKEN',  // persists 3-legged session across Railway redeployments
 ];
 
 // process.env aliases → canonical key (applied when canonical is absent)
@@ -189,6 +190,30 @@ async function getThreeLeggedToken() {
   return refreshStoredToken();
 }
 
+// On Railway and other ephemeral-filesystem hosts the token file is wiped on
+// every redeploy. If the user has set APS_REFRESH_TOKEN in their Railway
+// environment variables, bootstrap the session automatically so they don't
+// need to re-authenticate after each deploy.
+async function bootstrapTokenFromEnv() {
+  if (existsSync(TOKENS_PATH)) return;
+  const refreshToken = (process.env.APS_REFRESH_TOKEN ?? '').trim();
+  if (!refreshToken) return;
+  console.log('[FormaFlow] Bootstrapping 3-legged session from APS_REFRESH_TOKEN env var');
+  try {
+    mkdirSync(dirname(TOKENS_PATH), { recursive: true });
+    writeFileSync(TOKENS_PATH, JSON.stringify({ refresh_token: refreshToken }, null, 2));
+    const token = await refreshStoredToken();
+    if (token) {
+      console.log('[FormaFlow] ✓ 3-legged session bootstrapped — service account auto-connected');
+    } else {
+      console.warn('[FormaFlow] ✗ APS_REFRESH_TOKEN bootstrap failed — token expired. Re-authenticate via the Connect tab.');
+      try { unlinkSync(TOKENS_PATH); } catch { /* ignore */ }
+    }
+  } catch (err) {
+    console.warn('[FormaFlow] Bootstrap error:', err.message);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Routes — 3-legged OAuth
 // ─────────────────────────────────────────────────────────────────────────────
@@ -244,6 +269,12 @@ app.get('/api/auth/callback', async (req, res) => {
       email, name,
       saved_at: new Date().toISOString(),
     });
+    // Keep APS_REFRESH_TOKEN in process.env so makeAPSClient bootstrap works
+    // for the lifetime of this process, and write to .env for local dev.
+    if (tokens.refresh_token) {
+      process.env.APS_REFRESH_TOKEN = tokens.refresh_token;
+      try { writeEnv({ APS_REFRESH_TOKEN: tokens.refresh_token }); } catch { /* best-effort */ }
+    }
     res.redirect('/?auth=success');
   } catch (err) {
     console.error('[FormaFlow] OAuth callback error:', err.message);
@@ -257,12 +288,14 @@ app.get('/api/auth/status', (_req, res) => {
   if (!stored) return res.json({ loggedIn: false });
   const expired = Date.now() >= stored.expires_at - 60_000;
   res.json({
-    loggedIn:  true,
-    email:     stored.email,
-    name:      stored.name,
-    expiresAt: stored.expires_at,
+    loggedIn:      true,
+    email:         stored.email,
+    name:          stored.name,
+    expiresAt:     stored.expires_at,
     expired,
-    savedAt:   stored.saved_at,
+    savedAt:       stored.saved_at,
+    refreshToken:  stored.refresh_token,   // for Railway env var export
+    envVarSet:     !!(process.env.APS_REFRESH_TOKEN?.trim()), // true = auto-reconnect on redeploy
   });
 });
 
@@ -316,18 +349,16 @@ async function makeAPSClient(overrides = {}) {
     overrides.clientSecret ?? process.env.APS_CLIENT_SECRET
   );
 
-  // If we have a stored service-account (3-legged) token, use it — this gives
-  // access to all MC endpoints that require a user identity. If the token is
-  // expired it is refreshed automatically. Falls back to 2-legged silently.
+  // Always prefer 3-legged token when available. Override getToken unconditionally
+  // so that API calls made after the user logs in mid-session automatically pick
+  // up the new token without the caller needing to recreate the client.
+  // Falls back to 2-legged transparently when no 3-legged session is stored.
   if (!overrides.forceTwoLegged) {
-    const threeLeggedToken = await getThreeLeggedToken();
-    if (threeLeggedToken) {
-      const _prototype_getToken = APSClient.prototype.getToken.bind(client);
-      client.getToken = async () => {
-        const fresh = await getThreeLeggedToken();
-        return fresh ?? _prototype_getToken();
-      };
-    }
+    const _twoLeggedGetToken = APSClient.prototype.getToken.bind(client);
+    client.getToken = async () => {
+      const threeLeggedToken = await getThreeLeggedToken();
+      return threeLeggedToken ?? _twoLeggedGetToken();
+    };
   }
 
   return client;
@@ -2129,8 +2160,9 @@ app.post('/api/workflow/run', async (req, res) => {
     } else if (ssGen.listExistingError) {
       emit('warn', `⚠ Could not list existing Search Sets — ${ssGen.listExistingError} (proceeding without conflict check)`);
     }
+    let ssCreated = 0;
     if (!ssGen.endpointUnavailable) {
-      const ssCreated  = ssResults.filter(r => r.created || r.dryRun).length;
+      ssCreated        = ssResults.filter(r => r.created || r.dryRun).length;
       const ssSkipped  = ssResults.filter(r => r.skipped).length;
       const ssFailed   = ssResults.filter(r => r.error).length;
       emit('info', `✓ Search Sets — ${ssCreated} created, ${ssSkipped} reused, ${ssFailed} failed`);
@@ -2300,6 +2332,10 @@ app.post('/api/workflow/run', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 app.get('*', (_req, res) => res.sendFile(resolve(__dirname, 'public', 'index.html')));
+
+// Bootstrap 3-legged session from APS_REFRESH_TOKEN env var if no token file exists.
+// This makes the session survive Railway redeployments without needing a Volume.
+await bootstrapTokenFromEnv();
 
 app.listen(PORT, () => {
   console.log(`\n  FormaFlow UI  →  http://localhost:${PORT}\n`);
