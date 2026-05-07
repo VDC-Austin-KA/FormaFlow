@@ -36,16 +36,18 @@ export class SearchSetGenerator {
   }
 
   /**
-   * Create Search Sets for all detected disciplines in a model set.
+   * Create Search Sets for all detected disciplines in a model set version.
    *
    * @param {string}   modelSetId
-   * @param {string[]} detectedDisciplines  - e.g. ['ARCH', 'STRUCT', 'MECH']
+   * @param {number}   versionIndex          - latest version of the model set
+   * @param {string[]} detectedDisciplines   - e.g. ['ARCH', 'STRUCT', 'MECH']
    * @returns {Promise<SearchSetCreationResult[]>}
    */
-  async generateForDisciplines(modelSetId, detectedDisciplines) {
+  async generateForDisciplines(modelSetId, versionIndex, detectedDisciplines) {
     logger.info(
-      'Generating Search Sets for model set %s — disciplines: %s',
+      'Generating Search Sets for model set %s v%s — disciplines: %s',
       modelSetId,
+      versionIndex,
       detectedDisciplines.join(', ')
     );
 
@@ -54,7 +56,7 @@ export class SearchSetGenerator {
     let existingSets = [];
     this.listExistingError = null;
     try {
-      const res = await this._mc.listSearchSets(modelSetId);
+      const res = await this._mc.listSearchSets(modelSetId, versionIndex);
       existingSets = res?.data ?? res?.results ?? res?.searchSets ?? (Array.isArray(res) ? res : []);
       logger.info('Fetched %d existing Search Set(s) for conflict check', existingSets.length);
     } catch (err) {
@@ -74,7 +76,7 @@ export class SearchSetGenerator {
         if (template.systemBased && !this._createSystemBased) continue;
         if (!template.systemBased && !this._createFallback) continue;
 
-        const result = await this._createOne(modelSetId, template, existingByName);
+        const result = await this._createOne(modelSetId, versionIndex, template, existingByName);
         results.push(result);
 
         // Track created names + IDs to avoid double-creating within the same run
@@ -92,7 +94,7 @@ export class SearchSetGenerator {
   // Private helpers
   // ─────────────────────────────────────────────────────────────────────────
 
-  async _createOne(modelSetId, template, existingByName) {
+  async _createOne(modelSetId, versionIndex, template, existingByName) {
     // If a Search Set with this name already exists, reuse its remote ID so
     // clash-test creation can still reference it. Without this the workflow
     // silently dropped clash tests because every "skipped" set lost its id.
@@ -112,7 +114,7 @@ export class SearchSetGenerator {
     }
 
     try {
-      const response = await this._mc.createSearchSet(modelSetId, payload);
+      const response = await this._mc.createSearchSet(modelSetId, versionIndex, payload);
       const remoteId = response?.id ?? response?.data?.id ?? response?.searchSetId;
       if (!remoteId) {
         logger.warn(

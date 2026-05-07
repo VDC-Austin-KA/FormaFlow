@@ -950,28 +950,61 @@ function deepClone(o) { return JSON.parse(JSON.stringify(o)); }
 
 // ───────────────── Model property picker ─────────────────
 
+// Virtual "folder" id used to surface the active Coordination Space documents
+// at the top of the folder picker — these are the same models the workflow
+// classifies, so they almost always have a discipline already assigned.
+const COORD_SPACE_VFOLDER = '__coord_space__';
+const TARGET_FOLDER_VLABEL = '📌 Target Folder (Connect tab)';
+
 async function openModelPicker() {
   el('ss-model-modal').classList.remove('hidden');
   const status = el('ss-model-status');
-  status.textContent = 'Loading folders…';
+  const folderSel = el('ss-model-folder');
+  status.textContent = 'Loading models…';
 
   const accountId = State.config.env.ACC_ACCOUNT_ID;
   const projectId = State.config.env.ACC_PROJECT_ID;
+  const targetFolder = State.config.env.TARGET_FOLDER_URN || '';
+  const hasCoordSpace = !!getActiveCoordSpaceId();
+
   if (!accountId || !projectId) {
     status.textContent = 'Set ACC Account ID and Project ID on the Connect tab first.';
     return;
   }
 
+  // Build the folder dropdown — lead with the coordination space and the
+  // target folder so the user doesn't have to navigate from the project root.
+  folderSel.innerHTML = '';
+  if (hasCoordSpace) {
+    folderSel.add(new Option('📦 Coordination Space (discipline-assigned)', COORD_SPACE_VFOLDER));
+  }
+  if (targetFolder) {
+    folderSel.add(new Option(TARGET_FOLDER_VLABEL, targetFolder));
+  }
+  folderSel.add(new Option('— or browse all project folders —', ''));
+
   try {
     const data = await api('GET', `/api/project/folders?accountId=${encodeURIComponent(accountId)}&projectId=${encodeURIComponent(projectId)}`);
-    const sel = el('ss-model-folder');
-    sel.innerHTML = '<option value="">— select a folder —</option>';
     for (const f of (data?.data ?? [])) {
-      sel.add(new Option(f.attributes?.name || f.id, f.id));
+      const id = f.id;
+      // Skip the duplicate target-folder entry — it's already the second option
+      if (id === targetFolder) continue;
+      folderSel.add(new Option(f.attributes?.name || id, id));
     }
-    status.textContent = '';
   } catch (err) {
-    status.textContent = 'Could not load folders: ' + err.message;
+    status.textContent = 'Could not load folder list: ' + err.message;
+  }
+
+  // Auto-select the most useful starting point
+  let initial = '';
+  if (hasCoordSpace)        initial = COORD_SPACE_VFOLDER;
+  else if (targetFolder)    initial = targetFolder;
+
+  if (initial) {
+    folderSel.value = initial;
+    await loadFolderModels(initial);
+  } else {
+    status.textContent = 'Pick a folder, or set a Target Folder / load a Coordination Space on the Connect tab to skip this step.';
   }
 }
 
@@ -982,6 +1015,41 @@ async function loadFolderModels(folderUrn) {
   sel.innerHTML = '<option value="">— loading —</option>';
   sel.disabled = true;
   pullBtn.disabled = true;
+
+  // Virtual folder: pull the active coordination space documents and label them
+  // by discipline (from per-model overrides → coord-tab assignments → filename guess).
+  if (folderUrn === COORD_SPACE_VFOLDER) {
+    try {
+      const docs = await fetchCoordSpaceModels();
+      const overrides = (typeof _coordState !== 'undefined' && _coordState?.modelDisciplines) || {};
+      const labeled = docs.map(d => {
+        const disc = overrides[d.id] ?? overrides[d.rawUrn] ?? overrides[d.viewerUrn] ?? d.discipline ?? 'UNKNOWN';
+        return { ...d, disc };
+      });
+      labeled.sort((a, b) => (a.disc || '').localeCompare(b.disc || '') || a.name.localeCompare(b.name));
+      sel.innerHTML = labeled.length
+        ? '<option value="">— pick a model —</option>'
+        : '<option value="">— coordination space has no documents (run Refresh from Space) —</option>';
+      for (const m of labeled) {
+        const label = m.disc && m.disc !== 'UNKNOWN' ? `[${m.disc}] ${m.name}` : m.name;
+        const opt = new Option(label, m.viewerUrn || m.id);
+        opt.dataset.urn = m.viewerUrn || '';
+        sel.add(opt);
+      }
+      sel.disabled = !labeled.length;
+      status.textContent = labeled.length ? `${labeled.length} discipline-assigned model(s) from coordination space.` : '';
+    } catch (err) {
+      sel.innerHTML = '<option value="">— error —</option>';
+      status.textContent = 'Could not load coordination space models: ' + err.message;
+    }
+    return;
+  }
+
+  if (!folderUrn) {
+    sel.innerHTML = '<option value="">— select a folder above —</option>';
+    status.textContent = '';
+    return;
+  }
 
   const projectId = State.config.env.ACC_PROJECT_ID;
   if (!projectId) { status.textContent = 'Set Project ID first.'; return; }
@@ -1005,18 +1073,27 @@ async function loadFolderModels(folderUrn) {
 
 async function pullModelProperties() {
   const pick = el('ss-model-pick');
-  const itemId = pick.value;
-  if (!itemId) return;
+  const value = pick.value;
+  if (!value) return;
   const status = el('ss-model-status');
   status.innerHTML = 'Extracting properties <span class="spinner-dot"></span><span class="spinner-dot"></span><span class="spinner-dot"></span>';
 
+  // Coordination-space models carry a base64 derivative URN directly; folder
+  // models carry an item id and need a tip-version lookup server-side.
+  const opt = pick.options[pick.selectedIndex];
+  const derivUrn = opt?.dataset?.urn || '';
   const projectId = State.config.env.ACC_PROJECT_ID;
+
+  const qs = derivUrn
+    ? `urn=${encodeURIComponent(derivUrn)}`
+    : `projectId=${encodeURIComponent(projectId)}&itemId=${encodeURIComponent(value)}`;
+
   try {
-    const data = await api('GET', `/api/models/properties?projectId=${encodeURIComponent(projectId)}&itemId=${encodeURIComponent(itemId)}`);
+    const data = await api('GET', `/api/models/properties?${qs}`);
     SSEditor.properties = data?.properties ?? [];
     ensureSharedPropsList();
     updatePropHint();
-    status.textContent = `✓ ${SSEditor.properties.length} propertie(s) loaded from ${pick.options[pick.selectedIndex].text}.`;
+    status.textContent = `✓ ${SSEditor.properties.length} propertie(s) loaded from ${opt?.text || 'model'}.`;
     setTimeout(() => { el('ss-model-modal').classList.add('hidden'); }, 900);
     // Refresh current condition rows to pick up new value suggestions
     if (!el('ss-modal').classList.contains('hidden')) renderConditionRows();

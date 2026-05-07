@@ -147,15 +147,16 @@ export class ModelCoordinationClient {
   }
 
   /**
-   * Returns true if the given model set ID is registered with the clash service.
-   * Callers should call this before trying search-set or clash-test endpoints so
-   * they can surface a clear "enable clash detection" message instead of a raw 404.
+   * Returns true if the clash service responds for this model set version.
+   * The clash/v3 service does NOT expose a top-level "list model sets"
+   * endpoint (calling /clash/v3/containers/{id}/modelsets returns 404 even
+   * for clash-enabled containers — confirmed live). Probe the per-version
+   * /tests endpoint instead, which is the canonical readiness signal.
    */
-  async isClashEnabled(modelSetId) {
+  async isClashEnabled(modelSetId, versionIndex = 1) {
     try {
-      const raw = await this.listClashModelSets();
-      const sets = raw?.modelSets ?? raw?.modelsets ?? raw?.data ?? raw?.results ?? (Array.isArray(raw) ? raw : []);
-      return sets.some(s => (s.id ?? s.modelSetId) === modelSetId);
+      await this.listClashTests(modelSetId, versionIndex);
+      return true;
     } catch {
       return false;
     }
@@ -172,23 +173,11 @@ export class ModelCoordinationClient {
   // Clash Tests
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * List all clash tests for a model set version.
-   * Tries the v3 clash API first; if that 404s (BIM360 / older containers),
-   * retries using the legacy v2 modelcoordination path.
-   */
+  /** List all clash tests for a model set version (Forma / ACC v3 API). */
   async listClashTests(modelSetId, versionIndex) {
-    const urlV3 = `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests`;
-    try {
-      return await this._client.get(urlV3);
-    } catch (errV3) {
-      const is404 = errV3.status === 404 || String(errV3.message).includes('404');
-      if (!is404) throw errV3;
-      // Legacy BIM360 containers may only support the v2 modelcoordination path.
-      const urlV2 = `https://developer.api.autodesk.com/bim360/modelcoordination/v2/containers/${this._container}/clashsets/${modelSetId}/versions/${versionIndex}/tests`;
-      logger.debug('clash/v3 tests 404, falling back to modelcoordination/v2: %s', urlV2);
-      return this._client.get(urlV2);
-    }
+    return this._client.get(
+      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests`
+    );
   }
 
   /**
@@ -281,51 +270,62 @@ export class ModelCoordinationClient {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Search Sets (ACC / Forma — March 2026+)
+  // Search Sets (ACC / Forma v3)
+  //
+  // Live observation: GET .../modelsets/{id}/searchsets returns 404 even when
+  // clash tests for the same model set work. Clash tests use a versioned path
+  // (.../versions/{v}/tests) and search sets follow the same pattern. We try
+  // the versioned URL first and fall back to the flat URL on 404 so we
+  // remain compatible if Autodesk later flattens the path.
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * List existing Search Sets for a model set.
-   * NOTE: Search Sets API endpoints were added in ACC March 2026 update.
-   * Monitor: https://aps.autodesk.com/en/docs/acc/v1/overview/release-notes/
-   */
-  async listSearchSets(modelSetId) {
-    return this._client.get(
-      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/searchsets`
-    );
+  _searchSetUrl(modelSetId, versionIndex, suffix = '') {
+    const base = `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}`;
+    const tail = `searchsets${suffix ? '/' + suffix : ''}`;
+    return versionIndex != null
+      ? `${base}/versions/${versionIndex}/${tail}`
+      : `${base}/${tail}`;
   }
 
-  /**
-   * Create a new Search Set (reusable property-based filter).
-   *
-   * @param {string} modelSetId
-   * @param {SearchSetDefinition} searchSetDef
-   */
-  async createSearchSet(modelSetId, searchSetDef) {
-    logger.info('Creating Search Set: %s', searchSetDef.name);
-    return this._client.post(
-      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/searchsets`,
-      searchSetDef
-    );
+  async _searchSetRequest(method, modelSetId, versionIndex, suffix, body) {
+    const versionedUrl = this._searchSetUrl(modelSetId, versionIndex, suffix);
+    const flatUrl      = this._searchSetUrl(modelSetId, null, suffix);
+    const call = url => method === 'GET'    ? this._client.get(url)
+      : method === 'POST'   ? this._client.post(url, body)
+      : method === 'PATCH'  ? this._client.patch(url, body)
+      : method === 'DELETE' ? this._client.delete(url)
+      : Promise.reject(new Error(`Unsupported method ${method}`));
+
+    if (versionIndex == null) return call(flatUrl);
+    try {
+      return await call(versionedUrl);
+    } catch (err) {
+      const is404 = err.status === 404 || String(err.message).includes('404');
+      if (!is404) throw err;
+      logger.debug('searchsets versioned URL 404, falling back to flat: %s', flatUrl);
+      return call(flatUrl);
+    }
   }
 
-  /**
-   * Update an existing Search Set.
-   */
-  async updateSearchSet(modelSetId, searchSetId, searchSetDef) {
-    return this._client.patch(
-      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/searchsets/${searchSetId}`,
-      searchSetDef
-    );
+  /** List existing Search Sets for a model set version. */
+  async listSearchSets(modelSetId, versionIndex) {
+    return this._searchSetRequest('GET', modelSetId, versionIndex, '');
   }
 
-  /**
-   * Delete a Search Set.
-   */
-  async deleteSearchSet(modelSetId, searchSetId) {
-    return this._client.delete(
-      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/searchsets/${searchSetId}`
-    );
+  /** Create a new Search Set (reusable property-based filter). */
+  async createSearchSet(modelSetId, versionIndex, searchSetDef) {
+    logger.info('Creating Search Set: %s', searchSetDef?.name);
+    return this._searchSetRequest('POST', modelSetId, versionIndex, '', searchSetDef);
+  }
+
+  /** Update an existing Search Set. */
+  async updateSearchSet(modelSetId, versionIndex, searchSetId, searchSetDef) {
+    return this._searchSetRequest('PATCH', modelSetId, versionIndex, searchSetId, searchSetDef);
+  }
+
+  /** Delete a Search Set. */
+  async deleteSearchSet(modelSetId, versionIndex, searchSetId) {
+    return this._searchSetRequest('DELETE', modelSetId, versionIndex, searchSetId);
   }
 }
 
