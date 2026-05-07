@@ -2160,8 +2160,9 @@ app.post('/api/workflow/run', async (req, res) => {
     } else if (ssGen.listExistingError) {
       emit('warn', `⚠ Could not list existing Search Sets — ${ssGen.listExistingError} (proceeding without conflict check)`);
     }
+    let ssCreated = 0;
     if (!ssGen.endpointUnavailable) {
-      const ssCreated  = ssResults.filter(r => r.created || r.dryRun).length;
+      ssCreated        = ssResults.filter(r => r.created || r.dryRun).length;
       const ssSkipped  = ssResults.filter(r => r.skipped).length;
       const ssFailed   = ssResults.filter(r => r.error).length;
       emit('info', `✓ Search Sets — ${ssCreated} created, ${ssSkipped} reused, ${ssFailed} failed`);
