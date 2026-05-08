@@ -1466,6 +1466,12 @@ app.post('/api/debug/clash-write-probe', async (req, res) => {
       ['POST', `${mBase}/refresh`,                             {}],
       ['PATCH', `${cBase}/rules`,                              { documentRules: { enabled: true } }],
       ['POST',  `${cBase}/rules`,                              { documentRules: { enabled: true }, fileRules: {}, clashType: 'Hard', clashDisabled: false }],
+      // 400 from POST /rules means the path exists — try several body shapes
+      ['POST',  `${cBase}/rules`,                              { documentRules: {}, fileRules: {}, clashType: 'Hard', clashDisabled: false }],
+      ['POST',  `${cBase}/rules`,                              {}],
+      ['POST',  `${cBase}/rules`,                              { clashType: 'Hard' }],
+      ['POST',  `${cBase}/rules`,                              { clashType: 'Hard', clashDisabled: false }],
+      ['POST',  `${cBase}/rules`,                              { documentRules: { documents: [] }, fileRules: { files: [] }, clashType: 'Hard', clashDisabled: false }],
     ];
 
     const results = [];
@@ -1478,7 +1484,9 @@ app.post('/api/debug/clash-write-probe', async (req, res) => {
         results.push({ method, url: url.replace(clashBase, '').replace(msetBase, ''), status: 'success', response: r });
       } catch (e) {
         results.push({ method, url: url.replace(clashBase, '').replace(msetBase, ''),
-          status: 'failed', errStatus: e.status, error: e.message?.slice(0, 80) });
+          status: 'failed', errStatus: e.status,
+          error: e.message?.slice(0, 200),
+          body: e.body ? String(e.body).slice(0, 500) : null });
       }
     }
 
