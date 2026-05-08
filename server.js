@@ -363,6 +363,162 @@ function makeCookieJar() {
   };
 }
 
+/**
+ * Headless OAuth auto-login. Uses stored credentials (env: AUTODESK_USER_ID +
+ * AUTODESK_USER_PW) to drive a Puppeteer-controlled browser through the
+ * Autodesk signin flow and capture the resulting authorization code.
+ *
+ * GET  /api/auth/auto-login          → kicks off the login (idempotent)
+ * POST /api/auth/auto-login          → same, just for clients that don't allow GET side effects
+ *
+ * Returns 200 with { ok: true } on success, 4xx/5xx with details otherwise.
+ * On success, tokens are written via writeTokensFile() and the existing
+ * 3-legged paths pick them up automatically.
+ */
+async function _autoLoginHandler(_req, res) {
+  const email = process.env.AUTODESK_USER_ID;
+  const password = process.env.AUTODESK_USER_PW;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'AUTODESK_USER_ID and AUTODESK_USER_PW must be set in env' });
+  }
+  const clientId = process.env.APS_CLIENT_ID;
+  const clientSecret = process.env.APS_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    return res.status(500).json({ error: 'APS_CLIENT_ID / APS_CLIENT_SECRET not set' });
+  }
+
+  let browser = null;
+  try {
+    const puppeteer = (await import('puppeteer')).default;
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--single-process',
+      ],
+    });
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    // Build OAuth authorize URL — point redirect at /api/auth/callback so the
+    // existing handler stores the tokens.
+    const callbackUrl = getCallbackUrl();
+    const authUrl = new URL('https://developer.api.autodesk.com/authentication/v2/authorize');
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('client_id', clientId);
+    authUrl.searchParams.set('redirect_uri', callbackUrl);
+    authUrl.searchParams.set('scope', 'data:read data:write data:create account:read account:write viewables:read openid');
+
+    // Intercept the final redirect so we can capture the code without hitting our own callback.
+    let capturedCode = null;
+    let capturedError = null;
+    page.on('framenavigated', (frame) => {
+      if (frame !== page.mainFrame()) return;
+      const u = frame.url();
+      if (u.startsWith(callbackUrl) || u.includes('/api/auth/callback')) {
+        try {
+          const parsed = new URL(u);
+          capturedCode = parsed.searchParams.get('code') ?? capturedCode;
+          capturedError = parsed.searchParams.get('error') ?? capturedError;
+        } catch { /* ignore */ }
+      }
+    });
+
+    await page.goto(authUrl.toString(), { waitUntil: 'networkidle2', timeout: 45000 });
+
+    // Find email input. Autodesk signin uses #userName.
+    await page.waitForSelector('#userName, input[name="userName"], input[type="email"]', { timeout: 30000 });
+    await page.type('#userName, input[name="userName"], input[type="email"]', email, { delay: 30 });
+    // Click "Next" / continue button
+    await Promise.race([
+      page.click('#verify_user_btn'),
+      page.click('button[name="verify_user"]'),
+      page.click('button[type="submit"]'),
+    ].map(p => p.catch(() => null)));
+
+    // Wait for password field
+    await page.waitForSelector('#password, input[name="password"], input[type="password"]', { timeout: 30000 });
+    await page.type('#password, input[name="password"], input[type="password"]', password, { delay: 30 });
+    await Promise.race([
+      page.click('#btnSubmit'),
+      page.click('button[name="signIn"]'),
+      page.click('button[type="submit"]'),
+    ].map(p => p.catch(() => null)));
+
+    // Wait for redirect to callback (may be intercepted; or resolve when we land on /?auth=success)
+    const t0 = Date.now();
+    while (Date.now() - t0 < 60000) {
+      if (capturedCode || capturedError) break;
+      const u = page.url();
+      if (u.includes('?auth=success') || u.includes('/?auth=success')) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    if (capturedError) throw new Error(`OAuth provider returned error: ${capturedError}`);
+    if (!capturedCode) {
+      const finalUrl = page.url();
+      const html = (await page.content()).slice(0, 1500);
+      throw new Error(`Did not capture authorization code. Final URL: ${finalUrl}\nHTML start: ${html}`);
+    }
+
+    // Exchange the code for tokens (mirrors /api/auth/callback logic)
+    const tokenRes = await fetch('https://developer.api.autodesk.com/authentication/v2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type:    'authorization_code',
+        code:          capturedCode,
+        client_id:     clientId,
+        client_secret: clientSecret,
+        redirect_uri:  callbackUrl,
+      }),
+    });
+    if (!tokenRes.ok) {
+      const errBody = await tokenRes.text();
+      throw new Error(`Token exchange ${tokenRes.status}: ${errBody}`);
+    }
+    const tokens = await tokenRes.json();
+
+    // Best-effort profile fetch
+    let _email = '', _name = '';
+    try {
+      const pRes = await fetch('https://developer.api.autodesk.com/authentication/v2/userinfo', {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      });
+      if (pRes.ok) {
+        const p = await pRes.json();
+        _email = p.email ?? '';
+        _name = p.name ?? p.preferred_username ?? '';
+      }
+    } catch { /* ignore */ }
+
+    writeTokensFile({
+      access_token:  tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at:    Date.now() + tokens.expires_in * 1000,
+      email: _email, name: _name,
+      saved_at: new Date().toISOString(),
+    });
+    if (tokens.refresh_token) {
+      process.env.APS_REFRESH_TOKEN = tokens.refresh_token;
+      try { writeEnv({ APS_REFRESH_TOKEN: tokens.refresh_token }); } catch { /* ignore */ }
+    }
+
+    res.json({ ok: true, email: _email, name: _name });
+  } catch (err) {
+    console.error('[FormaFlow] Auto-login error:', err.message);
+    res.status(500).json({ error: err.message, stack: err.stack?.slice(0, 1000) });
+  } finally {
+    if (browser) { try { await browser.close(); } catch { /* ignore */ } }
+  }
+}
+app.get('/api/auth/auto-login',  _autoLoginHandler);
+app.post('/api/auth/auto-login', _autoLoginHandler);
+
 /** Trace the OAuth flow up to the login form and return the form HTML for inspection. */
 app.get('/api/debug/auth-flow-trace', async (req, res) => {
   try {
