@@ -323,7 +323,7 @@ async function loadCoordinationSpaces() {
     const sets = Array.isArray(raw) ? raw : Array.isArray(data) ? data : [];
     _coordSpaces = sets;
 
-    const sels = [el('sel-coord-space'), el('sel-coord-space-mc')].filter(Boolean);
+    const sels = [el('sel-coord-space'), el('sel-coord-space-mc'), el('sel-viewer-coord-space')].filter(Boolean);
     const previousValue = sels[0]?.value;
 
     sels.forEach(sel => {
@@ -340,6 +340,10 @@ async function loadCoordinationSpaces() {
       }
       if (previousValue && sel.querySelector(`option[value="${previousValue}"]`)) sel.value = previousValue;
     });
+
+    // Show/hide the viewer inline picker depending on whether there are spaces
+    const viewerPicker = el('viewer-space-picker');
+    if (viewerPicker) viewerPicker.classList.toggle('hidden', sets.length === 0);
 
     if (!sets.length) {
       showCoordSpaceError(
@@ -1605,19 +1609,29 @@ function setViewerSource(src) {
   // Federation loader is only meaningful for coordination spaces.
   el('btn-load-federation')?.classList.toggle('hidden', src !== 'space');
 
-  const infoEl = el('viewer-active-space');
+  const infoEl    = el('viewer-active-space');
+  const pickerEl  = el('viewer-space-picker');
+  const pickerSel = el('sel-viewer-coord-space');
+
   if (src === 'space') {
-    const name = getActiveCoordSpaceName();
-    if (name) {
-      infoEl.classList.remove('hidden');
-      infoEl.textContent = `📐 ${name}`;
-      infoEl.title = name;
+    const hasSpaces = pickerSel && pickerSel.options.length > 1; // more than the placeholder
+    if (hasSpaces) {
+      // Show the inline picker, sync its selection, hide the plain label
+      pickerEl?.classList.remove('hidden');
+      infoEl?.classList.add('hidden');
+      const activeId = getActiveCoordSpaceId();
+      if (activeId && pickerSel.querySelector(`option[value="${activeId}"]`)) pickerSel.value = activeId;
     } else {
-      infoEl.classList.remove('hidden');
-      infoEl.textContent = '⚠ No coordination space selected — use Connect tab';
+      // No spaces loaded yet — show the warning label
+      pickerEl?.classList.add('hidden');
+      infoEl?.classList.remove('hidden');
+      const name = getActiveCoordSpaceName();
+      infoEl.textContent = name ? `📐 ${name}` : '⚠ No coordination space selected — use Connect tab';
+      infoEl.title = name || '';
     }
   } else {
-    infoEl.classList.add('hidden');
+    pickerEl?.classList.add('hidden');
+    infoEl?.classList.add('hidden');
   }
 }
 
@@ -3274,6 +3288,7 @@ async function loadMcSearchSets() {
 
   const listEl = el('mc-ss-list');
   const countEl = el('mc-ss-count');
+  const subEl  = el('mc-ss-sub');
   listEl.innerHTML = '<div class="mc-loading">Loading…</div>';
   countEl.classList.add('hidden');
 
@@ -3289,8 +3304,51 @@ async function loadMcSearchSets() {
 function renderMcSearchSets() {
   const listEl  = el('mc-ss-list');
   const countEl = el('mc-ss-count');
+  const subEl   = el('mc-ss-sub');
   const data    = _mcState.searchSets;
-  const sets    = data?.searchSets ?? data?.data ?? (Array.isArray(data) ? data : []);
+
+  if (!data) return;
+
+  // v3 unified-rules container: /rules returned instead of /searchsets
+  if (data.apiSurface === 'rules') {
+    if (subEl) subEl.textContent = 'v3 clash rules document for this coordination space.';
+    const rules = data.rules;
+    if (!rules) {
+      listEl.innerHTML = '<p class="text-slate-400 text-sm text-center py-4">Rules document returned no data.</p>';
+      return;
+    }
+    const docKeys  = Object.keys(rules.documentRules ?? {});
+    const fileKeys = Object.keys(rules.fileRules ?? {});
+    const total    = docKeys.length + fileKeys.length;
+    countEl.textContent = `${total} rule${total !== 1 ? 's' : ''}`;
+    countEl.classList.toggle('hidden', total === 0);
+
+    const clashInfo = `clashType: ${rules.clashType ?? '—'}, disabled: ${!!rules.clashDisabled}`;
+    const docRows = docKeys.map(k => `
+      <div class="mc-row">
+        <div class="mc-row-main"><span class="mc-row-name">${escapeHtml(k)}</span><span class="mc-row-sub">document rule</span></div>
+        <div class="mc-row-meta"><span class="mc-badge">Doc</span></div>
+      </div>`).join('');
+    const fileRows = fileKeys.map(k => `
+      <div class="mc-row">
+        <div class="mc-row-main"><span class="mc-row-name">${escapeHtml(k)}</span><span class="mc-row-sub">file rule</span></div>
+        <div class="mc-row-meta"><span class="mc-badge">File</span></div>
+      </div>`).join('');
+
+    listEl.innerHTML = `
+      <div class="mc-row" style="background:#f0f9ff;border-bottom:1px solid #bae6fd">
+        <div class="mc-row-main">
+          <span class="text-xs text-blue-700 font-medium">v3 rules model — ${clashInfo}</span>
+        </div>
+      </div>
+      ${total === 0
+        ? '<p class="text-slate-400 text-sm text-center py-4">Rules document exists but contains no rules yet. Use <strong>Import from Library</strong> to populate.</p>'
+        : docRows + fileRows}`;
+    return;
+  }
+
+  // Legacy /searchsets response
+  const sets = data?.data?.searchSets ?? data?.data?.data ?? data?.data ?? (Array.isArray(data?.data) ? data.data : []);
 
   if (!sets.length) {
     listEl.innerHTML = '<p class="text-slate-400 text-sm text-center py-4">No search sets found in this coordination space.</p>';
@@ -4157,6 +4215,40 @@ async function init() {
   el('btn-load-mc-ss').addEventListener('click', loadMcSearchSets);
   el('btn-load-mc-ct').addEventListener('click', loadMcClashTests);
   el('btn-load-wf-results').addEventListener('click', loadWorkflowClashResults);
+
+  el('btn-import-mc-ss')?.addEventListener('click', async () => {
+    const modelSetId = getActiveCoordSpaceId();
+    if (!modelSetId) { toast('Select a Coordination Space first', 'error'); return; }
+    const btn = el('btn-import-mc-ss');
+    btn.disabled = true; btn.textContent = 'Importing…';
+    try {
+      const data = await api('POST', `/api/mc/search-sets/import?modelSetId=${encodeURIComponent(modelSetId)}`, {});
+      if (data.apiSurface === 'rules') {
+        // Store the rules for schema inspection, refresh the display
+        _mcState.searchSets = { apiSurface: 'rules', rules: data.currentRules };
+        renderMcSearchSets();
+        toast('v3 rules model — rules document loaded. Schema visible below; full import coming once schema is confirmed.', 'warn');
+      } else {
+        toast(`Imported: ${data.created} created, ${data.skipped} skipped, ${data.failed} failed`, data.failed ? 'warn' : 'success');
+        await loadMcSearchSets();
+      }
+    } catch (err) {
+      toast('Import failed: ' + err.message, 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Import from Library';
+    }
+  });
+
+  // Viewer sidebar — inline coord space picker syncs to all other space selectors
+  el('sel-viewer-coord-space')?.addEventListener('change', e => {
+    const id = e.target.value;
+    ['sel-coord-space', 'sel-coord-space-mc'].forEach(selId => {
+      const sel = el(selId);
+      if (sel && sel.querySelector(`option[value="${id}"]`)) sel.value = id;
+    });
+    setViewerSource(_viewerState.source); // refresh label / picker state
+    if (_viewerState.source === 'space') loadViewerModels();
+  });
 
   // Models tab
   el('btn-load-models').addEventListener('click', loadModels);

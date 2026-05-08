@@ -516,6 +516,12 @@
             <button id="btn-src-space" class="viewer-src-btn flex-1 py-1.5 text-xs active" data-src="space">Coord. Space</button>
             <button id="btn-src-folder" class="viewer-src-btn flex-1 py-1.5 text-xs" data-src="folder">Folder</button>
           </div>
+          <!-- Inline coord-space picker: visible when source=space and multiple spaces are available -->
+          <div id="viewer-space-picker" class="hidden">
+            <select id="sel-viewer-coord-space" class="w-full bg-slate-800 border border-slate-600 text-slate-300 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500">
+              <option value="">— select coordination space —</option>
+            </select>
+          </div>
           <div id="viewer-active-space" class="hidden text-xs text-slate-400 truncate" title=""></div>
           <button id="btn-load-viewer-models" class="btn-primary text-xs w-full py-2">
             Load Models
@@ -776,16 +782,17 @@
           <header class="card-header flex items-center justify-between flex-wrap gap-2">
             <div>
               <h3 class="card-title">Search Sets <span class="text-xs font-normal text-slate-400">· live from ACC</span></h3>
-              <p class="card-sub">Existing search set definitions stored in this coordination space.</p>
+              <p id="mc-ss-sub" class="card-sub">Existing search set definitions stored in this coordination space.</p>
             </div>
             <div class="flex items-center gap-2">
               <span id="mc-ss-count" class="text-xs text-slate-400 hidden"></span>
-              <button id="btn-load-mc-ss" class="btn-secondary text-xs py-1 px-3">Load Search Sets</button>
+              <button id="btn-import-mc-ss" class="btn-primary text-xs py-1 px-3" title="Write FormaFlow's 30+ search set templates into this coordination space">Import from Library</button>
+              <button id="btn-load-mc-ss" class="btn-secondary text-xs py-1 px-3">Load</button>
             </div>
           </header>
           <div class="card-body">
             <div id="mc-ss-list">
-              <p class="text-slate-400 text-sm text-center py-4">Click <strong>Load Search Sets</strong> to fetch from ACC.</p>
+              <p class="text-slate-400 text-sm text-center py-4">Click <strong>Load</strong> to fetch from ACC, or <strong>Import from Library</strong> to push FormaFlow's 30+ templates.</p>
             </div>
           </div>
         </section>
