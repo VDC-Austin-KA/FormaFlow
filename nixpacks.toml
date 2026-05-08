@@ -13,7 +13,7 @@ nixPkgs = [
   'gtk3',
   'dbus',
   'expat',
-  'alsaLib',
+  'alsa-lib',
   'cups',
   'libdrm',
   'libxkbcommon',
