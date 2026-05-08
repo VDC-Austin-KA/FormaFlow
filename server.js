@@ -2307,17 +2307,19 @@ app.post('/api/workflow/run', async (req, res) => {
     const testsCreated = testResults.filter(r => r.created || r.dryRun).length;
     const testsSkipped = testResults.filter(r => !r.created && !r.dryRun && !r.error).length;
     const testsFailed  = testResults.filter(r => r.error).length;
-    emit('info', `✓ Clash tests — ${testsCreated} created, ${testsSkipped} skipped (unresolved sets), ${testsFailed} failed`);
-    for (const r of testResults) {
-      const sides = r.resolved
-        ? ` [A: ${r.resolved.sideAKeys.join('+') || '—'} | B: ${r.resolved.sideBKeys.join('+') || '—'}]`
-        : '';
-      if (r.error)        emit('warn', `  ✗ ${r.name}${sides}: ${r.error}`);
-      else if (r.created) emit('info', `  ＋ ${r.name}${sides} (remote id: ${r.remoteId ?? '—'})`);
-      else if (r.dryRun)  emit('info', `  • ${r.name}${sides} (dry run)`);
-    }
-    if (!testsCreated && !testsFailed && disciplines.length >= 2) {
-      emit('warn', '⚠ No clash tests created. Most common cause: the search-set IDs referenced by the clash-test templates do not match any successfully-created Search Sets above. Check the per-test side resolution logs for missing IDs.');
+    if (!ssGen.endpointUnavailable) {
+      emit('info', `✓ Clash tests — ${testsCreated} created, ${testsSkipped} skipped (unresolved sets), ${testsFailed} failed`);
+      for (const r of testResults) {
+        const sides = r.resolved
+          ? ` [A: ${r.resolved.sideAKeys.join('+') || '—'} | B: ${r.resolved.sideBKeys.join('+') || '—'}]`
+          : '';
+        if (r.error)        emit('warn', `  ✗ ${r.name}${sides}: ${r.error}`);
+        else if (r.created) emit('info', `  ＋ ${r.name}${sides} (remote id: ${r.remoteId ?? '—'})`);
+        else if (r.dryRun)  emit('info', `  • ${r.name}${sides} (dry run)`);
+      }
+      if (!testsCreated && !testsFailed && disciplines.length >= 2) {
+        emit('warn', '⚠ No clash tests created. Most common cause: the search-set IDs referenced by the clash-test templates do not match any successfully-created Search Sets above. Check the per-test side resolution logs for missing IDs.');
+      }
     }
 
     // ── Step 6 — Results ────────────────────────────────────────────────

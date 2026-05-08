@@ -207,11 +207,22 @@ export class ModelCoordinationClient {
     );
   }
 
-  /** Get a specific clash test by ID */
+  /** Get a specific clash test by ID. Falls back to scanning the list when the per-test detail endpoint 404s (v3 containers). */
   async getClashTest(modelSetId, versionIndex, testId) {
-    return this._client.get(
-      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}`
-    );
+    try {
+      return await this._client.get(
+        `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}`
+      );
+    } catch (err) {
+      const is404 = err.status === 404 || String(err.message).includes('404');
+      if (!is404) throw err;
+      logger.debug('getClashTest detail 404 for %s — falling back to list scan', testId);
+      const listData = await this.listClashTests(modelSetId, versionIndex);
+      const list = listData?.tests ?? listData?.clashTests ?? (Array.isArray(listData) ? listData : []);
+      const found = list.find(t => (t.id ?? t.testId) === testId);
+      if (!found) throw new Error(`Clash test ${testId} not found in list (detail endpoint returned 404)`);
+      return found;
+    }
   }
 
   /**
