@@ -152,33 +152,49 @@ function writeTokensFile(data) {
   writeFileSync(TOKENS_PATH, JSON.stringify(data, null, 2));
 }
 
+// In-flight refresh promise. While a refresh is in progress, every caller
+// awaits the same promise so we don't double-rotate the refresh_token (which
+// would invalidate it server-side and force the user to log in again).
+let _inflightRefresh = null;
+
 async function refreshStoredToken() {
-  const stored = readTokens();
-  if (!stored?.refresh_token) return null;
-  try {
-    const res = await fetch('https://developer.api.autodesk.com/authentication/v2/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type:    'refresh_token',
-        refresh_token: stored.refresh_token,
-        client_id:     process.env.APS_CLIENT_ID,
-        client_secret: process.env.APS_CLIENT_SECRET,
-      }),
-    });
-    if (!res.ok) { console.warn('[FormaFlow] Token refresh failed:', res.status); return null; }
-    const data = await res.json();
-    writeTokensFile({
-      ...stored,
-      access_token:  data.access_token,
-      refresh_token: data.refresh_token ?? stored.refresh_token,
-      expires_at:    Date.now() + data.expires_in * 1000,
-    });
-    return data.access_token;
-  } catch (err) {
-    console.warn('[FormaFlow] Token refresh error:', err.message);
-    return null;
-  }
+  if (_inflightRefresh) return _inflightRefresh;
+  _inflightRefresh = (async () => {
+    const stored = readTokens();
+    if (!stored?.refresh_token) return null;
+    try {
+      const res = await fetch('https://developer.api.autodesk.com/authentication/v2/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type:    'refresh_token',
+          refresh_token: stored.refresh_token,
+          client_id:     process.env.APS_CLIENT_ID,
+          client_secret: process.env.APS_CLIENT_SECRET,
+        }),
+      });
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        console.warn('[FormaFlow] Token refresh failed:', res.status, errBody.slice(0, 200));
+        return null;
+      }
+      const data = await res.json();
+      const newRefresh = data.refresh_token ?? stored.refresh_token;
+      writeTokensFile({
+        ...stored,
+        access_token:  data.access_token,
+        refresh_token: newRefresh,
+        expires_at:    Date.now() + data.expires_in * 1000,
+      });
+      // Keep process.env in sync so 2-legged paths and bootstrap stay aligned.
+      if (newRefresh) process.env.APS_REFRESH_TOKEN = newRefresh;
+      return data.access_token;
+    } catch (err) {
+      console.warn('[FormaFlow] Token refresh error:', err.message);
+      return null;
+    }
+  })().finally(() => { _inflightRefresh = null; });
+  return _inflightRefresh;
 }
 
 // Returns a valid 3-legged access token, refreshing if needed. Returns null if
