@@ -185,11 +185,16 @@ export class ModelCoordinationClient {
   // Clash Tests
   // ─────────────────────────────────────────────────────────────────────────
 
-  /** List all clash tests for a model set version (Forma / ACC v3 API). */
+  /** List all clash tests. Tries versioned path first; falls back to non-versioned on 404. */
   async listClashTests(modelSetId, versionIndex) {
-    return this._client.get(
-      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests`
-    );
+    const base = `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}`;
+    try {
+      return await this._client.get(`${base}/versions/${versionIndex}/tests`);
+    } catch (err) {
+      if (err.status !== 404 && !String(err.message).includes('404')) throw err;
+      logger.debug('listClashTests versioned 404 — trying non-versioned path');
+      return this._client.get(`${base}/tests`);
+    }
   }
 
   /**
@@ -291,19 +296,29 @@ export class ModelCoordinationClient {
 
   /**
    * Get grouped clash results for a test.
-   * Tries versioned path first; falls back to non-versioned on 404 (v3 containers).
+   * Tries multiple URL patterns because v3 unified-rules containers differ from legacy containers.
    */
   async getGroupedClashes(modelSetId, versionIndex, testId) {
     const base = `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}`;
-    const versionedUrl = `${base}/versions/${versionIndex}/tests/${testId}/groups`;
-    const flatUrl      = `${base}/tests/${testId}/groups`;
-    try {
-      return await this._client.get(versionedUrl);
-    } catch (err) {
-      if (err.status !== 404 && !String(err.message).includes('404')) throw err;
-      logger.debug('getGroupedClashes versioned 404 for %s — trying non-versioned path', testId);
-      return this._client.get(flatUrl);
+    const candidates = [
+      `${base}/versions/${versionIndex}/tests/${testId}/groups`,
+      `${base}/tests/${testId}/groups`,
+      `${base}/versions/${versionIndex}/tests/${testId}/clashinstances`,
+      `${base}/tests/${testId}/clashinstances`,
+    ];
+    let lastErr;
+    for (const url of candidates) {
+      try {
+        const result = await this._client.get(url);
+        logger.debug('getGroupedClashes succeeded at: %s', url);
+        return result;
+      } catch (err) {
+        const is404 = err.status === 404 || String(err.message).includes('404');
+        if (!is404) throw err;
+        lastErr = err;
+      }
     }
+    throw lastErr;
   }
 
   // ─────────────────────────────────────────────────────────────────────────

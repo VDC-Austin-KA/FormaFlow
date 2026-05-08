@@ -1615,6 +1615,11 @@ app.get('/api/debug/clash-anatomy', async (req, res) => {
       out.versionedRules = await client.get(`${clashBase}/containers/${containerId}/modelsets/${modelSetId}/versions/${versionIndex}/rules`);
     } catch (e) { out.versionedRules = { error: e.message, status: e.status }; }
 
+    // Also probe the non-versioned test list (some v3 containers expose this)
+    try {
+      out.flatTestList = await client.get(`${clashBase}/containers/${containerId}/modelsets/${modelSetId}/tests`);
+    } catch (e) { out.flatTestList = { error: e.message, status: e.status ?? (String(e.message).includes('404') ? 404 : 500) }; }
+
     // List + drill into each existing clash test
     let testList = null;
     try { testList = await mc.listClashTests(modelSetId, versionIndex); }
@@ -1641,13 +1646,17 @@ app.get('/api/debug/clash-anatomy', async (req, res) => {
         try { entry.groups = await mc.getGroupedClashes(modelSetId, versionIndex, testId); }
         catch (e) { entry.groups = { error: e.message, status: e.status }; }
 
-        // Probe additional non-versioned result paths that v3 containers may expose
+        // Probe additional URL patterns that v3 containers may expose for results
+        const clashBase2 = clashBase.replace(/\/bim360\//, '/');
         const extraPaths = [
           ['flatDetail',          `${flatBase}/tests/${testId}`],
           ['flatGroups',          `${flatBase}/tests/${testId}/groups`],
           ['flatResources',       `${flatBase}/tests/${testId}/resources`],
           ['clashInstances',      `${flatBase}/tests/${testId}/clashinstances`],
           ['versionedClashInst',  `${flatBase}/versions/${versionIndex}/tests/${testId}/clashinstances`],
+          ['flatClashsets',       `${flatBase}/clashsets/${testId}/groups`],
+          ['flatChecks',          `${flatBase}/checks/${testId}`],
+          ['flatChecksGroups',    `${flatBase}/checks/${testId}/groups`],
         ];
         for (const [key, url] of extraPaths) {
           try { entry[key] = await client.get(url); }
@@ -1659,6 +1668,59 @@ app.get('/api/debug/clash-anatomy', async (req, res) => {
     }
 
     res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Diagnostic: probe every plausible URL for a specific clash test's results.
+ * Pass ?testId=<uuid>&modelSetId=<id> to discover which endpoint actually holds the data.
+ */
+app.get('/api/debug/clash-results-probe', async (req, res) => {
+  try {
+    const env = readEnv();
+    const containerId = (req.query.containerId
+      ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID
+      ?? env.ACC_PROJECT_ID  ?? process.env.ACC_PROJECT_ID ?? '').replace(/^b\./, '');
+    const modelSetId = req.query.modelSetId ?? env.MC_MODEL_SET_ID ?? process.env.MC_MODEL_SET_ID;
+    const testId     = req.query.testId;
+    if (!containerId || !modelSetId || !testId) {
+      return res.status(400).json({ error: 'containerId, modelSetId, and testId required' });
+    }
+
+    const { resolveMcBase } = await import('./src/api/model-coordination.js');
+    const clashBase = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
+    const client = await makeAPSClient();
+    const b = `${clashBase}/containers/${containerId}/modelsets/${modelSetId}`;
+    const v = req.query.versionIndex ?? '1';
+
+    const paths = [
+      `${b}/versions/${v}/tests/${testId}`,
+      `${b}/versions/${v}/tests/${testId}/groups`,
+      `${b}/versions/${v}/tests/${testId}/resources`,
+      `${b}/versions/${v}/tests/${testId}/clashinstances`,
+      `${b}/tests/${testId}`,
+      `${b}/tests/${testId}/groups`,
+      `${b}/tests/${testId}/resources`,
+      `${b}/tests/${testId}/clashinstances`,
+      `${b}/clashsets/${testId}`,
+      `${b}/clashsets/${testId}/groups`,
+      `${b}/checks/${testId}`,
+      `${b}/checks/${testId}/groups`,
+    ];
+
+    const results = {};
+    for (const url of paths) {
+      const key = url.replace(b, '').replace(clashBase, '');
+      try {
+        const data = await client.get(url);
+        results[key] = { status: 200, shape: Array.isArray(data) ? `Array(${data.length})` : `Object{${Object.keys(data ?? {}).join(',')}}`, data };
+      } catch (e) {
+        results[key] = { status: e.status ?? (String(e.message).includes('404') ? 404 : 500), error: e.message };
+      }
+    }
+    res.json({ containerId, modelSetId, testId, results });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2417,8 +2479,13 @@ app.post('/api/workflow/run', async (req, res) => {
         emit('info', `  ▸ ${t.name}: ${groupsForTest.length} group(s), ${clashCount} clash(es)`);
       }
       if (report.totalClashes === 0 && testsForResults.length > 0) {
-        emit('warn', '⚠ 0 clashes extracted — the results API may be returning a format not yet handled.');
-        emit('warn', '  → Hit /api/debug/clash-anatomy to see raw groups/resources responses, then paste here to identify the correct shape.');
+        emit('warn', '⚠ 0 clashes extracted. To diagnose, hit these endpoints:');
+        for (const t of testsForResults) {
+          if (t.remoteId) {
+            emit('warn', `  /api/debug/clash-results-probe?testId=${t.remoteId}&modelSetId=${modelSetId}`);
+          }
+        }
+        emit('warn', '  Paste the response here to identify which URL holds the results.');
       }
     } else {
       emit('info', dryRun
