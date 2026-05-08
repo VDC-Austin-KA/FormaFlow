@@ -1918,39 +1918,50 @@ app.post('/api/mc/clash-rules/probe-schema', async (req, res) => {
     // Each candidate is a Map<ruleId, ClashTestDocumentRule>.
     // The rule object requires `action` (proven by API). We probe action values
     // and likely additional fields (sideA/sideB for pairings).
-    // BREAKTHROUGH: numeric `action` (0,1,2) gets past the ClashTestDocumentRuleAction
-    // check; new error is "The specified URN is invalid: rule-1" — meaning the rule
-    // KEY must be a valid document URN. Use a real document URN from the model set.
-    // Documents in version 1 have lineageUrns like urn:adsk.wipprod:dm.lineage:...
-    // Get one from the model set version manifest.
-    let docUrnA = 'urn:adsk.wipprod:dm.lineage:PUWdjotqTpuWKe-njOgzTQ'; // ARCS (ARCH)
-    let docUrnB = 'urn:adsk.wipprod:dm.lineage:B4IpzGpUTkKbAZdzkJmFcQ'; // STRC (STRUCT)
+    // SCHEMA DISCOVERED:
+    //   action 0,1 work (numeric enum); 2,3 don't exist (KeyNotFoundException)
+    //   key must be a real document lineageUrn
+    //   each rule needs a viewableName (the .nwc filename within the lineage)
+    //
+    // Fetch the views to get lineageUrn → viewableName mapping
+    let docs = [];
     try {
-      const versionDocs = await mc.getModelSetVersion(modelSetId, 1);
-      const docs = versionDocs?.documentVersions ?? versionDocs?.documents ?? [];
-      if (docs.length >= 2) {
-        docUrnA = docs[0].lineageUrn ?? docs[0].lineage ?? docUrnA;
-        docUrnB = docs[1].lineageUrn ?? docs[1].lineage ?? docUrnB;
-      }
-    } catch { /* keep defaults */ }
+      const views = await mc._client.get(
+        `https://developer.api.autodesk.com/bim360/modelset/v3/containers/${process.env.MC_CONTAINER_ID || process.env.ACC_PROJECT_ID}/modelsets/${modelSetId}/views`
+      );
+      const vs = views?.modelSetViews ?? views?.views ?? [];
+      const def = vs?.[0]?.definition ?? [];
+      docs = def.map(d => ({ lineageUrn: d.lineageUrn, viewableName: d.viewableName }));
+    } catch { /* fallback */ }
+    if (docs.length < 2) {
+      docs = [
+        { lineageUrn: 'urn:adsk.wipprod:dm.lineage:PUWdjotqTpuWKe-njOgzTQ', viewableName: 'UTUSB_BKR_CLNG_L12.nwc' },
+        { lineageUrn: 'urn:adsk.wipprod:dm.lineage:B4IpzGpUTkKbAZdzkJmFcQ', viewableName: 'UTUSB_ACLP_TMPL_R25 - UTUSB_DSGN_STRC_L12.nwc' },
+      ];
+    }
+    const docA = docs[0], docB = docs[1];
 
     const candidates = [
-      // Numeric action with real document URN as key
-      { name: 'urn_action_0',     value: { [docUrnA]: { action: 0 } } },
-      { name: 'urn_action_1',     value: { [docUrnA]: { action: 1 } } },
-      { name: 'urn_action_2',     value: { [docUrnA]: { action: 2 } } },
-      { name: 'urn_action_3',     value: { [docUrnA]: { action: 3 } } },
-      // With clashesWith / pairsWith fields
-      { name: 'urn_act1_pair',    value: { [docUrnA]: { action: 1, clashesWith: [docUrnB] } } },
-      { name: 'urn_act1_pairs',   value: { [docUrnA]: { action: 1, pairs: [docUrnB] } } },
-      { name: 'urn_act1_pairs2',  value: { [docUrnA]: { action: 1, pairsWith: [docUrnB] } } },
-      { name: 'urn_act1_against', value: { [docUrnA]: { action: 1, against: [docUrnB] } } },
-      { name: 'urn_act1_targets', value: { [docUrnA]: { action: 1, targets: [docUrnB] } } },
-      { name: 'urn_act1_documents', value: { [docUrnA]: { action: 1, documents: [docUrnB] } } },
-      { name: 'urn_act2_pair',    value: { [docUrnA]: { action: 2, clashesWith: [docUrnB] } } },
-      // Also try string action with real URN (in case enum names are something else)
-      { name: 'urn_str_Include',  value: { [docUrnA]: { action: 'Include' } } },
-      { name: 'urn_str_Pair',     value: { [docUrnA]: { action: 'Pair' } } },
+      // action: 0 with viewableName
+      { name: 'a0_viewable', value: { [docA.lineageUrn]: { action: 0, viewableName: docA.viewableName } } },
+      // action: 1 with viewableName
+      { name: 'a1_viewable', value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName } } },
+      // action: 1 with viewableName + clashesWith pair (URN-only)
+      { name: 'a1_pair_urn', value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, clashesWith: [docB.lineageUrn] } } },
+      // action: 1 with viewableName + clashesWith pair (full obj)
+      { name: 'a1_pair_obj', value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, clashesWith: [{ lineageUrn: docB.lineageUrn, viewableName: docB.viewableName }] } } },
+      // Both ends defined: A clashes with B, B clashes with A
+      { name: 'a1_both', value: {
+        [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, clashesWith: [{ lineageUrn: docB.lineageUrn, viewableName: docB.viewableName }] },
+        [docB.lineageUrn]: { action: 1, viewableName: docB.viewableName, clashesWith: [{ lineageUrn: docA.lineageUrn, viewableName: docA.viewableName }] },
+      } },
+      // Try alternative pair field names
+      { name: 'a1_pair_pairs',     value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, pairs: [docB.lineageUrn] } } },
+      { name: 'a1_pair_pairsWith', value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, pairsWith: [docB.lineageUrn] } } },
+      { name: 'a1_pair_against',   value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, against: [docB.lineageUrn] } } },
+      { name: 'a1_pair_documents', value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, documents: [docB.lineageUrn] } } },
+      // Action 0 with pair
+      { name: 'a0_pair_obj', value: { [docA.lineageUrn]: { action: 0, viewableName: docA.viewableName, clashesWith: [{ lineageUrn: docB.lineageUrn, viewableName: docB.viewableName }] } } },
     ];
 
     const results = [];
