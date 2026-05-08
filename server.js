@@ -389,20 +389,25 @@ async function _autoLoginHandler(_req, res) {
 
   let browser = null;
   try {
-    const puppeteer = (await import('puppeteer')).default;
-    browser = await puppeteer.launch({
+    // Use puppeteer-extra + stealth so Autodesk's anti-bot doesn't reject us.
+    const { default: puppeteerExtra } = await import('puppeteer-extra');
+    const { default: StealthPlugin } = await import('puppeteer-extra-plugin-stealth');
+    puppeteerExtra.use(StealthPlugin());
+    browser = await puppeteerExtra.launch({
       headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
+        '--disable-blink-features=AutomationControlled',
         '--disable-features=IsolateOrigins,site-per-process',
         '--single-process',
       ],
     });
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setViewport({ width: 1280, height: 800 });
 
     // Build OAuth authorize URL — point redirect at /api/auth/callback so the
     // existing handler stores the tokens.
