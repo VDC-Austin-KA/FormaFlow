@@ -1875,6 +1875,116 @@ app.get('/api/mc/clash-sets', async (req, res) => {
   }
 });
 
+/**
+ * Probe ACC "Clash Checks" (the BETA named clash checks visible in the ACC
+ * Model Coordination UI). These are distinct from the legacy /tests endpoint.
+ * Tries GET /checks and several result sub-paths for each found check.
+ */
+app.get('/api/debug/clash-checks-probe', async (req, res) => {
+  try {
+    const env = readEnv();
+    const containerId = (req.query.containerId
+      ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID
+      ?? env.ACC_PROJECT_ID  ?? process.env.ACC_PROJECT_ID ?? '').replace(/^b\./, '');
+    const modelSetId = req.query.modelSetId ?? env.MC_MODEL_SET_ID ?? process.env.MC_MODEL_SET_ID;
+    if (!containerId || !modelSetId) {
+      return res.status(400).json({ error: 'containerId and modelSetId required' });
+    }
+
+    const { resolveMcBase } = await import('./src/api/model-coordination.js');
+    const clashBase = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
+    const client = await makeAPSClient();
+    const b = `${clashBase}/containers/${containerId}/modelsets/${modelSetId}`;
+
+    const out = { containerId, modelSetId, checks: null, checkResults: {} };
+
+    // Step 1: list all named clash checks
+    for (const checksUrl of [`${b}/checks`, `${b}/clashchecks`, `${b}/clashChecks`]) {
+      try {
+        const data = await client.get(checksUrl);
+        out.checks = { url: checksUrl, data };
+        break;
+      } catch (e) {
+        out.checkResults[checksUrl] = { status: e.status ?? 500, error: e.message };
+      }
+    }
+
+    // Step 2: if we found checks, probe results for each
+    if (out.checks?.data) {
+      const raw = out.checks.data;
+      const checks = Array.isArray(raw) ? raw
+        : Array.isArray(raw.checks) ? raw.checks
+        : Array.isArray(raw.data) ? raw.data
+        : Array.isArray(raw.items) ? raw.items
+        : [];
+
+      out.foundChecks = checks;
+      for (const chk of checks.slice(0, 5)) {
+        const id = chk.id ?? chk.checkId ?? chk.clashCheckId;
+        if (!id) continue;
+        const resultPaths = [
+          `${b}/checks/${id}`,
+          `${b}/checks/${id}/groups`,
+          `${b}/checks/${id}/clashinstances`,
+          `${b}/checks/${id}/resources`,
+        ];
+        out.checkResults[id] = {};
+        for (const url of resultPaths) {
+          const key = url.split(`/${id}`)[1] || 'detail';
+          try {
+            const data = await client.get(url);
+            out.checkResults[id][key] = { status: 200, shape: Array.isArray(data) ? `Array(${data.length})` : `Object{${Object.keys(data ?? {}).join(',')}}`, data };
+          } catch (e) {
+            out.checkResults[id][key] = { status: e.status ?? 500, error: e.message };
+          }
+        }
+      }
+    }
+
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Probe all model sets across both known MC API bases and return a combined
+ * list. Helps find the "second model set" that may exist under an alternate base.
+ */
+app.get('/api/debug/all-modelsets', async (req, res) => {
+  try {
+    const env = readEnv();
+    const containerId = (req.query.containerId
+      ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID
+      ?? env.ACC_PROJECT_ID  ?? process.env.ACC_PROJECT_ID ?? '').replace(/^b\./, '');
+    if (!containerId) {
+      return res.status(400).json({ error: 'containerId required' });
+    }
+    const client = await makeAPSClient();
+    const bases = [
+      'https://developer.api.autodesk.com/bim360/modelset/v3',
+      'https://developer.api.autodesk.com/modelcoordination/v3',
+    ];
+    const results = [];
+    for (const base of bases) {
+      const url = `${base}/containers/${containerId}/modelsets`;
+      try {
+        const data = await client.get(url);
+        const sets = Array.isArray(data) ? data
+          : Array.isArray(data.modelSets) ? data.modelSets
+          : Array.isArray(data.data) ? data.data
+          : [];
+        results.push({ base, url, count: sets.length, modelSets: sets });
+      } catch (e) {
+        results.push({ base, url, status: e.status ?? 500, error: e.message });
+      }
+    }
+    res.json({ containerId, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Routes — Issues (ACC Construction Issues v1)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2617,13 +2727,61 @@ app.post('/api/workflow/run', async (req, res) => {
         emit('info', `  ▸ ${t.name}: ${groupsForTest.length} group(s), ${clashCount} clash(es)`);
       }
       if (report.totalClashes === 0 && testsForResults.length > 0) {
-        emit('warn', '⚠ 0 clashes extracted. To diagnose, hit these endpoints:');
-        for (const t of testsForResults) {
-          if (t.remoteId) {
-            emit('warn', `  /api/debug/clash-results-probe?testId=${t.remoteId}&modelSetId=${modelSetId}`);
+        emit('warn', '⚠ 0 clashes from legacy /tests. Probing ACC Clash Checks (ARCH/STRC)…');
+        try {
+          const checks = await mcClient.listClashChecks(modelSetId);
+          if (checks.length) {
+            emit('info', `  Found ${checks.length} Clash Check(s) in ACC UI: ${checks.map(c => c.name ?? c.id).join(', ')}`);
+            const checkGroups = [];
+            for (const chk of checks) {
+              const chkId = chk.id ?? chk.checkId ?? chk.clashCheckId;
+              if (!chkId) continue;
+              const chkData = await mcClient.getClashCheckResults(modelSetId, chkId);
+              const chkClashes = chkData ? (Array.isArray(chkData) ? chkData
+                : Array.isArray(chkData.groups) ? chkData.groups
+                : Array.isArray(chkData.data) ? chkData.data
+                : []) : [];
+              if (chkClashes.length) {
+                emit('info', `  ✓ Clash Check ${chk.name ?? chkId}: ${chkClashes.length} group(s)`);
+                checkGroups.push(...chkClashes.map((g, i) => ({
+                  name: `${chk.name ?? 'CHECK'}_${String(i + 1).padStart(3, '0')}`,
+                  level: g.levelName ?? g.level ?? 'ZUNK',
+                  system: g.systemClassification ?? null,
+                  clashCount: g.count ?? g.clashCount ?? (Array.isArray(g.clashes) ? g.clashes.length : 0),
+                  clashes: Array.isArray(g.clashes) ? g.clashes : [],
+                  testId: chkId,
+                  testName: chk.name ?? chkId,
+                  sequence: String(i + 1).padStart(3, '0'),
+                })));
+              } else {
+                emit('info', `  Clash Check ${chk.name ?? chkId}: 0 groups (no result data)`);
+              }
+            }
+            if (checkGroups.length) {
+              report.groups.push(...checkGroups);
+              report.totalGroups = report.groups.length;
+              report.totalClashes = report.groups.reduce((s, g) => s + (g.clashCount ?? 0), 0);
+              emit('info', `  ✓ Merged ${checkGroups.length} groups from Clash Checks`);
+            }
+          } else {
+            emit('info', '  No ACC Clash Checks found via /checks endpoint');
+            emit('warn', '  → To diagnose: GET /api/debug/clash-checks-probe?modelSetId=' + modelSetId);
+          }
+        } catch (chkErr) {
+          emit('warn', `  Clash Checks probe error: ${chkErr.message}`);
+        }
+        if (report.totalClashes === 0) {
+          emit('warn', '⚠ Still 0 clashes. The models may have no hard intersections at current tolerance.');
+          emit('warn', '  Options:');
+          emit('warn', '  1. Open ACC → Model Coordination → Clash checks → edit ARCH/STRC → increase Tolerance');
+          emit('warn', '  2. Check that models from different disciplines overlap in 3D space');
+          emit('warn', '  → Probe: /api/debug/clash-checks-probe?modelSetId=' + modelSetId);
+          for (const t of testsForResults) {
+            if (t.remoteId) {
+              emit('warn', `  → /api/debug/clash-results-probe?testId=${t.remoteId}&modelSetId=${modelSetId}`);
+            }
           }
         }
-        emit('warn', '  Paste the response here to identify which URL holds the results.');
       }
     } else {
       emit('info', dryRun
