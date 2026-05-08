@@ -327,23 +327,34 @@ export class ModelCoordinationClient {
   /**
    * List the named "Clash checks" visible in the ACC Model Coordination UI
    * under the Clashes > Clash checks (BETA) tab.
-   * Returns an empty array if the endpoint doesn't exist for this container.
+   * Tries multiple known and candidate API base URLs.
+   * Returns an empty array if the endpoint doesn't exist for any tried base.
    */
   async listClashChecks(modelSetId) {
-    const base = `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}`;
-    for (const url of [`${base}/checks`, `${base}/clashchecks`]) {
-      try {
-        const data = await this._client.get(url);
-        const arr = Array.isArray(data) ? data
-          : Array.isArray(data.checks) ? data.checks
-          : Array.isArray(data.data) ? data.data
-          : Array.isArray(data.items) ? data.items
-          : [];
-        logger.debug('listClashChecks found %d checks at %s', arr.length, url);
-        return arr;
-      } catch (err) {
-        const is404 = err.status === 404 || String(err.message).includes('404');
-        if (!is404) throw err;
+    const legacyBase = getMcClashBase();
+    const bContainer = this._container.startsWith('b.') ? this._container : `b.${this._container}`;
+    const baseCandidates = [
+      `${legacyBase}/containers/${this._container}/modelsets/${modelSetId}`,
+      `https://developer.api.autodesk.com/construction/model-coordination/v2/containers/${this._container}/modelsets/${modelSetId}`,
+      `https://developer.api.autodesk.com/construction/model-coordination/v2/containers/${bContainer}/modelsets/${modelSetId}`,
+      `https://developer.api.autodesk.com/construction/clash/v1/containers/${this._container}/modelsets/${modelSetId}`,
+      `https://developer.api.autodesk.com/bim360/clash/v4/containers/${this._container}/modelsets/${modelSetId}`,
+    ];
+    for (const base of baseCandidates) {
+      for (const suffix of ['/checks', '/clashchecks']) {
+        try {
+          const data = await this._client.get(`${base}${suffix}`);
+          const arr = Array.isArray(data) ? data
+            : Array.isArray(data.checks) ? data.checks
+            : Array.isArray(data.data) ? data.data
+            : Array.isArray(data.items) ? data.items
+            : [];
+          logger.debug('listClashChecks found %d checks at %s%s', arr.length, base, suffix);
+          return arr;
+        } catch (err) {
+          const is404 = err.status === 404 || String(err.message).includes('404');
+          if (!is404) throw err;
+        }
       }
     }
     return [];
