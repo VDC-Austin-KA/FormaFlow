@@ -1405,7 +1405,9 @@ app.get('/api/mc/clash-rules', async (req, res) => {
 });
 
 /** Update the v3 unified clash-rules document. Re-fetches checksum for If-Match.
- *  Exposed via PUT and POST so proxies that block PUT can use POST. */
+ *  Exposed via PUT and POST so proxies that block PUT can use POST.
+ *  Includes aggregateId and aggregateVersion which the GET response carries
+ *  and APS may require on writes. */
 async function _putClashRulesHandler(req, res) {
   try {
     const modelSetId = req.query.modelSetId ?? req.body?.modelSetId ?? process.env.MC_MODEL_SET_ID;
@@ -1421,16 +1423,81 @@ async function _putClashRulesHandler(req, res) {
       fileRules:     req.body?.fileRules     ?? current.fileRules,
       clashType:     req.body?.clashType     ?? current.clashType,
       clashDisabled: req.body?.clashDisabled ?? current.clashDisabled,
+      ...(current.aggregateId      != null && { aggregateId:      current.aggregateId      }),
+      ...(current.aggregateVersion != null && { aggregateVersion: current.aggregateVersion }),
     };
 
     const result = await mc.putClashRules(modelSetId, updatedRules, checksum);
     res.json({ modelSetId, updated: updatedRules, result });
   } catch (err) {
-    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body, requestBody: err.requestBody });
   }
 }
 app.put('/api/mc/clash-rules', _putClashRulesHandler);
 app.post('/api/mc/clash-rules/update', _putClashRulesHandler);
+
+/** Diagnostic: try PUT /rules with several body shape variations and return
+ *  the exact APS response (status + body) for each. Helps determine whether
+ *  the 403 is a true permission deny or a body schema rejection. */
+app.post('/api/debug/clash-rules-write-test', async (req, res) => {
+  try {
+    const modelSetId = req.query.modelSetId ?? req.body?.modelSetId ?? process.env.MC_MODEL_SET_ID;
+    if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
+    const mc = await buildMcClient(req);
+    const current = await mc.getClashRules(modelSetId);
+
+    const variants = [
+      ['echo (no aggregate fields)', {
+        checksum: current.checksum,
+        documentRules: current.documentRules,
+        fileRules: current.fileRules,
+        clashType: current.clashType,
+        clashDisabled: current.clashDisabled,
+      }],
+      ['echo + aggregateId/Version', {
+        checksum: current.checksum,
+        documentRules: current.documentRules,
+        fileRules: current.fileRules,
+        clashType: current.clashType,
+        clashDisabled: current.clashDisabled,
+        aggregateId: current.aggregateId,
+        aggregateVersion: current.aggregateVersion,
+      }],
+      ['echo + aggregate fields, no checksum', {
+        documentRules: current.documentRules,
+        fileRules: current.fileRules,
+        clashType: current.clashType,
+        clashDisabled: current.clashDisabled,
+        aggregateId: current.aggregateId,
+        aggregateVersion: current.aggregateVersion,
+      }],
+      ['only required fields', {
+        clashType: current.clashType,
+        clashDisabled: current.clashDisabled,
+      }],
+    ];
+
+    const results = [];
+    for (const [label, body] of variants) {
+      try {
+        const r = await mc.putClashRules(modelSetId, body, current.checksum);
+        results.push({ label, status: 'success', response: r });
+      } catch (e) {
+        results.push({
+          label,
+          status: 'failed',
+          httpStatus: e.status,
+          error: String(e.message ?? '').slice(0, 300),
+          apsBody: e.body ? String(e.body).slice(0, 800) : null,
+        });
+      }
+    }
+
+    res.json({ modelSetId, current, results });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
 
 /** Aggressively probes for any way to trigger a clash run or create a clash test
  *  in this v3 container. Tries POST/PATCH/PUT against many candidate paths and
