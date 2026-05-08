@@ -83,21 +83,39 @@ export class ClashResultsProcessor {
   // ─────────────────────────────────────────────────────────────────────────
 
   async _processOne(modelSetId, versionIndex, test) {
-    let raw;
+    let raw = null;
     try {
       raw = await this._mc.getGroupedClashes(modelSetId, versionIndex, test.remoteId);
     } catch (err) {
       logger.warn('Could not fetch grouped clashes for test %s: %s', test.name, err.message);
-      raw = null;
     }
 
-    // Fall back to resource-based fetching if grouped endpoint returns nothing
-    if (!raw || (Array.isArray(raw) && raw.length === 0)) {
-      logger.debug('Falling back to resource-based clash fetch for test %s', test.name);
-      raw = await this._fetchFromResources(modelSetId, versionIndex, test.remoteId);
+    let clashes = this._normaliseClashes(raw);
+
+    if (!clashes.length) {
+      if (raw !== null && raw !== undefined) {
+        const shape = Array.isArray(raw)
+          ? `Array(${raw.length})`
+          : `Object{${Object.keys(raw ?? {}).join(',')}}`;
+        logger.info('getGroupedClashes for %s returned %s — falling back to resources', test.name, shape);
+      }
+      const resourceRaw = await this._fetchFromResources(modelSetId, versionIndex, test.remoteId);
+      clashes = this._normaliseClashes(resourceRaw);
+      if (!clashes.length && resourceRaw !== null && resourceRaw !== undefined) {
+        const shape = Array.isArray(resourceRaw)
+          ? `Array(${resourceRaw.length})`
+          : `Object{${Object.keys(resourceRaw ?? {}).join(',')}}`;
+        logger.info('Resource-based fetch for %s returned %s — no clashes extracted', test.name, shape);
+      }
     }
 
-    const clashes = this._normaliseClashes(raw);
+    // Pre-grouped path: if items look like clash groups (have count/clashCount) rather than
+    // individual clash instances, treat them as already-grouped and skip re-grouping.
+    if (clashes.length && this._looksPreGrouped(clashes[0])) {
+      logger.info('Test %s results appear pre-grouped (%d groups)', test.name, clashes.length);
+      return this._namePreGrouped(clashes, test);
+    }
+
     const groups = this._groupClashes(clashes, test);
     return this._nameGroups(groups, test);
   }
@@ -105,9 +123,39 @@ export class ClashResultsProcessor {
   _normaliseClashes(raw) {
     if (!raw) return [];
     if (Array.isArray(raw)) return raw;
-    if (raw.data && Array.isArray(raw.data)) return raw.data;
-    if (raw.clashes && Array.isArray(raw.clashes)) return raw.clashes;
+    // Try all known array keys across API versions
+    for (const key of ['clashes', 'data', 'groups', 'clashGroups', 'items',
+                        'clashInstances', 'results', 'clashResults', 'tests']) {
+      if (Array.isArray(raw[key])) return raw[key];
+    }
+    // Nested result/pagination wrapper
+    if (raw.result && typeof raw.result === 'object') return this._normaliseClashes(raw.result);
+    if (raw.pagination && Array.isArray(raw.data)) return raw.data;
     return [];
+  }
+
+  _looksPreGrouped(item) {
+    return item && typeof item === 'object' &&
+      ('count' in item || 'clashCount' in item || 'clashesCount' in item) &&
+      !('objectId' in item) && !('objectIdA' in item);
+  }
+
+  _namePreGrouped(preGrouped, test) {
+    return preGrouped.map((g, index) => {
+      const seq   = String(index + 1).padStart(3, '0');
+      const level = this._normaliseLevel(g.levelName ?? g.level ?? g.levelKey ?? 'ZUNK');
+      return {
+        name:       this._buildGroupName(level, test.name, seq),
+        level,
+        system:     g.systemClassification ?? g.system ?? null,
+        clashCount: g.count ?? g.clashCount ?? g.clashesCount ?? 0,
+        clashes:    [],
+        testId:     test.remoteId,
+        testName:   test.name,
+        sequence:   seq,
+        preGrouped: true,
+      };
+    });
   }
 
   _groupClashes(clashes, test) {

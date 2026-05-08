@@ -1620,17 +1620,40 @@ app.get('/api/debug/clash-anatomy', async (req, res) => {
     try { testList = await mc.listClashTests(modelSetId, versionIndex); }
     catch (e) { out.tests = { error: e.message, status: e.status }; }
     if (testList) {
+      const { resolveMcBase } = await import('./src/api/model-coordination.js');
+      const clashBase = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
       const tests = toArray(testList, 'tests', 'clashTests');
       out.tests = [];
       for (const t of tests) {
         const testId = t.id ?? t.testId;
         const entry = { id: testId, summary: t };
+        const flatBase = `${clashBase}/containers/${containerId}/modelsets/${modelSetId}`;
+
+        // Versioned + non-versioned detail
         try { entry.detail = await mc.getClashTest(modelSetId, versionIndex, testId); }
         catch (e) { entry.detail = { error: e.message, status: e.status }; }
+
+        // Resources — versioned (mc method now does versioned→flat fallback)
         try { entry.resources = await mc.getClashTestResources(modelSetId, versionIndex, testId); }
         catch (e) { entry.resources = { error: e.message, status: e.status }; }
+
+        // Groups — versioned (mc method now does versioned→flat fallback)
         try { entry.groups = await mc.getGroupedClashes(modelSetId, versionIndex, testId); }
         catch (e) { entry.groups = { error: e.message, status: e.status }; }
+
+        // Probe additional non-versioned result paths that v3 containers may expose
+        const extraPaths = [
+          ['flatDetail',          `${flatBase}/tests/${testId}`],
+          ['flatGroups',          `${flatBase}/tests/${testId}/groups`],
+          ['flatResources',       `${flatBase}/tests/${testId}/resources`],
+          ['clashInstances',      `${flatBase}/tests/${testId}/clashinstances`],
+          ['versionedClashInst',  `${flatBase}/versions/${versionIndex}/tests/${testId}/clashinstances`],
+        ];
+        for (const [key, url] of extraPaths) {
+          try { entry[key] = await client.get(url); }
+          catch (e) { entry[key] = { error: e.message, status: e.status ?? (String(e.message).includes('404') ? 404 : 500) }; }
+        }
+
         out.tests.push(entry);
       }
     }
@@ -2392,6 +2415,10 @@ app.post('/api/workflow/run', async (req, res) => {
         const groupsForTest = report.groups.filter(g => g.testId === t.remoteId);
         const clashCount = groupsForTest.reduce((n, g) => n + g.clashCount, 0);
         emit('info', `  ▸ ${t.name}: ${groupsForTest.length} group(s), ${clashCount} clash(es)`);
+      }
+      if (report.totalClashes === 0 && testsForResults.length > 0) {
+        emit('warn', '⚠ 0 clashes extracted — the results API may be returning a format not yet handled.');
+        emit('warn', '  → Hit /api/debug/clash-anatomy to see raw groups/resources responses, then paste here to identify the correct shape.');
       }
     } else {
       emit('info', dryRun

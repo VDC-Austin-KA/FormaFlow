@@ -264,12 +264,19 @@ export class ModelCoordinationClient {
 
   /**
    * Get resources (raw clash documents) for a clash test.
-   * Returns document keys that can be fetched individually.
+   * Tries versioned path first; falls back to non-versioned on 404 (v3 containers).
    */
   async getClashTestResources(modelSetId, versionIndex, testId) {
-    return this._client.get(
-      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/resources`
-    );
+    const base = `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}`;
+    const versionedUrl = `${base}/versions/${versionIndex}/tests/${testId}/resources`;
+    const flatUrl      = `${base}/tests/${testId}/resources`;
+    try {
+      return await this._client.get(versionedUrl);
+    } catch (err) {
+      if (err.status !== 404 && !String(err.message).includes('404')) throw err;
+      logger.debug('getClashTestResources versioned 404 for %s — trying non-versioned path', testId);
+      return this._client.get(flatUrl);
+    }
   }
 
   /**
@@ -284,12 +291,19 @@ export class ModelCoordinationClient {
 
   /**
    * Get grouped clash results for a test.
-   * Groups are organized by system/level/zone for structured output.
+   * Tries versioned path first; falls back to non-versioned on 404 (v3 containers).
    */
   async getGroupedClashes(modelSetId, versionIndex, testId) {
-    return this._client.get(
-      `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}/versions/${versionIndex}/tests/${testId}/groups`
-    );
+    const base = `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}`;
+    const versionedUrl = `${base}/versions/${versionIndex}/tests/${testId}/groups`;
+    const flatUrl      = `${base}/tests/${testId}/groups`;
+    try {
+      return await this._client.get(versionedUrl);
+    } catch (err) {
+      if (err.status !== 404 && !String(err.message).includes('404')) throw err;
+      logger.debug('getGroupedClashes versioned 404 for %s — trying non-versioned path', testId);
+      return this._client.get(flatUrl);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
