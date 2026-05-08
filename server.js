@@ -1918,45 +1918,39 @@ app.post('/api/mc/clash-rules/probe-schema', async (req, res) => {
     // Each candidate is a Map<ruleId, ClashTestDocumentRule>.
     // The rule object requires `action` (proven by API). We probe action values
     // and likely additional fields (sideA/sideB for pairings).
-    // ClashTestDocumentRuleAction is an enum. Probe a wide range of likely values.
+    // BREAKTHROUGH: numeric `action` (0,1,2) gets past the ClashTestDocumentRuleAction
+    // check; new error is "The specified URN is invalid: rule-1" — meaning the rule
+    // KEY must be a valid document URN. Use a real document URN from the model set.
+    // Documents in version 1 have lineageUrns like urn:adsk.wipprod:dm.lineage:...
+    // Get one from the model set version manifest.
+    let docUrnA = 'urn:adsk.wipprod:dm.lineage:PUWdjotqTpuWKe-njOgzTQ'; // ARCS (ARCH)
+    let docUrnB = 'urn:adsk.wipprod:dm.lineage:B4IpzGpUTkKbAZdzkJmFcQ'; // STRC (STRUCT)
+    try {
+      const versionDocs = await mc.getModelSetVersion(modelSetId, 1);
+      const docs = versionDocs?.documentVersions ?? versionDocs?.documents ?? [];
+      if (docs.length >= 2) {
+        docUrnA = docs[0].lineageUrn ?? docs[0].lineage ?? docUrnA;
+        docUrnB = docs[1].lineageUrn ?? docs[1].lineage ?? docUrnB;
+      }
+    } catch { /* keep defaults */ }
+
     const candidates = [
-      // PascalCase singletons
-      { name: 'Include',          value: { 'rule-1': { action: 'Include' } } },
-      { name: 'Exclude',          value: { 'rule-1': { action: 'Exclude' } } },
-      { name: 'Pair',             value: { 'rule-1': { action: 'Pair' } } },
-      { name: 'Check',            value: { 'rule-1': { action: 'Check' } } },
-      { name: 'Clash',            value: { 'rule-1': { action: 'Clash' } } },
-      { name: 'Group',            value: { 'rule-1': { action: 'Group' } } },
-      { name: 'Test',             value: { 'rule-1': { action: 'Test' } } },
-      { name: 'Add',              value: { 'rule-1': { action: 'Add' } } },
-      { name: 'Allow',            value: { 'rule-1': { action: 'Allow' } } },
-      { name: 'Deny',             value: { 'rule-1': { action: 'Deny' } } },
-      { name: 'Match',            value: { 'rule-1': { action: 'Match' } } },
-      { name: 'Compare',          value: { 'rule-1': { action: 'Compare' } } },
-      { name: 'Intersect',        value: { 'rule-1': { action: 'Intersect' } } },
-      { name: 'Detect',           value: { 'rule-1': { action: 'Detect' } } },
-      { name: 'Run',              value: { 'rule-1': { action: 'Run' } } },
-      { name: 'Enable',           value: { 'rule-1': { action: 'Enable' } } },
-      { name: 'Disable',          value: { 'rule-1': { action: 'Disable' } } },
-      { name: 'Skip',             value: { 'rule-1': { action: 'Skip' } } },
-      { name: 'Process',          value: { 'rule-1': { action: 'Process' } } },
-      { name: 'Find',             value: { 'rule-1': { action: 'Find' } } },
-      // Compound action names
-      { name: 'IncludePair',      value: { 'rule-1': { action: 'IncludePair' } } },
-      { name: 'PairwiseClash',    value: { 'rule-1': { action: 'PairwiseClash' } } },
-      { name: 'CheckAgainst',     value: { 'rule-1': { action: 'CheckAgainst' } } },
-      { name: 'ClashAgainst',     value: { 'rule-1': { action: 'ClashAgainst' } } },
-      { name: 'CrossCheck',       value: { 'rule-1': { action: 'CrossCheck' } } },
-      { name: 'CrossClash',       value: { 'rule-1': { action: 'CrossClash' } } },
-      // Numeric enum (defaults: 0=None, 1=Include/Exclude…)
-      { name: 'enum_0',           value: { 'rule-1': { action: 0 } } },
-      { name: 'enum_1',           value: { 'rule-1': { action: 1 } } },
-      { name: 'enum_2',           value: { 'rule-1': { action: 2 } } },
-      { name: 'enum_3',           value: { 'rule-1': { action: 3 } } },
-      // lowercase variants
-      { name: 'lc_include',       value: { 'rule-1': { action: 'include' } } },
-      { name: 'lc_pair',          value: { 'rule-1': { action: 'pair' } } },
-      { name: 'lc_clash',         value: { 'rule-1': { action: 'clash' } } },
+      // Numeric action with real document URN as key
+      { name: 'urn_action_0',     value: { [docUrnA]: { action: 0 } } },
+      { name: 'urn_action_1',     value: { [docUrnA]: { action: 1 } } },
+      { name: 'urn_action_2',     value: { [docUrnA]: { action: 2 } } },
+      { name: 'urn_action_3',     value: { [docUrnA]: { action: 3 } } },
+      // With clashesWith / pairsWith fields
+      { name: 'urn_act1_pair',    value: { [docUrnA]: { action: 1, clashesWith: [docUrnB] } } },
+      { name: 'urn_act1_pairs',   value: { [docUrnA]: { action: 1, pairs: [docUrnB] } } },
+      { name: 'urn_act1_pairs2',  value: { [docUrnA]: { action: 1, pairsWith: [docUrnB] } } },
+      { name: 'urn_act1_against', value: { [docUrnA]: { action: 1, against: [docUrnB] } } },
+      { name: 'urn_act1_targets', value: { [docUrnA]: { action: 1, targets: [docUrnB] } } },
+      { name: 'urn_act1_documents', value: { [docUrnA]: { action: 1, documents: [docUrnB] } } },
+      { name: 'urn_act2_pair',    value: { [docUrnA]: { action: 2, clashesWith: [docUrnB] } } },
+      // Also try string action with real URN (in case enum names are something else)
+      { name: 'urn_str_Include',  value: { [docUrnA]: { action: 'Include' } } },
+      { name: 'urn_str_Pair',     value: { [docUrnA]: { action: 'Pair' } } },
     ];
 
     const results = [];
