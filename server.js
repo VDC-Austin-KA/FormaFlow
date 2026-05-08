@@ -1564,7 +1564,8 @@ app.post('/api/debug/clash-write-probe', async (req, res) => {
 });
 
 /** Probe-and-write endpoint: try a series of likely documentRules schemas to find
- *  which one ACC accepts. Restores the original rules after first success. */
+ *  which one ACC accepts. Restores the original rules after first success.
+ *  Live findings: ClashTestDocumentRule requires an `action` field. */
 app.post('/api/mc/clash-rules/probe-schema', async (req, res) => {
   try {
     const modelSetId = req.query.modelSetId ?? req.body?.modelSetId ?? process.env.MC_MODEL_SET_ID;
@@ -1572,13 +1573,19 @@ app.post('/api/mc/clash-rules/probe-schema', async (req, res) => {
     const mc = await buildMcClient(req);
 
     const original = await mc.getClashRules(modelSetId);
+    // Each candidate is a Map<ruleId, ClashTestDocumentRule>.
+    // The rule object requires `action` (proven by API). We probe action values
+    // and likely additional fields (sideA/sideB for pairings).
     const candidates = [
-      { name: 'enable_true',          value: { enable: true } },
-      { name: 'enabled_true',         value: { enabled: true } },
-      { name: 'allVsAll_flag',        value: { allVsAll: true } },
-      { name: 'pairings_empty_array', value: { pairings: [] } },
-      { name: 'rules_array',          value: { rules: [] } },
-      { name: 'documents_all',        value: { documents: { type: 'all' } } },
+      { name: 'action_check',                  value: { 'rule-1': { action: 'check' } } },
+      { name: 'action_clash',                  value: { 'rule-1': { action: 'clash' } } },
+      { name: 'action_enable',                 value: { 'rule-1': { action: 'enable' } } },
+      { name: 'action_include',                value: { 'rule-1': { action: 'include' } } },
+      { name: 'action_exclude',                value: { 'rule-1': { action: 'exclude' } } },
+      { name: 'action_pair',                   value: { 'rule-1': { action: 'pair' } } },
+      { name: 'action_check_sideAB',           value: { 'rule-1': { action: 'check', sideA: [], sideB: [] } } },
+      { name: 'action_check_documentsAB',      value: { 'rule-1': { action: 'check', documentsA: [], documentsB: [] } } },
+      { name: 'action_check_filterAB',         value: { 'rule-1': { action: 'check', filterA: {}, filterB: {} } } },
     ];
 
     const results = [];
