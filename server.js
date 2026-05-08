@@ -1918,21 +1918,45 @@ app.post('/api/mc/clash-rules/probe-schema', async (req, res) => {
     // Each candidate is a Map<ruleId, ClashTestDocumentRule>.
     // The rule object requires `action` (proven by API). We probe action values
     // and likely additional fields (sideA/sideB for pairings).
-    // ClashTestDocumentRuleAction is an enum. Probe likely values.
+    // ClashTestDocumentRuleAction is an enum. Probe a wide range of likely values.
     const candidates = [
-      { name: 'Include',     value: { 'rule-1': { action: 'Include' } } },
-      { name: 'Exclude',     value: { 'rule-1': { action: 'Exclude' } } },
-      { name: 'Pair',        value: { 'rule-1': { action: 'Pair' } } },
-      { name: 'Check',       value: { 'rule-1': { action: 'Check' } } },
-      { name: 'Clash',       value: { 'rule-1': { action: 'Clash' } } },
-      { name: 'Group',       value: { 'rule-1': { action: 'Group' } } },
-      { name: 'Test',        value: { 'rule-1': { action: 'Test' } } },
-      { name: 'Add',         value: { 'rule-1': { action: 'Add' } } },
-      { name: 'IncludePair', value: { 'rule-1': { action: 'IncludePair' } } },
-      { name: 'PairwiseClash', value: { 'rule-1': { action: 'PairwiseClash' } } },
-      { name: 'enum_0',      value: { 'rule-1': { action: 0 } } },
-      { name: 'enum_1',      value: { 'rule-1': { action: 1 } } },
-      { name: 'enum_2',      value: { 'rule-1': { action: 2 } } },
+      // PascalCase singletons
+      { name: 'Include',          value: { 'rule-1': { action: 'Include' } } },
+      { name: 'Exclude',          value: { 'rule-1': { action: 'Exclude' } } },
+      { name: 'Pair',             value: { 'rule-1': { action: 'Pair' } } },
+      { name: 'Check',            value: { 'rule-1': { action: 'Check' } } },
+      { name: 'Clash',            value: { 'rule-1': { action: 'Clash' } } },
+      { name: 'Group',            value: { 'rule-1': { action: 'Group' } } },
+      { name: 'Test',             value: { 'rule-1': { action: 'Test' } } },
+      { name: 'Add',              value: { 'rule-1': { action: 'Add' } } },
+      { name: 'Allow',            value: { 'rule-1': { action: 'Allow' } } },
+      { name: 'Deny',             value: { 'rule-1': { action: 'Deny' } } },
+      { name: 'Match',            value: { 'rule-1': { action: 'Match' } } },
+      { name: 'Compare',          value: { 'rule-1': { action: 'Compare' } } },
+      { name: 'Intersect',        value: { 'rule-1': { action: 'Intersect' } } },
+      { name: 'Detect',           value: { 'rule-1': { action: 'Detect' } } },
+      { name: 'Run',              value: { 'rule-1': { action: 'Run' } } },
+      { name: 'Enable',           value: { 'rule-1': { action: 'Enable' } } },
+      { name: 'Disable',          value: { 'rule-1': { action: 'Disable' } } },
+      { name: 'Skip',             value: { 'rule-1': { action: 'Skip' } } },
+      { name: 'Process',          value: { 'rule-1': { action: 'Process' } } },
+      { name: 'Find',             value: { 'rule-1': { action: 'Find' } } },
+      // Compound action names
+      { name: 'IncludePair',      value: { 'rule-1': { action: 'IncludePair' } } },
+      { name: 'PairwiseClash',    value: { 'rule-1': { action: 'PairwiseClash' } } },
+      { name: 'CheckAgainst',     value: { 'rule-1': { action: 'CheckAgainst' } } },
+      { name: 'ClashAgainst',     value: { 'rule-1': { action: 'ClashAgainst' } } },
+      { name: 'CrossCheck',       value: { 'rule-1': { action: 'CrossCheck' } } },
+      { name: 'CrossClash',       value: { 'rule-1': { action: 'CrossClash' } } },
+      // Numeric enum (defaults: 0=None, 1=Include/Exclude…)
+      { name: 'enum_0',           value: { 'rule-1': { action: 0 } } },
+      { name: 'enum_1',           value: { 'rule-1': { action: 1 } } },
+      { name: 'enum_2',           value: { 'rule-1': { action: 2 } } },
+      { name: 'enum_3',           value: { 'rule-1': { action: 3 } } },
+      // lowercase variants
+      { name: 'lc_include',       value: { 'rule-1': { action: 'include' } } },
+      { name: 'lc_pair',          value: { 'rule-1': { action: 'pair' } } },
+      { name: 'lc_clash',         value: { 'rule-1': { action: 'clash' } } },
     ];
 
     const results = [];
