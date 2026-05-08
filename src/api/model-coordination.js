@@ -297,6 +297,7 @@ export class ModelCoordinationClient {
   /**
    * Get grouped clash results for a test.
    * Tries multiple URL patterns because v3 unified-rules containers differ from legacy containers.
+   * Also tries the newer /checks/{id} surface that backs the ACC "Clash checks" (BETA) UI.
    */
   async getGroupedClashes(modelSetId, versionIndex, testId) {
     const base = `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}`;
@@ -305,6 +306,8 @@ export class ModelCoordinationClient {
       `${base}/tests/${testId}/groups`,
       `${base}/versions/${versionIndex}/tests/${testId}/clashinstances`,
       `${base}/tests/${testId}/clashinstances`,
+      `${base}/checks/${testId}/groups`,
+      `${base}/checks/${testId}/clashinstances`,
     ];
     let lastErr;
     for (const url of candidates) {
@@ -319,6 +322,53 @@ export class ModelCoordinationClient {
       }
     }
     throw lastErr;
+  }
+
+  /**
+   * List the named "Clash checks" visible in the ACC Model Coordination UI
+   * under the Clashes > Clash checks (BETA) tab.
+   * Returns an empty array if the endpoint doesn't exist for this container.
+   */
+  async listClashChecks(modelSetId) {
+    const base = `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}`;
+    for (const url of [`${base}/checks`, `${base}/clashchecks`]) {
+      try {
+        const data = await this._client.get(url);
+        const arr = Array.isArray(data) ? data
+          : Array.isArray(data.checks) ? data.checks
+          : Array.isArray(data.data) ? data.data
+          : Array.isArray(data.items) ? data.items
+          : [];
+        logger.debug('listClashChecks found %d checks at %s', arr.length, url);
+        return arr;
+      } catch (err) {
+        const is404 = err.status === 404 || String(err.message).includes('404');
+        if (!is404) throw err;
+      }
+    }
+    return [];
+  }
+
+  /**
+   * Get grouped results for a named clash check (from the Clash checks BETA UI).
+   */
+  async getClashCheckResults(modelSetId, checkId) {
+    const base = `${getMcClashBase()}/containers/${this._container}/modelsets/${modelSetId}`;
+    for (const url of [
+      `${base}/checks/${checkId}/groups`,
+      `${base}/checks/${checkId}/clashinstances`,
+      `${base}/checks/${checkId}`,
+    ]) {
+      try {
+        const result = await this._client.get(url);
+        logger.debug('getClashCheckResults succeeded at: %s', url);
+        return result;
+      } catch (err) {
+        const is404 = err.status === 404 || String(err.message).includes('404');
+        if (!is404) throw err;
+      }
+    }
+    return null;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
