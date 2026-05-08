@@ -1459,10 +1459,6 @@ app.post('/api/mc/search-sets/import', async (req, res) => {
     res.status(err.status ?? 500).json({ error: err.message });
   }
 });
-  } catch (err) {
-    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
-  }
-});
 
 /**
  * Diagnostic: probe every plausible search-sets URL pattern against the live
