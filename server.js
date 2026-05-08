@@ -1891,22 +1891,37 @@ app.get('/api/debug/clash-checks-probe', async (req, res) => {
       return res.status(400).json({ error: 'containerId and modelSetId required' });
     }
 
-    const { resolveMcBase } = await import('./src/api/model-coordination.js');
-    const clashBase = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
     const client = await makeAPSClient();
-    const b = `${clashBase}/containers/${containerId}/modelsets/${modelSetId}`;
 
     const out = { containerId, modelSetId, checks: null, checkResults: {} };
 
-    // Step 1: list all named clash checks
-    for (const checksUrl of [`${b}/checks`, `${b}/clashchecks`, `${b}/clashChecks`]) {
-      try {
-        const data = await client.get(checksUrl);
-        out.checks = { url: checksUrl, data };
-        break;
-      } catch (e) {
-        out.checkResults[checksUrl] = { status: e.status ?? 500, error: e.message };
+    // Try every known and candidate base URL.
+    // Some newer ACC APIs use "b.{projectId}" as the containerId.
+    const bContainerId = containerId.startsWith('b.') ? containerId : `b.${containerId}`;
+    const candidateBases = [
+      `https://developer.api.autodesk.com/bim360/clash/v3/containers/${containerId}/modelsets/${modelSetId}`,
+      `https://developer.api.autodesk.com/bim360/clash/v3/containers/${bContainerId}/modelsets/${modelSetId}`,
+      `https://developer.api.autodesk.com/construction/model-coordination/v2/containers/${containerId}/modelsets/${modelSetId}`,
+      `https://developer.api.autodesk.com/construction/model-coordination/v2/containers/${bContainerId}/modelsets/${modelSetId}`,
+      `https://developer.api.autodesk.com/construction/clash/v1/containers/${containerId}/modelsets/${modelSetId}`,
+      `https://developer.api.autodesk.com/construction/clash/v1/containers/${bContainerId}/modelsets/${modelSetId}`,
+      `https://developer.api.autodesk.com/bim360/clash/v4/containers/${containerId}/modelsets/${modelSetId}`,
+      `https://developer.api.autodesk.com/modelcoordination/v2/containers/${containerId}/modelsets/${modelSetId}`,
+    ];
+
+    // Step 1: list all named clash checks across all candidate bases
+    for (const base of candidateBases) {
+      for (const suffix of ['/checks', '/clashchecks', '/clashChecks']) {
+        const checksUrl = `${base}${suffix}`;
+        try {
+          const data = await client.get(checksUrl);
+          out.checks = { url: checksUrl, data };
+          break;
+        } catch (e) {
+          out.checkResults[checksUrl] = { status: e.status ?? 500, error: e.message };
+        }
       }
+      if (out.checks) break;
     }
 
     // Step 2: if we found checks, probe results for each
