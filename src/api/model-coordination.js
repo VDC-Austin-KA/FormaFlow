@@ -481,12 +481,17 @@ export class ModelCoordinationClient {
   }
 
   /**
-   * Replace the clash-rules document. Pass the checksum from a prior
-   * getClashRules() call so the API can detect concurrent edits via If-Match.
+   * Update the clash-rules document.
+   * Live-tested against the v3 OTG container (May 2026):
+   *   - PUT  → 404 (not supported)
+   *   - POST → 400 "checksum required" if body omits it; otherwise accepts.
+   * The checksum is required as a body field (not as If-Match header) and
+   * acts as the optimistic-concurrency guard.
    */
   async putClashRules(modelSetId, rulesDoc, ifMatchChecksum) {
-    const headers = ifMatchChecksum ? { 'If-Match': ifMatchChecksum } : {};
-    return this._client.put(this._rulesUrl(modelSetId), rulesDoc, { headers });
+    const body = { ...rulesDoc };
+    if (ifMatchChecksum && !body.checksum) body.checksum = ifMatchChecksum;
+    return this._client.post(this._rulesUrl(modelSetId), body);
   }
 }
 
