@@ -1404,6 +1404,33 @@ app.get('/api/mc/clash-rules', async (req, res) => {
   }
 });
 
+/** Update (PUT) the v3 unified clash-rules document. Body: { modelSetId, documentRules, fileRules, clashType, clashDisabled }
+ *  GET /api/mc/clash-rules first to obtain the checksum required for If-Match. */
+app.put('/api/mc/clash-rules', async (req, res) => {
+  try {
+    const modelSetId = req.query.modelSetId ?? req.body?.modelSetId ?? process.env.MC_MODEL_SET_ID;
+    if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
+    const mc = await buildMcClient(req);
+
+    // Always re-fetch the current rules to get the freshest checksum
+    const current = await mc.getClashRules(modelSetId);
+    const checksum = current.checksum;
+
+    const updatedRules = {
+      checksum,
+      documentRules: req.body?.documentRules ?? current.documentRules,
+      fileRules:     req.body?.fileRules     ?? current.fileRules,
+      clashType:     req.body?.clashType     ?? current.clashType,
+      clashDisabled: req.body?.clashDisabled ?? current.clashDisabled,
+    };
+
+    const result = await mc.putClashRules(modelSetId, updatedRules, checksum);
+    res.json({ modelSetId, updated: updatedRules, result });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
 /** Import our search set library templates into the coordination space.
  *  For /searchsets containers: creates each set via POST.
  *  For v3 /rules containers: first reads the rules document to discover the
