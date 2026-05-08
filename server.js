@@ -1432,6 +1432,62 @@ async function _putClashRulesHandler(req, res) {
 app.put('/api/mc/clash-rules', _putClashRulesHandler);
 app.post('/api/mc/clash-rules/update', _putClashRulesHandler);
 
+/** Aggressively probes for any way to trigger a clash run or create a clash test
+ *  in this v3 container. Tries POST/PATCH/PUT against many candidate paths and
+ *  returns the result of each. */
+app.post('/api/debug/clash-write-probe', async (req, res) => {
+  try {
+    const modelSetId = req.query.modelSetId ?? req.body?.modelSetId ?? process.env.MC_MODEL_SET_ID;
+    if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
+
+    const { resolveMcBase } = await import('./src/api/model-coordination.js');
+    const clashBase = resolveMcBase('MC_CLASH_API_BASE', 'https://developer.api.autodesk.com/bim360/clash/v3');
+    const msetBase  = resolveMcBase('MC_MODELSET_API_BASE', 'https://developer.api.autodesk.com/bim360/modelset/v3');
+    const containerId = (req.query.containerId ?? process.env.MC_CONTAINER_ID ?? process.env.ACC_PROJECT_ID ?? '').replace(/^b\./, '');
+    const client = await makeAPSClient();
+    const cBase = `${clashBase}/containers/${containerId}/modelsets/${modelSetId}`;
+    const mBase = `${msetBase}/containers/${containerId}/modelsets/${modelSetId}`;
+
+    const testBody = { name: 'FormaFlow Probe', clashType: 'Hard', tolerance: 0.001 };
+
+    const attempts = [
+      ['POST', `${cBase}/tests`,                               testBody],
+      ['POST', `${cBase}/versions/1/tests`,                    testBody],
+      ['POST', `${cBase}/checks`,                              testBody],
+      ['POST', `${cBase}/clashsets`,                           testBody],
+      ['POST', `${cBase}/run`,                                 {}],
+      ['POST', `${cBase}/trigger`,                             {}],
+      ['POST', `${cBase}/refresh`,                             {}],
+      ['POST', `${cBase}/process`,                             {}],
+      ['POST', `${cBase}/versions/1/run`,                      {}],
+      ['POST', `${cBase}/versions/1/trigger`,                  {}],
+      ['POST', `${mBase}/versions/1/process`,                  {}],
+      ['POST', `${mBase}/versions/1/refresh`,                  {}],
+      ['POST', `${mBase}/refresh`,                             {}],
+      ['PATCH', `${cBase}/rules`,                              { documentRules: { enabled: true } }],
+      ['POST',  `${cBase}/rules`,                              { documentRules: { enabled: true }, fileRules: {}, clashType: 'Hard', clashDisabled: false }],
+    ];
+
+    const results = [];
+    for (const [method, url, body] of attempts) {
+      try {
+        let r;
+        if (method === 'POST')      r = await client.post(url, body);
+        else if (method === 'PATCH') r = await client.patch(url, body);
+        else if (method === 'PUT')   r = await client.put(url, body);
+        results.push({ method, url: url.replace(clashBase, '').replace(msetBase, ''), status: 'success', response: r });
+      } catch (e) {
+        results.push({ method, url: url.replace(clashBase, '').replace(msetBase, ''),
+          status: 'failed', errStatus: e.status, error: e.message?.slice(0, 80) });
+      }
+    }
+
+    res.json({ containerId, modelSetId, attempts: results });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
 /** Probe-and-write endpoint: try a series of likely documentRules schemas to find
  *  which one ACC accepts. Restores the original rules after first success. */
 app.post('/api/mc/clash-rules/probe-schema', async (req, res) => {
