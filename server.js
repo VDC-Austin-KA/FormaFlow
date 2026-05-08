@@ -430,32 +430,55 @@ async function _autoLoginHandler(_req, res) {
 
     await page.goto(authUrl.toString(), { waitUntil: 'networkidle2', timeout: 45000 });
 
-    // Find email input. Autodesk signin uses #userName.
-    await page.waitForSelector('#userName, input[name="userName"], input[type="email"]', { timeout: 30000 });
-    await page.type('#userName, input[name="userName"], input[type="email"]', email, { delay: 30 });
-    // Click "Next" / continue button
-    await Promise.race([
-      page.click('#verify_user_btn'),
-      page.click('button[name="verify_user"]'),
-      page.click('button[type="submit"]'),
-    ].map(p => p.catch(() => null)));
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-    // Wait for password field
-    await page.waitForSelector('#password, input[name="password"], input[type="password"]', { timeout: 30000 });
-    await page.type('#password, input[name="password"], input[type="password"]', password, { delay: 30 });
-    await Promise.race([
-      page.click('#btnSubmit'),
-      page.click('button[name="signIn"]'),
-      page.click('button[type="submit"]'),
-    ].map(p => p.catch(() => null)));
+    // Wait for the React SPA to mount the email input. Modern Autodesk signin
+    // uses #userName. Polling rather than waitForSelector to be resilient to
+    // hydration timing.
+    let emailInputFound = false;
+    for (let i = 0; i < 30; i++) {
+      const has = await page.$('#userName').then(el => !!el).catch(() => false);
+      if (has) { emailInputFound = true; break; }
+      await sleep(1000);
+    }
+    if (!emailInputFound) throw new Error('Email input #userName never appeared');
 
-    // Wait for redirect to callback (may be intercepted; or resolve when we land on /?auth=success)
+    // Focus, clear, type
+    await page.focus('#userName');
+    await page.evaluate(() => { const el = document.querySelector('#userName'); if (el) el.value = ''; });
+    await page.type('#userName', email, { delay: 50 });
+
+    // Submit by pressing Enter (avoids timing issues with click handlers)
+    await page.keyboard.press('Enter');
+
+    // Wait for password input to appear after the email-verify XHR completes
+    let pwdInputFound = false;
+    for (let i = 0; i < 30; i++) {
+      const has = await page.$('#password').then(el => !!el).catch(() => false);
+      if (has) { pwdInputFound = true; break; }
+      await sleep(1000);
+    }
+    if (!pwdInputFound) {
+      const html = (await page.content()).slice(0, 1500);
+      throw new Error(`Password input #password never appeared. URL: ${page.url()}\nHTML: ${html}`);
+    }
+
+    await page.focus('#password');
+    await page.type('#password', password, { delay: 50 });
+    await page.keyboard.press('Enter');
+
+    // Wait for redirect to callback (intercepted via framenavigated handler)
     const t0 = Date.now();
-    while (Date.now() - t0 < 60000) {
+    while (Date.now() - t0 < 90000) {
       if (capturedCode || capturedError) break;
       const u = page.url();
       if (u.includes('?auth=success') || u.includes('/?auth=success')) break;
-      await new Promise(r => setTimeout(r, 500));
+      // Also check for MFA / error pages
+      if (u.includes('/error') || u.includes('mfa') || u.includes('verify')) {
+        const html = (await page.content()).slice(0, 1500);
+        throw new Error(`Login flow stuck at: ${u}\nHTML: ${html}`);
+      }
+      await sleep(500);
     }
 
     if (capturedError) throw new Error(`OAuth provider returned error: ${capturedError}`);
