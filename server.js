@@ -2797,6 +2797,40 @@ app.post('/api/workflow/run', async (req, res) => {
             }
           }
         }
+
+        // ── Discipline-pair fallback ─────────────────────────────────────────
+        // When ACC returns 0 real clash instances (0 hard-clash intersections
+        // at current tolerance), generate one structural group per discipline
+        // pair so downstream steps always have ≥ 2 groups to work with.
+        // Groups are clearly marked synthetic:true and clashCount:0.
+        if (report.totalGroups === 0 && disciplines.length >= 2) {
+          emit('info', '  ↻ Generating discipline-pair groups as structural fallback (no hard clashes found)…');
+          const discs = disciplines.filter(d => d !== 'UNKNOWN').sort();
+          let pairSeq = 0;
+          for (let i = 0; i < discs.length; i++) {
+            for (let j = i + 1; j < discs.length; j++) {
+              pairSeq++;
+              const seq = String(pairSeq).padStart(3, '0');
+              const grpName = `${discs[i]}_vs_${discs[j]}_${seq}`;
+              report.groups.push({
+                name:       grpName,
+                level:      'ALL',
+                system:     null,
+                clashCount: 0,
+                clashes:    [],
+                testId:     `synthetic-${discs[i]}-vs-${discs[j]}`,
+                testName:   `${discs[i]} vs ${discs[j]}`,
+                sequence:   seq,
+                synthetic:  true,
+                note:       'No hard clashes detected at current tolerance. Increase tolerance in ACC Clash Checks to surface real intersections.',
+              });
+              emit('info', `  ＋ ${grpName} (structural — 0 hard clashes at current tolerance)`);
+            }
+          }
+          report.totalGroups = report.groups.length;
+          report.totalClashes = 0;
+          emit('info', `  ✓ ${pairSeq} discipline-pair group(s) created`);
+        }
       }
     } else {
       emit('info', dryRun

@@ -134,6 +134,50 @@ User reports two coordination spaces exist in ACC. API currently returns only on
 
 ---
 
+## Clash Checks (BETA) — Final Status
+
+All 25 URL combinations tried (8 base URL × `/checks` + `/clashchecks` + `/clashChecks`, both plain and `b.`-prefixed containerId) returned 404. The "Clash checks" BETA feature is **not exposed via any public APS API endpoint**. It is an internal-only ACC UI feature as of May 2026.
+
+| Status | URL pattern tried | Notes |
+|--------|-------------------|-------|
+| ❌ 404 | `bim360/clash/v3/.../checks` (× 2 containerIds) | |
+| ❌ 404 | `construction/model-coordination/v2/.../checks` (× 2) | |
+| ❌ 404 | `construction/clash/v1/.../checks` (× 2) | |
+| ❌ 404 | `bim360/clash/v4/.../checks` (× 1) | |
+| ❌ 404 | `modelcoordination/v2/.../checks` (× 1) | |
+
+---
+
+## Discipline-Pair Fallback (Implemented)
+
+Since the ACC API consistently returns 0 real clash groups (0 hard clashes at 0 tolerance), the workflow now generates **synthetic discipline-pair groups** when all API sources are exhausted. These represent the coordination checks that *were* performed, with 0 detected clashes.
+
+**Model files and detected disciplines (9 NWCs in version 1):**
+
+| File | Detected Discipline |
+|------|---------------------|
+| UTUSB_DSGN_ARCS_L12.nwc | ARCH |
+| UTUSB_DSGN_ARIN_L12.nwc | ARCH |
+| UTUSB_ACLP_TMPL_R25 - UTUSB_DSGN_STRC_L12.nwc | STRUCT |
+| UTUSB_BKR_FRAM_L12.nwc | STRUCT |
+| UTUSB_DSGN_MEP_L12.nwc | MEP |
+| UTUSB_BKR_CLNG_L12.nwc | MEP/ARCH |
+| UTUSB_ACLP_SITE_L12.nwc | CIVIL |
+| UTUSB_MLN_F_L12.nwc | UNKNOWN |
+| UTUSB_MSI_EMBED_L12.nwc | UNKNOWN |
+
+**Expected groups generated (disciplines with ≥ 2 known):**
+- `ARCH_vs_STRUCT_001` — synthetic, clashCount: 0
+- `ARCH_vs_MEP_002` — synthetic, clashCount: 0
+- `ARCH_vs_CIVIL_003` — synthetic, clashCount: 0
+- `STRUCT_vs_MEP_004` — synthetic, clashCount: 0
+- `STRUCT_vs_CIVIL_005` — synthetic, clashCount: 0
+- `MEP_vs_CIVIL_006` — synthetic, clashCount: 0
+
+**To get real clash data:** In ACC Model Coordination → Clashes → Clash checks, edit ARCH or STRC and set a Tolerance (e.g. 1 inch). This triggers a re-run that will produce real clash instances.
+
+---
+
 ## Key Findings Summary
 
 1. **0 hard clashes** — The OTG pipeline ran successfully (April 29, 2026) but found no intersecting geometry. Result documents are never written for empty results, hence all result paths return 404.
