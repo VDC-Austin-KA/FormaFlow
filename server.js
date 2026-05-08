@@ -306,6 +306,115 @@ app.post('/api/auth/logout', (_req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Headless OAuth auto-login
+//
+// Uses stored credentials (env: AUTODESK_USER_ID + AUTODESK_USER_PW) to
+// complete the 3-legged OAuth flow without browser interaction. Designed for
+// "always logged in" deployments — when the access token expires and the
+// refresh token has been rotated/invalidated, this endpoint can re-establish
+// the session automatically.
+//
+// Implementation: server-side fetch with cookie jar, follows the OAuth flow,
+// posts credentials to the Autodesk login form, captures the final ?code=
+// from the redirect to /api/auth/callback, then exchanges for tokens.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Tiny cookie jar for fetch — stores cookies per host and replays them. */
+function makeCookieJar() {
+  const store = new Map(); // host → Map(name → value)
+  return {
+    set(host, setCookieHeaders) {
+      const headers = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
+      const jar = store.get(host) ?? new Map();
+      for (const raw of headers) {
+        if (!raw) continue;
+        const [pair] = raw.split(';');
+        const eq = pair.indexOf('=');
+        if (eq > 0) jar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+      }
+      store.set(host, jar);
+    },
+    get(host) {
+      const jar = store.get(host);
+      if (!jar) return '';
+      return [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    },
+    debug() {
+      const out = {};
+      for (const [h, j] of store) out[h] = [...j.keys()];
+      return out;
+    },
+  };
+}
+
+/** Trace the OAuth flow up to the login form and return the form HTML for inspection. */
+app.get('/api/debug/auth-flow-trace', async (req, res) => {
+  try {
+    const clientId = process.env.APS_CLIENT_ID;
+    if (!clientId) return res.status(500).json({ error: 'APS_CLIENT_ID not set' });
+    const url = new URL('https://developer.api.autodesk.com/authentication/v2/authorize');
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('redirect_uri', getCallbackUrl());
+    url.searchParams.set('scope', 'data:read data:write data:create account:read account:write viewables:read openid');
+
+    const jar = makeCookieJar();
+    const trace = [];
+    let current = url.toString();
+    let body = '';
+    let finalContentType = '';
+    let lastResponse = null;
+
+    for (let i = 0; i < 8; i++) {
+      const u = new URL(current);
+      const cookieHeader = jar.get(u.host);
+      const r = await fetch(current, {
+        redirect: 'manual',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (FormaFlow auto-login)',
+          ...(cookieHeader && { Cookie: cookieHeader }),
+        },
+      });
+      const setCookies = r.headers.getSetCookie ? r.headers.getSetCookie() : (r.headers.raw?.()?.['set-cookie'] ?? []);
+      if (setCookies?.length) jar.set(u.host, setCookies);
+      trace.push({ step: i, status: r.status, url: current, location: r.headers.get('location') });
+      if (r.status >= 300 && r.status < 400 && r.headers.get('location')) {
+        current = new URL(r.headers.get('location'), current).toString();
+        continue;
+      }
+      // Got the form
+      finalContentType = r.headers.get('content-type') || '';
+      body = await r.text();
+      lastResponse = r;
+      break;
+    }
+
+    // Extract form fields
+    const forms = [];
+    const formRegex = /<form[^>]*>[\s\S]*?<\/form>/gi;
+    const formHtml = body.match(formRegex) ?? [];
+    for (const f of formHtml) {
+      const action = (f.match(/action=["']([^"']+)["']/i) ?? [])[1];
+      const method = (f.match(/method=["']([^"']+)["']/i) ?? [])[1];
+      const inputs = [...f.matchAll(/<input[^>]*name=["']([^"']+)["'][^>]*>/gi)].map(m => m[0]);
+      forms.push({ action, method, inputs });
+    }
+
+    res.json({
+      finalUrl: current,
+      finalContentType,
+      cookieJarHosts: jar.debug(),
+      trace,
+      bodyLength: body.length,
+      bodyPreview: body.slice(0, 2000),
+      forms,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Utility — safely extract an array from an unknown APS API response.
 // APS endpoints are inconsistent: some return {data:[...]}, some {results:[...]},
 // some {modelSets:[...]}, and some return the array directly.
@@ -1576,16 +1685,21 @@ app.post('/api/mc/clash-rules/probe-schema', async (req, res) => {
     // Each candidate is a Map<ruleId, ClashTestDocumentRule>.
     // The rule object requires `action` (proven by API). We probe action values
     // and likely additional fields (sideA/sideB for pairings).
+    // ClashTestDocumentRuleAction is an enum. Probe likely values.
     const candidates = [
-      { name: 'action_check',                  value: { 'rule-1': { action: 'check' } } },
-      { name: 'action_clash',                  value: { 'rule-1': { action: 'clash' } } },
-      { name: 'action_enable',                 value: { 'rule-1': { action: 'enable' } } },
-      { name: 'action_include',                value: { 'rule-1': { action: 'include' } } },
-      { name: 'action_exclude',                value: { 'rule-1': { action: 'exclude' } } },
-      { name: 'action_pair',                   value: { 'rule-1': { action: 'pair' } } },
-      { name: 'action_check_sideAB',           value: { 'rule-1': { action: 'check', sideA: [], sideB: [] } } },
-      { name: 'action_check_documentsAB',      value: { 'rule-1': { action: 'check', documentsA: [], documentsB: [] } } },
-      { name: 'action_check_filterAB',         value: { 'rule-1': { action: 'check', filterA: {}, filterB: {} } } },
+      { name: 'Include',     value: { 'rule-1': { action: 'Include' } } },
+      { name: 'Exclude',     value: { 'rule-1': { action: 'Exclude' } } },
+      { name: 'Pair',        value: { 'rule-1': { action: 'Pair' } } },
+      { name: 'Check',       value: { 'rule-1': { action: 'Check' } } },
+      { name: 'Clash',       value: { 'rule-1': { action: 'Clash' } } },
+      { name: 'Group',       value: { 'rule-1': { action: 'Group' } } },
+      { name: 'Test',        value: { 'rule-1': { action: 'Test' } } },
+      { name: 'Add',         value: { 'rule-1': { action: 'Add' } } },
+      { name: 'IncludePair', value: { 'rule-1': { action: 'IncludePair' } } },
+      { name: 'PairwiseClash', value: { 'rule-1': { action: 'PairwiseClash' } } },
+      { name: 'enum_0',      value: { 'rule-1': { action: 0 } } },
+      { name: 'enum_1',      value: { 'rule-1': { action: 1 } } },
+      { name: 'enum_2',      value: { 'rule-1': { action: 2 } } },
     ];
 
     const results = [];
