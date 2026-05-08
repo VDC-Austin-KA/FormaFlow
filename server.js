@@ -1404,15 +1404,14 @@ app.get('/api/mc/clash-rules', async (req, res) => {
   }
 });
 
-/** Update (PUT) the v3 unified clash-rules document. Body: { modelSetId, documentRules, fileRules, clashType, clashDisabled }
- *  GET /api/mc/clash-rules first to obtain the checksum required for If-Match. */
-app.put('/api/mc/clash-rules', async (req, res) => {
+/** Update the v3 unified clash-rules document. Re-fetches checksum for If-Match.
+ *  Exposed via PUT and POST so proxies that block PUT can use POST. */
+async function _putClashRulesHandler(req, res) {
   try {
     const modelSetId = req.query.modelSetId ?? req.body?.modelSetId ?? process.env.MC_MODEL_SET_ID;
     if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
     const mc = await buildMcClient(req);
 
-    // Always re-fetch the current rules to get the freshest checksum
     const current = await mc.getClashRules(modelSetId);
     const checksum = current.checksum;
 
@@ -1426,6 +1425,54 @@ app.put('/api/mc/clash-rules', async (req, res) => {
 
     const result = await mc.putClashRules(modelSetId, updatedRules, checksum);
     res.json({ modelSetId, updated: updatedRules, result });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+}
+app.put('/api/mc/clash-rules', _putClashRulesHandler);
+app.post('/api/mc/clash-rules/update', _putClashRulesHandler);
+
+/** Probe-and-write endpoint: try a series of likely documentRules schemas to find
+ *  which one ACC accepts. Restores the original rules after first success. */
+app.post('/api/mc/clash-rules/probe-schema', async (req, res) => {
+  try {
+    const modelSetId = req.query.modelSetId ?? req.body?.modelSetId ?? process.env.MC_MODEL_SET_ID;
+    if (!modelSetId) return res.status(400).json({ error: 'modelSetId required' });
+    const mc = await buildMcClient(req);
+
+    const original = await mc.getClashRules(modelSetId);
+    const candidates = [
+      { name: 'enable_true',          value: { enable: true } },
+      { name: 'enabled_true',         value: { enabled: true } },
+      { name: 'allVsAll_flag',        value: { allVsAll: true } },
+      { name: 'pairings_empty_array', value: { pairings: [] } },
+      { name: 'rules_array',          value: { rules: [] } },
+      { name: 'documents_all',        value: { documents: { type: 'all' } } },
+    ];
+
+    const results = [];
+    let firstAccepted = null;
+    for (const c of candidates) {
+      const fresh = await mc.getClashRules(modelSetId);
+      try {
+        const updated = {
+          checksum: fresh.checksum,
+          documentRules: c.value,
+          fileRules: original.fileRules ?? {},
+          clashType: original.clashType ?? 'Hard',
+          clashDisabled: false,
+        };
+        const r = await mc.putClashRules(modelSetId, updated, fresh.checksum);
+        results.push({ candidate: c.name, value: c.value, status: 'accepted', response: r });
+        firstAccepted = c.name;
+        break;
+      } catch (e) {
+        results.push({ candidate: c.name, value: c.value, status: 'rejected',
+          errStatus: e.status, error: e.message, body: e.body });
+      }
+    }
+
+    res.json({ original, firstAccepted, results });
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
   }
