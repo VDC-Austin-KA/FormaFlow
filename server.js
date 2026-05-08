@@ -485,20 +485,38 @@ async function _autoLoginHandler(_req, res) {
 
     await page.focus('#password');
     await page.type('#password', password, { delay: 50 });
+    // Wait briefly for input to settle, then press Enter and wait for navigation
+    await sleep(500);
+    const navWait = page.waitForNavigation({ timeout: 60000 }).catch(() => null);
     await page.keyboard.press('Enter');
+    await navWait;
 
     // Wait for redirect to callback (intercepted via framenavigated handler)
     const t0 = Date.now();
+    let lastUrl = page.url();
     while (Date.now() - t0 < 90000) {
       if (capturedCode || capturedError) break;
       const u = page.url();
+      if (u !== lastUrl) { console.log('[auto-login] URL changed:', u); lastUrl = u; }
       if (u.includes('?auth=success') || u.includes('/?auth=success')) break;
-      // Also check for MFA / error pages
-      if (u.includes('/error') || u.includes('mfa') || u.includes('verify')) {
+      if (u.includes('/error') || u.includes('mfa') || u.includes('verify') || u.includes('challenge')) {
         const html = (await page.content()).slice(0, 1500);
         throw new Error(`Login flow stuck at: ${u}\nHTML: ${html}`);
       }
       await sleep(500);
+    }
+    if (!capturedCode && !capturedError) {
+      // Try to capture any visible error message before giving up
+      let errorOnPage = '';
+      try {
+        errorOnPage = await page.evaluate(() => {
+          const errEls = document.querySelectorAll('[role="alert"], .error, .alert, [data-testid*="error"]');
+          return Array.from(errEls).map(e => e.textContent?.trim()).filter(Boolean).join(' | ');
+        });
+      } catch { /* ignore */ }
+      const finalUrl = page.url();
+      const fullHtml = (await page.content()).slice(0, 2500);
+      throw new Error(`Did not capture authorization code. Final URL: ${finalUrl}\nVisible errors: ${errorOnPage}\nHTML: ${fullHtml}`);
     }
 
     if (capturedError) throw new Error(`OAuth provider returned error: ${capturedError}`);
