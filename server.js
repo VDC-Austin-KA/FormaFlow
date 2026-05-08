@@ -1942,26 +1942,24 @@ app.post('/api/mc/clash-rules/probe-schema', async (req, res) => {
     const docA = docs[0], docB = docs[1];
 
     const candidates = [
-      // action: 0 with viewableName
-      { name: 'a0_viewable', value: { [docA.lineageUrn]: { action: 0, viewableName: docA.viewableName } } },
-      // action: 1 with viewableName
-      { name: 'a1_viewable', value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName } } },
-      // action: 1 with viewableName + clashesWith pair (URN-only)
-      { name: 'a1_pair_urn', value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, clashesWith: [docB.lineageUrn] } } },
-      // action: 1 with viewableName + clashesWith pair (full obj)
-      { name: 'a1_pair_obj', value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, clashesWith: [{ lineageUrn: docB.lineageUrn, viewableName: docB.viewableName }] } } },
-      // Both ends defined: A clashes with B, B clashes with A
-      { name: 'a1_both', value: {
-        [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, clashesWith: [{ lineageUrn: docB.lineageUrn, viewableName: docB.viewableName }] },
-        [docB.lineageUrn]: { action: 1, viewableName: docB.viewableName, clashesWith: [{ lineageUrn: docA.lineageUrn, viewableName: docA.viewableName }] },
-      } },
-      // Try alternative pair field names
-      { name: 'a1_pair_pairs',     value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, pairs: [docB.lineageUrn] } } },
-      { name: 'a1_pair_pairsWith', value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, pairsWith: [docB.lineageUrn] } } },
-      { name: 'a1_pair_against',   value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, against: [docB.lineageUrn] } } },
-      { name: 'a1_pair_documents', value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName, documents: [docB.lineageUrn] } } },
-      // Action 0 with pair
-      { name: 'a0_pair_obj', value: { [docA.lineageUrn]: { action: 0, viewableName: docA.viewableName, clashesWith: [{ lineageUrn: docB.lineageUrn, viewableName: docB.viewableName }] } } },
+      // Try alternative names for the viewable field
+      { name: 'viewableName',  value: { [docA.lineageUrn]: { action: 1, viewableName: docA.viewableName } } },
+      { name: 'viewable',      value: { [docA.lineageUrn]: { action: 1, viewable: docA.viewableName } } },
+      { name: 'view',          value: { [docA.lineageUrn]: { action: 1, view: docA.viewableName } } },
+      { name: 'name',          value: { [docA.lineageUrn]: { action: 1, name: docA.viewableName } } },
+      { name: 'documentName',  value: { [docA.lineageUrn]: { action: 1, documentName: docA.viewableName } } },
+      { name: 'nwcName',       value: { [docA.lineageUrn]: { action: 1, nwcName: docA.viewableName } } },
+      { name: 'fileName',      value: { [docA.lineageUrn]: { action: 1, fileName: docA.viewableName } } },
+      { name: 'viewableUrn',   value: { [docA.lineageUrn]: { action: 1, viewableUrn: docA.viewableName } } },
+      // Composite key: lineage::viewable
+      { name: 'key_colon',     value: { [`${docA.lineageUrn}:${docA.viewableName}`]: { action: 1 } } },
+      { name: 'key_pipe',      value: { [`${docA.lineageUrn}|${docA.viewableName}`]: { action: 1 } } },
+      // Rule has documents array containing both lineage+viewable
+      { name: 'docs_array',    value: { [docA.lineageUrn]: { action: 1, documents: [{ lineageUrn: docA.lineageUrn, viewableName: docA.viewableName }] } } },
+      // viewableName at top-level instead of inside rule
+      { name: 'top_viewable',  value: { [docA.lineageUrn]: { viewableName: docA.viewableName, action: 1 } } },
+      // Maybe the field is "viewables" (array)
+      { name: 'viewables_arr', value: { [docA.lineageUrn]: { action: 1, viewables: [docA.viewableName] } } },
     ];
 
     const results = [];
