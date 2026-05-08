@@ -393,8 +393,19 @@ async function _autoLoginHandler(_req, res) {
     const { default: puppeteerExtra } = await import('puppeteer-extra');
     const { default: StealthPlugin } = await import('puppeteer-extra-plugin-stealth');
     puppeteerExtra.use(StealthPlugin());
-    browser = await puppeteerExtra.launch({
+    // Discover Chromium executable. On Railway/nixpacks the binary is in PATH
+    // as 'chromium'; locally we let Puppeteer use its bundled copy.
+    let executablePath;
+    try {
+      const { execSync } = await import('child_process');
+      executablePath = execSync('which chromium 2>/dev/null || which chromium-browser 2>/dev/null || which google-chrome 2>/dev/null', { encoding: 'utf8' }).trim() || undefined;
+    } catch { executablePath = undefined; }
+
+    // Wrap launch in race against timeout so a hung Chrome doesn't 502 the request
+    const launchPromise = puppeteerExtra.launch({
       headless: true,
+      timeout: 60000,
+      ...(executablePath && { executablePath }),
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -402,9 +413,13 @@ async function _autoLoginHandler(_req, res) {
         '--disable-gpu',
         '--disable-blink-features=AutomationControlled',
         '--disable-features=IsolateOrigins,site-per-process',
-        '--single-process',
+        '--no-zygote',
       ],
     });
+    browser = await Promise.race([
+      launchPromise,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('Puppeteer launch timeout 60s — likely missing Chromium deps on host')), 60000)),
+    ]);
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     await page.setViewport({ width: 1280, height: 800 });

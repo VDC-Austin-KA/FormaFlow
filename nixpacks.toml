@@ -1,0 +1,38 @@
+[phases.setup]
+nixPkgs = [
+  'nodejs_20',
+  'chromium',
+  'glib',
+  'nss',
+  'fontconfig',
+  'freetype',
+  'cairo',
+  'pango',
+  'atk',
+  'gdk-pixbuf',
+  'gtk3',
+  'dbus',
+  'expat',
+  'alsaLib',
+  'cups',
+  'libdrm',
+  'libxkbcommon',
+  'mesa',
+  'xorg.libX11',
+  'xorg.libXcomposite',
+  'xorg.libXdamage',
+  'xorg.libXext',
+  'xorg.libXfixes',
+  'xorg.libXrandr',
+  'xorg.libxcb',
+]
+
+[phases.install]
+cmds = ['PUPPETEER_SKIP_DOWNLOAD=true npm ci']
+
+[start]
+cmd = 'npm start'
+
+[variables]
+PUPPETEER_SKIP_DOWNLOAD = '1'
+PUPPETEER_EXECUTABLE_PATH = '/nix/var/nix/profiles/default/bin/chromium'
