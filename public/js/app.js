@@ -360,6 +360,13 @@ async function loadCoordinationSpaces() {
     } else {
       showCoordSpaceInfo(`${sets.length} coordination space(s) available`);
       toast(`Loaded ${sets.length} coordination space(s)`);
+
+      // Auto-select the first space when nothing was selected before
+      if (!previousValue) {
+        const firstId = sets[0].id ?? sets[0].modelSetId;
+        sels.forEach(sel => { if (sel) sel.value = firstId; });
+        await onCoordSpaceChange();
+      }
     }
   } catch (err) {
     const clientId = el('inp-client-id').value.trim() || '(your APS Client ID)';
@@ -2586,6 +2593,19 @@ async function loadHubProjects() {
   try {
     const data = await api('GET', '/api/hub/projects');
     _hubProjects = data?.data ?? [];
+
+    // If hub ID was auto-discovered, persist it so future calls don't need to re-discover
+    if (data?._hubId) {
+      const currentAccId = el('inp-account-id')?.value?.trim();
+      if (!currentAccId) {
+        el('inp-account-id').value = data._hubId;
+        try {
+          await api('POST', '/api/config/env', { ACC_ACCOUNT_ID: data._hubId });
+          if (State.config?.env) State.config.env.ACC_ACCOUNT_ID = data._hubId;
+        } catch { /* non-critical */ }
+      }
+    }
+
     renderHubProjects(_hubProjects);
 
     const accCount   = _hubProjects.filter(p => (p.attributes?.projectType ?? '').toUpperCase().includes('ACC')).length;
@@ -2690,25 +2710,36 @@ function formatRelativeDate(iso) {
   } catch { return ''; }
 }
 
-function switchHubProject(projectId, projectName) {
-  el('inp-project-id').value = projectId;
-  // Reset container + folder since they're project-specific
-  el('inp-container-id').value = '';
+async function switchHubProject(projectId, projectName) {
+  // Populate Connect-tab fields
+  el('inp-project-id').value   = projectId;
+  // For ACC v3, MC Container ID equals the Project ID
+  el('inp-container-id').value = projectId;
+  // Reset folder since it's project-specific
   el('inp-folder-urn').value   = '';
   el('folder-urn-row').classList.add('hidden');
-  // Reset the folder tree
   const folderTree = el('folder-tree');
   if (folderTree) folderTree.innerHTML = '';
   el('folder-tree-container')?.classList.add('hidden');
   const nameSpan = el('selected-folder-name');
   if (nameSpan) { nameSpan.textContent = 'No folder selected'; nameSpan.className = 'text-sm text-slate-500 flex-1 truncate'; }
   el('hub-stat-active').textContent = projectName;
-
-  // Re-render cards to update active state
   renderHubProjects(_hubProjects);
 
-  navigate('connect');
-  toast(`Switched to "${projectName}" — save credentials to persist`);
+  // Persist project + container IDs, then jump straight to coordination
+  try {
+    await api('POST', '/api/config/env', { ACC_PROJECT_ID: projectId, MC_CONTAINER_ID: projectId });
+    if (State.config?.env) {
+      State.config.env.ACC_PROJECT_ID  = projectId;
+      State.config.env.MC_CONTAINER_ID = projectId;
+    }
+    toast(`Switched to "${projectName}" — loading coordination spaces…`);
+    navigate('coordination');
+    await loadCoordinationSpaces();
+  } catch (err) {
+    toast(`Switched to "${projectName}" — save credentials on the Connect tab to persist`, 'warn');
+    navigate('connect');
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2985,55 +3016,103 @@ async function fetchCoordSpaceModels() {
 }
 
 async function loadViewIntoViewer() {
-  const viewId = el('sel-coord-view').value;
+  const viewId  = el('sel-coord-view').value;
   const spaceId = getActiveCoordSpaceId();
-  if (!viewId) { toast('Select a view first', 'error'); return; }
-  
-  const btn = el('btn-load-view');
+  if (!viewId)  { toast('Select a view first', 'error'); return; }
+  if (!spaceId) { toast('Select a Coordination Space first', 'error'); return; }
+
+  const btn     = el('btn-load-view');
   const oldText = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Loading View…';
-  
+  btn.disabled = true; btn.textContent = 'Loading…';
+
   try {
+    // Fetch view definition from MC API — v3 format uses definition[].lineageUrn
     const view = await api('GET', `/api/mc/modelsets/${spaceId}/views/${viewId}`);
-    const viewModels = view?.models ?? [];
-    if (!viewModels.length) throw new Error('Selected view contains no models');
+    const viewName = view?.name ?? viewId;
 
-    const toLoad = [];
-    for (const vm of viewModels) {
-      // Robust matching: Try ID first, then URN, then Name
-      let match = _coordState.models.find(m => m.id === vm.id);
-      if (!match && vm.urn) {
-        match = _coordState.models.find(m => m.viewerUrn === vm.urn || m.rawUrn === vm.urn);
-      }
-      if (!match && vm.name) {
-        match = _coordState.models.find(m => m.name === vm.name);
-      }
-      
-      if (match) {
-        toLoad.push(match);
-      } else {
-        console.warn(`View model "${vm.name || vm.id}" not found in current space documents`);
+    // Extract document identifiers: prefer v3 definition[].lineageUrn, fall back to modelIds
+    const lineageUrns = (view?.definition ?? []).map(d => d.lineageUrn).filter(Boolean);
+    const legacyIds   = view?.modelIds ?? view?.documentIds ?? [];
+    const allRefs     = [...new Set([...lineageUrns, ...legacyIds])];
+
+    // Fetch all documents in the coordination space to resolve viewerUrns
+    const containerId = el('inp-container-id').value.trim();
+    const qs = new URLSearchParams({ modelSetId: spaceId });
+    if (containerId) qs.set('containerId', containerId);
+    const spaceResp = await api('GET', `/api/mc/space-documents?${qs}`);
+    const docs = spaceResp?.documents ?? [];
+
+    const targets = [];
+    const seen    = new Set();
+
+    const findDoc = (ref) => {
+      const bare = ref.replace(/^urn:/i, '');
+      return docs.find(d =>
+        d.id === ref || d.id === bare ||
+        d.rawUrn === ref || d.rawUrn === bare ||
+        d.derivativeUrn === ref || d.derivativeUrn === bare ||
+        (d.rawUrn && (d.rawUrn.includes(bare) || bare.includes(d.rawUrn.split('?')[0])))
+      );
+    };
+
+    for (const ref of allRefs) {
+      const doc = findDoc(ref);
+      if (doc?.viewerUrn && !seen.has(doc.viewerUrn)) {
+        seen.add(doc.viewerUrn);
+        targets.push({ name: doc.name, viewerUrn: doc.viewerUrn });
       }
     }
 
-    if (!toLoad.length) throw new Error('Could not find matching models for this view in the current space');
+    // If no match from refs, load all docs (the view covers the full space)
+    if (!targets.length) {
+      for (const doc of docs) {
+        if (doc.viewerUrn && !seen.has(doc.viewerUrn)) {
+          seen.add(doc.viewerUrn);
+          targets.push({ name: doc.name, viewerUrn: doc.viewerUrn });
+        }
+      }
+    }
 
-    toast(`Loading view "${view.name}" with ${toLoad.length} models…`);
-    
-    // Unload all first
-    if (_viewerState.viewer) {
-      const models = _viewerState.viewer.getAllModels();
-      models.forEach(m => _viewerState.viewer.unloadModel(m));
+    if (!targets.length) {
+      toast('No loadable models found in this view — models may not be translated yet in ACC', 'error');
+      return;
+    }
+
+    toast(`Loading "${viewName}" — ${targets.length} model(s)…`);
+
+    // Navigate to viewer tab and ensure the viewer is initialised
+    navigate('viewer');
+    if (!_viewerState.sdkLoaded) {
+      // initViewerTab() was called by navigate(); wait for the SDK to be ready
+      await new Promise(resolve => {
+        const t = setInterval(() => { if (_viewerState.viewer) { clearInterval(t); resolve(); } }, 200);
+        setTimeout(() => { clearInterval(t); resolve(); }, 15_000);
+      });
+    }
+
+    // Unload anything currently in the viewer
+    if (_viewerState.viewer && _viewerState.loadedModels.length) {
+      try {
+        _viewerState.loadedModels.forEach(lm => _viewerState.viewer.unloadModel(lm.model));
+      } catch (_) {}
       _viewerState.loadedModels = [];
-      _viewerState.globalOffset = null; // Reset offset for fresh view load
+      _viewerState.globalOffset = null;
     }
 
-    // Load sequentially
-    for (const m of toLoad) {
-      await loadModelToViewer(m);
+    // Load each model sequentially so the global offset propagates
+    let loaded = 0;
+    for (const t of targets) {
+      try { await loadModelToViewer(t); loaded++; } catch (_) {}
     }
-    
-    toast(`View "${view.name}" loaded successfully`);
+
+    if (loaded) {
+      toast(`View "${viewName}" — ${loaded} model(s) loaded`);
+      try {
+        setTimeout(() => _viewerState.viewer?.fitToView?.(), 800);
+      } catch (_) {}
+    } else {
+      toast('Models in view could not be loaded — check that derivatives are ready in ACC', 'error');
+    }
   } catch (err) {
     toast('Failed to load view: ' + err.message, 'error');
   } finally {
@@ -4313,6 +4392,13 @@ async function selectIssue(issueId) {
       const comments = c?.results ?? c?.data ?? [];
       renderIssueComments(comments);
     } catch (_) { /* comments may not exist */ }
+
+    // Attachments/screenshots — best-effort
+    try {
+      const a = await api('GET', `/api/issues/${encodeURIComponent(issueId)}/attachments?projectId=${encodeURIComponent(projectId)}`);
+      const attachments = a?.results ?? a?.data ?? (Array.isArray(a) ? a : []);
+      renderIssueAttachments(attachments);
+    } catch (_) { /* attachments may not exist or be enabled */ }
   } catch (err) {
     detail.innerHTML = `<p class="text-sm text-red-500">Failed to load issue: ${err.message}</p>`;
   }
@@ -4356,6 +4442,10 @@ function renderIssueDetail(issue) {
     </div>` : ''}
 
     <hr class="my-4 border-slate-200"/>
+    <div id="issue-attachments-section" class="hidden mb-4">
+      <h4 class="text-xs font-semibold text-slate-700 mb-2">Photos &amp; Screenshots</h4>
+      <div id="issue-attachments" class="flex flex-wrap gap-2"></div>
+    </div>
     <h4 class="text-xs font-semibold text-slate-700 mb-2">Comments</h4>
     <div id="issue-comments" class="space-y-2 mb-3"></div>
 
@@ -4413,6 +4503,29 @@ function renderIssueComments(comments) {
       <div class="text-slate-700 whitespace-pre-wrap">${escapeHtml(c.body ?? '')}</div>
     </div>
   `).join('');
+}
+
+function renderIssueAttachments(attachments) {
+  const section = el('issue-attachments-section');
+  const host    = el('issue-attachments');
+  if (!section || !host) return;
+  const images = attachments.filter(a => {
+    const mime = (a.mimeType ?? a.mime_type ?? a.contentType ?? '').toLowerCase();
+    const name = (a.name ?? a.fileName ?? a.file_name ?? '').toLowerCase();
+    return mime.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp)$/.test(name);
+  });
+  if (!images.length) { section.classList.add('hidden'); return; }
+  section.classList.remove('hidden');
+  host.innerHTML = images.map(a => {
+    const url  = a.url ?? a.signedUrl ?? a.downloadUrl ?? a.href ?? '';
+    const name = escapeHtml(a.name ?? a.fileName ?? 'Attachment');
+    return url
+      ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="${name}"
+           class="block w-24 h-24 rounded-lg border border-slate-200 overflow-hidden hover:border-brand transition-colors">
+           <img src="${escapeHtml(url)}" alt="${name}" class="w-full h-full object-cover"/>
+         </a>`
+      : `<div class="w-24 h-24 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center text-xs text-slate-400 p-1 text-center">${name}</div>`;
+  }).join('');
 }
 
 function escapeHtml(s = '') {
@@ -4609,11 +4722,16 @@ async function loadAuthStatus() {
     if (params.get('auth') === 'success') {
       toast('Service account signed in successfully', 'success');
       window.history.replaceState({}, '', '/');
+      // Go straight to Hub Projects so the user can pick a project
+      navigate('hub');
+      loadHubProjects();
     } else if (params.get('auth') === 'error') {
       toast('Sign-in failed: ' + (params.get('msg') || 'Unknown error'), 'error');
       window.history.replaceState({}, '', '/');
     }
-  } catch { /* non-critical */ }
+
+    return status;
+  } catch { return null; /* non-critical */ }
 }
 
 function renderAuthStatus(status) {
@@ -4690,8 +4808,8 @@ async function init() {
     el('conn-label').textContent = 'Credentials loaded';
   }
 
-  // Load service account auth status
-  loadAuthStatus();
+  // Load service account auth status (await so we know whether user is logged in)
+  const _initAuthStatus = await loadAuthStatus();
 
   // Load capabilities panel
   loadCapabilities();
@@ -4995,8 +5113,13 @@ async function init() {
     }
   });
 
-  // Start on Connect tab
-  navigate('connect');
+  // Start on Hub Projects if already signed in, otherwise Connect tab
+  if (_initAuthStatus?.loggedIn) {
+    navigate('hub');
+    loadHubProjects();
+  } else {
+    navigate('connect');
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);
