@@ -72,6 +72,7 @@ const TAB_META = {
   viewer:     { title: '3D Viewer',     sub: 'Visualize models and clash results in an interactive 3D view' },
   models:     { title: 'Models',        sub: 'View and override automatically identified disciplines' },
   coordination: { title: 'Coordination', sub: 'Assign disciplines, pick clash models, align to PBP / origin / survey / manual offsets' },
+  clashes:    { title: 'Clashes',         sub: 'View clash groups, apply templates, and push as ACC issues' },
   issues:     { title: 'Issues',         sub: 'View, filter, comment, and create ACC project issues' },
   searchsets: { title: 'Search Sets',   sub: 'Toggle and preview reusable property-based filters' },
   clashtests: { title: 'Clash Tests',   sub: 'Enable, disable, and fine-tune clash test pairs' },
@@ -104,6 +105,8 @@ function navigate(tab) {
   if (tab === 'viewer' && !_viewerState.sdkLoaded) initViewerTab();
   // Lazy-load coordination data
   if (tab === 'coordination' && !_coordState.loaded) loadCoordinationData();
+  // Lazy-load clashes
+  if (tab === 'clashes' && !_clashesState.templates.length) _loadClashTemplates();
   // Lazy-load issues + types
   if (tab === 'issues' && !_issuesState.loaded) loadIssues();
 }
@@ -3605,6 +3608,583 @@ function renderWorkflowClashResults() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Clashes tab — view MC clash groups, apply templates, push as ACC Issues
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _clashesState = {
+  loaded: false,
+  groups: [],           // flat list of clash group objects (all tests combined)
+  tests: [],            // list of { id, name } for the filter dropdown
+  templates: [],        // loaded from /api/config/clash-issue-templates
+  selected: new Set(),  // set of group IDs currently checked
+  assignments: {},      // groupId → { company, assignee, dueDate, title }
+  filterTestId: '',
+  filterText: '',
+};
+
+// ── Naming engine ─────────────────────────────────────────────────────────────
+
+function _abbrevLevel(s = '') {
+  const m = s.match(/level\s*(\d+)/i);
+  if (m) return 'L' + m[1].padStart(2, '0');
+  if (/ground/i.test(s)) return 'GF';
+  if (/roof/i.test(s))   return 'RF';
+  if (/mezz/i.test(s))   return 'MEZ';
+  const bm = s.match(/basement\s*(\d*)/i);
+  if (bm) return 'B' + (bm[1] || '1').padStart(2, '0');
+  return s.replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase() || 'L';
+}
+
+const _DISC_LETTER = {
+  ARCH:'A', ARCHITECTURE:'A', ARCHITECTURAL:'A',
+  STRUCT:'S', STRC:'S', STRUCTURE:'S', STRUCTURAL:'S',
+  MECH:'M', MECHANICAL:'M', MEP:'M',
+  PLUMB:'P', PLUMBING:'P',
+  ELEC:'E', ELECTRICAL:'E',
+  FP:'F', FIRE:'F',
+  CIVIL:'C', INT:'I', INTERIOR:'I', HVAC:'H',
+};
+
+function _abbrevTest(name = '') {
+  return name.split(/\s+vs\.?\s+/i).map(p => {
+    const k = p.trim().toUpperCase().replace(/\s+/g, '');
+    return _DISC_LETTER[k] ?? p.trim().slice(0, 2).toUpperCase();
+  }).join('_vs_');
+}
+
+function _abbrevSel(s = '') {
+  const words = s.trim().split(/\s+/);
+  if (words.length > 1) return words.map(w => w[0]).join('').toUpperCase().slice(0, 5);
+  return s.toUpperCase().replace(/[AEIOU]/g, '').slice(0, 4) || s.slice(0, 3).toUpperCase();
+}
+
+function _applyNamingPattern(patternId, ctx, customPattern) {
+  const L   = _abbrevLevel(ctx.level || '');
+  const T   = _abbrevTest(ctx.testName || '');
+  const A   = _abbrevSel(ctx.selA || '');
+  const B   = _abbrevSel(ctx.selB || '');
+  const D   = (ctx.discipline || '').toUpperCase().slice(0, 4) || 'UNK';
+  const seq = String(ctx.sequence || 1).padStart(3, '0');
+
+  switch (patternId) {
+    case 'level-test-sel': {
+      const parts = [];
+      if (L) parts.push(L);
+      if (T) parts.push(T);
+      if (A && B) parts.push(`${A}vs${B}`);
+      else if (A) parts.push(A);
+      return parts.join('_') || 'Clash';
+    }
+    case 'test-disc-seq': {
+      const parts = [];
+      if (T) parts.push(T);
+      if (D && D !== 'UNK') parts.push(D);
+      parts.push(seq);
+      return parts.join('_');
+    }
+    case 'custom': {
+      return (customPattern || '{T}_{seq}')
+        .replace(/\{L\}/g, L)
+        .replace(/\{T\}/g, T)
+        .replace(/\{A\}/g, A)
+        .replace(/\{B\}/g, B)
+        .replace(/\{D\}/g, D)
+        .replace(/\{seq\}/g, seq);
+    }
+    default:
+      return [L, T].filter(Boolean).join('_') || 'Clash';
+  }
+}
+
+function _namingPreview(patternId, customPattern) {
+  return _applyNamingPattern(patternId, {
+    level: 'Level 1', testName: 'ARCH vs STRC',
+    selA: 'Walls', selB: 'Conduits',
+    discipline: 'STRUCT', sequence: 3,
+  }, customPattern);
+}
+
+// ── Load & render ─────────────────────────────────────────────────────────────
+
+async function loadClashGroups() {
+  const btn = el('btn-load-clash-groups');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  el('clashes-error').classList.add('hidden');
+
+  const list = el('clashes-list');
+  list.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">Loading clash groups…</div>';
+
+  try {
+    // Load templates first (silent)
+    if (!_clashesState.templates.length) await _loadClashTemplates();
+
+    const modelSetId = getActiveCoordSpaceId();
+    if (!modelSetId) {
+      list.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">Select a Coordination Space on the Coordination tab first</div>';
+      return;
+    }
+
+    // Fetch clash tests to populate the filter dropdown
+    let tests = [];
+    try {
+      const tr = await api('GET', `/api/mc/clash-tests?modelSetId=${encodeURIComponent(modelSetId)}`);
+      tests = tr?.tests ?? tr?.data ?? (Array.isArray(tr) ? tr : []);
+    } catch (_) {}
+    _clashesState.tests = tests;
+    _populateTestFilter(tests);
+
+    // Fetch assigned + closed clash groups
+    const groups = [];
+    for (const test of tests) {
+      const testId = test.id ?? test.testId ?? test.clashTestId;
+      if (!testId) continue;
+      try {
+        const r = await api('GET', `/api/mc/clash-groups/assigned?testId=${encodeURIComponent(testId)}&modelSetId=${encodeURIComponent(modelSetId)}`);
+        const grps = r?.groups ?? r?.data ?? r?.clashGroups ?? (Array.isArray(r) ? r : []);
+        grps.forEach(g => groups.push({ ...g, _testId: testId, _testName: test.name ?? testId, _type: 'assigned' }));
+      } catch (_) {}
+      try {
+        const r = await api('GET', `/api/mc/clash-groups/closed?testId=${encodeURIComponent(testId)}&modelSetId=${encodeURIComponent(modelSetId)}`);
+        const grps = r?.groups ?? r?.data ?? r?.clashGroups ?? (Array.isArray(r) ? r : []);
+        grps.forEach(g => groups.push({ ...g, _testId: testId, _testName: test.name ?? testId, _type: 'closed' }));
+      } catch (_) {}
+    }
+
+    // If no tests found, try the generic endpoint
+    if (!tests.length) {
+      try {
+        const r = await api('GET', `/api/mc/clash-groups/assigned?modelSetId=${encodeURIComponent(modelSetId)}`);
+        const grps = r?.groups ?? r?.data ?? (Array.isArray(r) ? r : []);
+        grps.forEach(g => groups.push({ ...g, _type: 'assigned' }));
+      } catch (_) {}
+    }
+
+    _clashesState.groups = groups;
+    _clashesState.selected.clear();
+    _clashesState.loaded = true;
+    renderClashGroupsList();
+
+    const badge = el('badge-clashes');
+    badge.textContent = groups.length;
+    badge.classList.toggle('hidden', !groups.length);
+
+    if (!groups.length) {
+      list.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">No clash groups found. Run coordination clash tests first.</div>';
+    }
+  } catch (err) {
+    list.innerHTML = '';
+    el('clashes-error').classList.remove('hidden');
+    el('clashes-error-msg').textContent = `Failed to load clash groups: ${err.message}`;
+    el('clashes-error-hint').textContent = err.status === 403
+      ? 'Tip: Sign in with a 3-legged service account on the Connect tab.'
+      : err.status === 404
+      ? 'Tip: No clash data found for this coordination space.'
+      : '';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Load Clash Groups';
+  }
+}
+
+function _populateTestFilter(tests) {
+  const sel = el('sel-clashes-test');
+  sel.innerHTML = '<option value="">All Clash Tests</option>';
+  tests.forEach(t => {
+    const id   = t.id ?? t.testId ?? t.clashTestId;
+    const name = t.name ?? id;
+    sel.add(new Option(name, id));
+  });
+}
+
+function _filteredGroups() {
+  let groups = _clashesState.groups;
+  if (_clashesState.filterTestId) {
+    groups = groups.filter(g => g._testId === _clashesState.filterTestId);
+  }
+  if (_clashesState.filterText) {
+    const q = _clashesState.filterText.toLowerCase();
+    groups = groups.filter(g =>
+      (g.name ?? g.id ?? '').toLowerCase().includes(q) ||
+      (g._testName ?? '').toLowerCase().includes(q)
+    );
+  }
+  return groups;
+}
+
+function renderClashGroupsList() {
+  const list = el('clashes-list');
+  const groups = _filteredGroups();
+
+  el('clashes-count').textContent = `${groups.length}${groups.length !== _clashesState.groups.length ? ` of ${_clashesState.groups.length}` : ''}`;
+
+  if (!groups.length && _clashesState.loaded) {
+    list.innerHTML = '<div class="p-6 text-center text-slate-400 text-sm">No groups match the current filter</div>';
+    _updateSelectionBar();
+    return;
+  }
+
+  list.innerHTML = '';
+  groups.forEach((g, idx) => {
+    const id        = g.id ?? g.groupId ?? g.clashGroupId ?? String(idx);
+    const name      = g.name ?? g.groupName ?? `Group ${idx + 1}`;
+    const cnt       = g.clashCount ?? g.count ?? g.clashes?.length ?? '—';
+    const testName  = g._testName ?? '';
+    const type      = g._type ?? '';
+    const assign    = _clashesState.assignments[id];
+    const isChecked = _clashesState.selected.has(id);
+
+    const TYPE_COLOR = { assigned: '#3b82f6', closed: '#64748b' };
+    const typeColor  = TYPE_COLOR[type] ?? '#9ca3af';
+
+    const row = document.createElement('div');
+    row.className = `px-3 py-2.5 hover:bg-slate-50 transition-colors${isChecked ? ' bg-blue-50' : ''}`;
+    row.dataset.groupId = id;
+    row.innerHTML = `
+      <div class="flex items-start gap-2">
+        <input type="checkbox" class="clash-group-chk mt-0.5 w-3.5 h-3.5 rounded flex-shrink-0 cursor-pointer"
+          data-id="${id}" ${isChecked ? 'checked' : ''}/>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-sm font-medium text-slate-800 truncate" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+            <span class="text-xs px-1.5 py-0.5 rounded font-mono"
+              style="background:${typeColor}22;color:${typeColor};border:1px solid ${typeColor}44">${type}</span>
+            <span class="text-xs text-slate-400 font-mono">${cnt !== '—' ? cnt + ' 💥' : ''}</span>
+          </div>
+          ${testName ? `<p class="text-xs text-slate-500 truncate mt-0.5">${escapeHtml(testName)}</p>` : ''}
+          ${assign ? `
+          <div class="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
+            ${assign.company ? `<span class="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded px-1.5 py-0.5">🏢 ${escapeHtml(assign.company)}</span>` : ''}
+            ${assign.assignee ? `<span class="bg-blue-50 text-blue-700 border border-blue-200 rounded px-1.5 py-0.5">👤 ${escapeHtml(assign.assignee)}</span>` : ''}
+            ${assign.dueDate ? `<span class="bg-slate-50 text-slate-600 border border-slate-200 rounded px-1.5 py-0.5">📅 ${assign.dueDate}</span>` : ''}
+            ${assign.title ? `<span class="bg-amber-50 text-amber-700 border border-amber-200 rounded px-1.5 py-0.5 font-mono truncate max-w-48" title="${escapeHtml(assign.title)}">${escapeHtml(assign.title)}</span>` : ''}
+          </div>` : ''}
+        </div>
+      </div>
+    `;
+
+    row.querySelector('.clash-group-chk').addEventListener('change', e => {
+      if (e.target.checked) _clashesState.selected.add(id);
+      else _clashesState.selected.delete(id);
+      row.classList.toggle('bg-blue-50', e.target.checked);
+      _updateSelectionBar();
+    });
+
+    list.appendChild(row);
+  });
+
+  _updateSelectionBar();
+}
+
+function _updateSelectionBar() {
+  const n = _clashesState.selected.size;
+  const bar = el('clashes-action-bar');
+  const label = el('clashes-selected-label');
+  bar.classList.toggle('hidden', n === 0);
+  label.classList.toggle('hidden', n === 0);
+  if (n > 0) {
+    el('clashes-sel-count').textContent = `${n} group${n !== 1 ? 's' : ''} selected`;
+    label.textContent = `${n} selected`;
+  }
+  // Sync select-all checkbox
+  const all = el('chk-clashes-all');
+  const groups = _filteredGroups();
+  all.checked = groups.length > 0 && groups.every(g => {
+    const id = g.id ?? g.groupId ?? g.clashGroupId;
+    return _clashesState.selected.has(id);
+  });
+  all.indeterminate = !all.checked && n > 0;
+}
+
+// ── Templates ─────────────────────────────────────────────────────────────────
+
+async function _loadClashTemplates() {
+  try {
+    const data = await api('GET', '/api/config/clash-issue-templates');
+    _clashesState.templates = data?.templates ?? [];
+    renderClashTemplatesList();
+    _populateTemplateSelect();
+  } catch (_) {}
+}
+
+function renderClashTemplatesList() {
+  const host = el('templates-list');
+  if (!_clashesState.templates.length) {
+    host.innerHTML = '<div class="p-4 text-center text-slate-400 text-xs">No templates yet — click + New to create one</div>';
+    return;
+  }
+  host.innerHTML = '';
+  _clashesState.templates.forEach(t => {
+    const preview = _namingPreview(t.namingPatternId, t.customPattern);
+    const div = document.createElement('div');
+    div.className = 'p-3 rounded-lg border border-slate-200 bg-slate-50 hover:border-brand/40 hover:bg-blue-50/50 transition-colors';
+    div.innerHTML = `
+      <div class="flex items-start justify-between gap-2">
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-semibold text-slate-800">${escapeHtml(t.name)}</p>
+          ${t.description ? `<p class="text-xs text-slate-500 truncate">${escapeHtml(t.description)}</p>` : ''}
+          <div class="flex flex-wrap gap-1 mt-1.5 text-xs">
+            ${t.companyName ? `<span class="bg-white border border-slate-200 rounded px-1.5 py-0.5 text-slate-600">🏢 ${escapeHtml(t.companyName)}</span>` : ''}
+            ${t.assigneeName ? `<span class="bg-white border border-slate-200 rounded px-1.5 py-0.5 text-slate-600">👤 ${escapeHtml(t.assigneeName)}</span>` : ''}
+            <span class="bg-white border border-slate-200 rounded px-1.5 py-0.5 text-slate-600">📅 +${t.dueDateOffsetDays}d</span>
+            <span class="bg-white border border-brand/30 rounded px-1.5 py-0.5 text-brand font-mono">${escapeHtml(preview)}</span>
+          </div>
+        </div>
+        <div class="flex gap-1 flex-shrink-0">
+          <button class="btn-template-edit text-xs text-brand hover:text-brand-dark px-2 py-1 rounded hover:bg-blue-100" data-id="${t.id}">Edit</button>
+          <button class="btn-template-del text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50" data-id="${t.id}">×</button>
+        </div>
+      </div>
+    `;
+    div.querySelector('.btn-template-edit').addEventListener('click', () => openTemplateEditor(t.id));
+    div.querySelector('.btn-template-del').addEventListener('click', () => deleteTemplate(t.id));
+    host.appendChild(div);
+  });
+}
+
+function _populateTemplateSelect() {
+  const sel = el('sel-apply-template');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— choose template —</option>';
+  _clashesState.templates.forEach(t => sel.add(new Option(t.name, t.id)));
+  if (current && sel.querySelector(`option[value="${current}"]`)) sel.value = current;
+}
+
+// ── Template editor modal ─────────────────────────────────────────────────────
+
+function openTemplateEditor(templateId) {
+  const t = templateId ? _clashesState.templates.find(x => x.id === templateId) : null;
+  el('template-modal-title').textContent = t ? 'Edit Template' : 'New Clash Template';
+  el('template-edit-id').value          = t?.id ?? '';
+  el('template-edit-name').value        = t?.name ?? '';
+  el('template-edit-desc').value        = t?.description ?? '';
+  el('template-edit-company').value     = t?.companyName ?? '';
+  el('template-edit-assignee').value    = t?.assigneeName ?? '';
+  el('template-edit-location').value    = t?.location ?? '';
+  el('template-edit-due').value         = t?.dueDateOffsetDays ?? 14;
+  el('template-edit-custom-pattern').value = t?.customPattern ?? '';
+
+  const atType = t?.assigneeType ?? 'company';
+  document.querySelector(`input[name="template-assignee-type"][value="${atType}"]`).checked = true;
+  _updateAssigneeRows(atType);
+
+  const namingId = t?.namingPatternId ?? 'level-test-sel';
+  const radioEl = document.querySelector(`input[name="template-naming"][value="${namingId}"]`);
+  if (radioEl) radioEl.checked = true;
+
+  el('btn-template-delete').classList.toggle('hidden', !t);
+  _updateNamingPreviews();
+  el('template-modal').classList.remove('hidden');
+}
+
+function _updateAssigneeRows(type) {
+  el('template-company-row').classList.toggle('hidden', type !== 'company');
+  el('template-individual-row').classList.toggle('hidden', type !== 'individual');
+}
+
+function _updateNamingPreviews() {
+  const custom = el('template-edit-custom-pattern').value;
+  el('tpl-preview-1').textContent = '→ ' + _namingPreview('level-test-sel', '');
+  el('tpl-preview-2').textContent = '→ ' + _namingPreview('test-disc-seq', '');
+  el('tpl-preview-custom').textContent = custom ? '→ ' + _namingPreview('custom', custom) : '';
+}
+
+async function saveTemplate() {
+  const name = el('template-edit-name').value.trim();
+  if (!name) { toast('Template name required', 'error'); return; }
+
+  const atType = document.querySelector('input[name="template-assignee-type"]:checked')?.value ?? 'company';
+  const namingId = document.querySelector('input[name="template-naming"]:checked')?.value ?? 'level-test-sel';
+
+  const id = el('template-edit-id').value || `tmpl-${Date.now()}`;
+  const tpl = {
+    id,
+    name,
+    description:      el('template-edit-desc').value.trim(),
+    assigneeType:     atType,
+    companyName:      atType === 'company'     ? el('template-edit-company').value.trim()  : '',
+    assigneeName:     atType === 'individual'  ? el('template-edit-assignee').value.trim() : '',
+    location:         el('template-edit-location').value.trim(),
+    dueDateOffsetDays: parseInt(el('template-edit-due').value, 10) || 14,
+    namingPatternId:  namingId,
+    customPattern:    namingId === 'custom' ? el('template-edit-custom-pattern').value.trim() : '',
+  };
+
+  const existing = _clashesState.templates.find(x => x.id === id);
+  if (existing) Object.assign(existing, tpl);
+  else _clashesState.templates.push(tpl);
+
+  await _saveTemplates();
+  el('template-modal').classList.add('hidden');
+  toast(`Template "${name}" saved`);
+  renderClashTemplatesList();
+  _populateTemplateSelect();
+}
+
+async function deleteTemplate(id) {
+  _clashesState.templates = _clashesState.templates.filter(t => t.id !== id);
+  await _saveTemplates();
+  renderClashTemplatesList();
+  _populateTemplateSelect();
+  el('template-modal').classList.add('hidden');
+  toast('Template deleted');
+}
+
+async function _saveTemplates() {
+  try {
+    await api('PUT', '/api/config/clash-issue-templates', { templates: _clashesState.templates });
+  } catch (err) {
+    toast('Could not save templates: ' + err.message, 'error');
+  }
+}
+
+// ── Apply template to selected groups ────────────────────────────────────────
+
+function applyTemplateToSelected() {
+  const templateId = el('sel-apply-template').value;
+  const tpl = _clashesState.templates.find(t => t.id === templateId);
+  if (!tpl) { toast('Select a template first', 'error'); return; }
+
+  const dueDate = new Date();
+  dueDate.setDate(dueDate.getDate() + (tpl.dueDateOffsetDays || 14));
+  const dueDateStr = dueDate.toISOString().slice(0, 10);
+
+  let seq = 0;
+  const groups = _filteredGroups();
+  for (const g of groups) {
+    const id = g.id ?? g.groupId ?? g.clashGroupId;
+    if (!_clashesState.selected.has(id)) continue;
+    seq++;
+    const title = _applyNamingPattern(tpl.namingPatternId, {
+      level:      tpl.location,
+      testName:   g._testName ?? '',
+      selA:       g.selectionAName ?? g.modelAName ?? '',
+      selB:       g.selectionBName ?? g.modelBName ?? '',
+      discipline: g.discipline ?? g.disciplines?.[0] ?? '',
+      sequence:   seq,
+    }, tpl.customPattern);
+
+    _clashesState.assignments[id] = {
+      company:  tpl.companyName,
+      assignee: tpl.assigneeName,
+      dueDate:  dueDateStr,
+      title,
+      templateId: tpl.id,
+    };
+  }
+
+  renderClashGroupsList();
+  toast(`Template "${tpl.name}" applied to ${_clashesState.selected.size} group(s)`);
+}
+
+// ── Push as ACC Issues ────────────────────────────────────────────────────────
+
+function openPushPreview() {
+  const selectedGroups = _filteredGroups().filter(g => {
+    const id = g.id ?? g.groupId ?? g.clashGroupId;
+    return _clashesState.selected.has(id);
+  });
+
+  if (!selectedGroups.length) { toast('Select clash groups first', 'error'); return; }
+
+  const previewList = el('push-preview-list');
+  previewList.innerHTML = '';
+
+  let warned = false;
+  selectedGroups.forEach(g => {
+    const id     = g.id ?? g.groupId ?? g.clashGroupId;
+    const assign = _clashesState.assignments[id];
+    const title  = assign?.title ?? g.name ?? `Clash Group ${id}`;
+
+    if (!assign && !warned) {
+      warned = true;
+    }
+
+    const row = document.createElement('div');
+    row.className = 'px-3 py-2 flex flex-col gap-1';
+    row.innerHTML = `
+      <p class="font-semibold text-slate-800">${escapeHtml(title)}</p>
+      <div class="flex flex-wrap gap-2 text-xs text-slate-500">
+        <span>Test: ${escapeHtml(g._testName ?? '—')}</span>
+        <span>Clashes: ${g.clashCount ?? g.count ?? '—'}</span>
+        ${assign?.company ? `<span class="text-emerald-600">🏢 ${escapeHtml(assign.company)}</span>` : '<span class="text-amber-500">⚠ No company</span>'}
+        ${assign?.dueDate ? `<span>📅 ${assign.dueDate}</span>` : ''}
+      </div>
+    `;
+    previewList.appendChild(row);
+  });
+
+  el('push-progress').classList.add('hidden');
+  el('btn-push-confirm').disabled = false;
+  el('push-preview-modal').classList.remove('hidden');
+}
+
+async function confirmPushIssues() {
+  const projectId = el('inp-project-id')?.value.trim();
+  if (!projectId) { toast('Set Project ID on the Connect tab first', 'error'); return; }
+
+  const selectedGroups = _filteredGroups().filter(g => {
+    const id = g.id ?? g.groupId ?? g.clashGroupId;
+    return _clashesState.selected.has(id);
+  });
+
+  el('btn-push-confirm').disabled = true;
+  const progress = el('push-progress');
+  const bar = el('push-progress-bar');
+  const label = el('push-progress-label');
+  progress.classList.remove('hidden');
+
+  let done = 0;
+  const total = selectedGroups.length;
+  const errors = [];
+
+  // Load issue types once
+  let issueTypeId = null;
+  let issueSubtypeId = null;
+  try {
+    const types = await api('GET', `/api/issues/types?projectId=${encodeURIComponent(projectId)}`);
+    const typeList = types?.results ?? types?.data ?? [];
+    const clashType = typeList.find(t => /clash/i.test(t.title ?? t.name ?? '')) ?? typeList[0];
+    issueTypeId = clashType?.id;
+    issueSubtypeId = clashType?.subtypes?.[0]?.id;
+  } catch (_) {}
+
+  for (const g of selectedGroups) {
+    const id     = g.id ?? g.groupId ?? g.clashGroupId;
+    const assign = _clashesState.assignments[id];
+    const title  = assign?.title ?? g.name ?? `Clash Group ${id}`;
+
+    try {
+      const body = {
+        title,
+        description: `Clash group from test: ${g._testName ?? ''}. Group ID: ${id}. Clashes: ${g.clashCount ?? '—'}.`,
+        status: 'open',
+        due_date: assign?.dueDate ?? undefined,
+        assigned_to_name: assign?.assignee || assign?.company || undefined,
+        issue_subtype_id: issueSubtypeId ?? undefined,
+      };
+      await api('POST', `/api/issues?projectId=${encodeURIComponent(projectId)}`, body);
+    } catch (err) {
+      errors.push(`${title}: ${err.message}`);
+    }
+
+    done++;
+    const pct = Math.round((done / total) * 100);
+    bar.style.width = `${pct}%`;
+    label.textContent = `${done} / ${total}`;
+  }
+
+  if (errors.length) {
+    toast(`${done - errors.length} pushed, ${errors.length} failed`, 'error');
+  } else {
+    toast(`${done} issue${done !== 1 ? 's' : ''} created in ACC`, 'success');
+    el('push-preview-modal').classList.add('hidden');
+    _clashesState.selected.clear();
+    renderClashGroupsList();
+    _issuesState.loaded = false; // force reload when issues tab is next visited
+  }
+  el('btn-push-confirm').disabled = false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Issues tab — ACC Construction Issues v1
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -4166,6 +4746,46 @@ async function init() {
   renderRecentModels();
   // Try to populate views list once (silent if unauthenticated)
   reloadViewsList().catch(() => {});
+
+  // Clashes tab
+  el('btn-load-clash-groups').addEventListener('click', loadClashGroups);
+  el('btn-new-template').addEventListener('click', () => openTemplateEditor(null));
+  el('btn-apply-template').addEventListener('click', applyTemplateToSelected);
+  el('btn-push-issues').addEventListener('click', openPushPreview);
+  el('btn-template-save').addEventListener('click', saveTemplate);
+  el('btn-template-cancel').addEventListener('click', () => el('template-modal').classList.add('hidden'));
+  el('btn-template-modal-close').addEventListener('click', () => el('template-modal').classList.add('hidden'));
+  el('btn-template-delete').addEventListener('click', () => {
+    const id = el('template-edit-id').value;
+    if (id) deleteTemplate(id);
+  });
+  el('btn-push-confirm').addEventListener('click', confirmPushIssues);
+  el('btn-push-cancel').addEventListener('click', () => el('push-preview-modal').classList.add('hidden'));
+  el('btn-push-preview-close').addEventListener('click', () => el('push-preview-modal').classList.add('hidden'));
+  el('chk-clashes-all').addEventListener('change', e => {
+    const groups = _filteredGroups();
+    groups.forEach(g => {
+      const id = g.id ?? g.groupId ?? g.clashGroupId;
+      if (e.target.checked) _clashesState.selected.add(id);
+      else _clashesState.selected.delete(id);
+    });
+    renderClashGroupsList();
+  });
+  el('sel-clashes-test').addEventListener('change', e => {
+    _clashesState.filterTestId = e.target.value;
+    renderClashGroupsList();
+  });
+  el('inp-clashes-search').addEventListener('input', e => {
+    _clashesState.filterText = e.target.value;
+    renderClashGroupsList();
+  });
+  document.querySelectorAll('input[name="template-assignee-type"]').forEach(r => {
+    r.addEventListener('change', e => _updateAssigneeRows(e.target.value));
+  });
+  document.querySelectorAll('input[name="template-naming"]').forEach(r => {
+    r.addEventListener('change', _updateNamingPreviews);
+  });
+  el('template-edit-custom-pattern').addEventListener('input', _updateNamingPreviews);
 
   // Issues tab
   el('btn-load-issues').addEventListener('click', loadIssues);
