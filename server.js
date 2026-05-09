@@ -962,14 +962,25 @@ app.get('/api/models/viewer-urn', async (req, res) => {
 /** List all projects in the connected ACC hub */
 app.get('/api/hub/projects', async (req, res) => {
   try {
-    const rawHubId = req.query.hubId || process.env.ACC_ACCOUNT_ID || '';
-    const hubId = rawHubId.replace(/^b\./, '');
-    if (!hubId) return res.status(400).json({ error: 'hubId required (or set ACC_ACCOUNT_ID)' });
+    const rawHubId = req.query.hubId || readEnv().ACC_ACCOUNT_ID || '';
+    let hubId = rawHubId.replace(/^b\./, '');
     const client = await makeAPSClient();
+
+    // Auto-discover hub when ACC_ACCOUNT_ID is not configured
+    if (!hubId) {
+      const hubsResp = await client.get('https://developer.api.autodesk.com/project/v1/hubs');
+      const hubList = hubsResp?.data ?? [];
+      if (!hubList.length) return res.status(404).json({ error: 'No hubs found. Sign in with a user account that belongs to an ACC hub.' });
+      // Prefer ACC hubs (id starts with "b.") over BIM360
+      const accHub = hubList.find(h => h.id?.startsWith('b.')) ?? hubList[0];
+      hubId = accHub.id.replace(/^b\./, '');
+    }
+
     const data = await client.get(
       `https://developer.api.autodesk.com/project/v1/hubs/b.${hubId}/projects?pageNumber=0&pageLimit=100`
     );
-    res.json(data);
+    // Include discovered hub ID so the client can persist it
+    res.json({ ...data, _hubId: hubId });
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
   }

@@ -360,6 +360,13 @@ async function loadCoordinationSpaces() {
     } else {
       showCoordSpaceInfo(`${sets.length} coordination space(s) available`);
       toast(`Loaded ${sets.length} coordination space(s)`);
+
+      // Auto-select the first space when nothing was selected before
+      if (!previousValue) {
+        const firstId = sets[0].id ?? sets[0].modelSetId;
+        sels.forEach(sel => { if (sel) sel.value = firstId; });
+        await onCoordSpaceChange();
+      }
     }
   } catch (err) {
     const clientId = el('inp-client-id').value.trim() || '(your APS Client ID)';
@@ -2586,6 +2593,19 @@ async function loadHubProjects() {
   try {
     const data = await api('GET', '/api/hub/projects');
     _hubProjects = data?.data ?? [];
+
+    // If hub ID was auto-discovered, persist it so future calls don't need to re-discover
+    if (data?._hubId) {
+      const currentAccId = el('inp-account-id')?.value?.trim();
+      if (!currentAccId) {
+        el('inp-account-id').value = data._hubId;
+        try {
+          await api('POST', '/api/config/env', { ACC_ACCOUNT_ID: data._hubId });
+          if (State.config?.env) State.config.env.ACC_ACCOUNT_ID = data._hubId;
+        } catch { /* non-critical */ }
+      }
+    }
+
     renderHubProjects(_hubProjects);
 
     const accCount   = _hubProjects.filter(p => (p.attributes?.projectType ?? '').toUpperCase().includes('ACC')).length;
@@ -2690,25 +2710,36 @@ function formatRelativeDate(iso) {
   } catch { return ''; }
 }
 
-function switchHubProject(projectId, projectName) {
-  el('inp-project-id').value = projectId;
-  // Reset container + folder since they're project-specific
-  el('inp-container-id').value = '';
+async function switchHubProject(projectId, projectName) {
+  // Populate Connect-tab fields
+  el('inp-project-id').value   = projectId;
+  // For ACC v3, MC Container ID equals the Project ID
+  el('inp-container-id').value = projectId;
+  // Reset folder since it's project-specific
   el('inp-folder-urn').value   = '';
   el('folder-urn-row').classList.add('hidden');
-  // Reset the folder tree
   const folderTree = el('folder-tree');
   if (folderTree) folderTree.innerHTML = '';
   el('folder-tree-container')?.classList.add('hidden');
   const nameSpan = el('selected-folder-name');
   if (nameSpan) { nameSpan.textContent = 'No folder selected'; nameSpan.className = 'text-sm text-slate-500 flex-1 truncate'; }
   el('hub-stat-active').textContent = projectName;
-
-  // Re-render cards to update active state
   renderHubProjects(_hubProjects);
 
-  navigate('connect');
-  toast(`Switched to "${projectName}" — save credentials to persist`);
+  // Persist project + container IDs, then jump straight to coordination
+  try {
+    await api('POST', '/api/config/env', { ACC_PROJECT_ID: projectId, MC_CONTAINER_ID: projectId });
+    if (State.config?.env) {
+      State.config.env.ACC_PROJECT_ID  = projectId;
+      State.config.env.MC_CONTAINER_ID = projectId;
+    }
+    toast(`Switched to "${projectName}" — loading coordination spaces…`);
+    navigate('coordination');
+    await loadCoordinationSpaces();
+  } catch (err) {
+    toast(`Switched to "${projectName}" — save credentials on the Connect tab to persist`, 'warn');
+    navigate('connect');
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4691,11 +4722,16 @@ async function loadAuthStatus() {
     if (params.get('auth') === 'success') {
       toast('Service account signed in successfully', 'success');
       window.history.replaceState({}, '', '/');
+      // Go straight to Hub Projects so the user can pick a project
+      navigate('hub');
+      loadHubProjects();
     } else if (params.get('auth') === 'error') {
       toast('Sign-in failed: ' + (params.get('msg') || 'Unknown error'), 'error');
       window.history.replaceState({}, '', '/');
     }
-  } catch { /* non-critical */ }
+
+    return status;
+  } catch { return null; /* non-critical */ }
 }
 
 function renderAuthStatus(status) {
@@ -4772,8 +4808,8 @@ async function init() {
     el('conn-label').textContent = 'Credentials loaded';
   }
 
-  // Load service account auth status
-  loadAuthStatus();
+  // Load service account auth status (await so we know whether user is logged in)
+  const _initAuthStatus = await loadAuthStatus();
 
   // Load capabilities panel
   loadCapabilities();
@@ -5077,8 +5113,13 @@ async function init() {
     }
   });
 
-  // Start on Connect tab
-  navigate('connect');
+  // Start on Hub Projects if already signed in, otherwise Connect tab
+  if (_initAuthStatus?.loggedIn) {
+    navigate('hub');
+    loadHubProjects();
+  } else {
+    navigate('connect');
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);
