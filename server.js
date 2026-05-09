@@ -2756,6 +2756,15 @@ app.post('/api/issues/:id/comments', async (req, res) => {
   }
 });
 
+app.get('/api/issues/:id/attachments', async (req, res) => {
+  try {
+    const data = await (await buildIssuesClient(req)).listAttachments(req.params.id);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Routes — Coordination Assignments (discipline mapping, clash includes, alignments)
 // ─────────────────────────────────────────────────────────────────────────────

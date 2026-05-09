@@ -70,4 +70,8 @@ export class IssuesClient {
   async addComment(issueId, body) {
     return this._client.post(`${BASE}/projects/${this._projectId}/issues/${issueId}/comments`, { body });
   }
+
+  async listAttachments(issueId) {
+    return this._client.get(`${BASE}/projects/${this._projectId}/issues/${issueId}/attachments`);
+  }
 }
