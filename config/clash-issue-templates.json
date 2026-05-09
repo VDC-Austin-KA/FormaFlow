@@ -1,0 +1,28 @@
+{
+  "templates": [
+    {
+      "id": "tmpl-elec",
+      "name": "Electrical Clash",
+      "description": "Assign electrical clashes to the MEP contractor with 14-day resolution window",
+      "assigneeType": "company",
+      "companyName": "",
+      "assigneeName": "",
+      "location": "",
+      "dueDateOffsetDays": 14,
+      "namingPatternId": "level-test-sel",
+      "customPattern": ""
+    },
+    {
+      "id": "tmpl-struct",
+      "name": "Structural Clash",
+      "description": "Assign structural clashes with 21-day resolution window",
+      "assigneeType": "company",
+      "companyName": "",
+      "assigneeName": "",
+      "location": "",
+      "dueDateOffsetDays": 21,
+      "namingPatternId": "test-disc-seq",
+      "customPattern": ""
+    }
+  ]
+}

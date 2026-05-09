@@ -93,6 +93,14 @@
       </svg>
       Clash Tests
     </button>
+    <button class="nav-item" data-tab="clashes">
+      <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
+          d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+      </svg>
+      Clashes
+      <span id="badge-clashes" class="nav-badge hidden"></span>
+    </button>
     <button class="nav-item" data-tab="issues">
       <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -1156,6 +1164,246 @@
       <div class="mt-4">
         <button id="btn-save-clashes" class="btn-primary">Save Clash Config</button>
       </div>
+    </div>
+
+    <!-- ══════════════════════════════ TAB: CLASHES ════════════════════ -->
+    <div id="tab-clashes" class="tab-panel hidden p-6">
+
+      <!-- Toolbar -->
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+        <div class="flex flex-wrap items-center gap-2">
+          <select id="sel-clashes-test" class="field-input text-sm py-1.5 w-52">
+            <option value="">All Clash Tests</option>
+          </select>
+          <input id="inp-clashes-search" type="text" placeholder="Search groups…"
+            class="field-input text-sm py-1.5 w-48"/>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="btn-load-clash-groups" class="btn-primary text-sm">Load Clash Groups</button>
+        </div>
+      </div>
+
+      <!-- Inline error -->
+      <div id="clashes-error" class="hidden mb-4 p-3 rounded text-sm bg-amber-50 border border-amber-300 text-amber-900">
+        <p id="clashes-error-msg" class="font-medium"></p>
+        <p id="clashes-error-hint" class="text-xs mt-1 text-amber-800"></p>
+      </div>
+
+      <!-- Body: groups table (left) + templates panel (right) -->
+      <div class="grid grid-cols-1 xl:grid-cols-5 gap-5">
+
+        <!-- ── Clash Groups Table ───────────────────────────────────────── -->
+        <div class="xl:col-span-3 flex flex-col gap-3">
+          <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div class="px-4 py-2.5 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+              <div class="flex items-center gap-3">
+                <label class="flex items-center gap-1.5 cursor-pointer">
+                  <input id="chk-clashes-all" type="checkbox" class="w-3.5 h-3.5 rounded cursor-pointer"/>
+                  <span class="text-xs font-semibold text-slate-700">Clash Groups</span>
+                </label>
+                <span id="clashes-count" class="text-xs text-slate-500"></span>
+              </div>
+              <span id="clashes-selected-label" class="text-xs text-brand font-semibold hidden"></span>
+            </div>
+            <div id="clashes-list" class="overflow-y-auto divide-y divide-slate-100" style="max-height:36rem">
+              <div class="p-8 text-center text-slate-400 text-sm">
+                Click <strong>Load Clash Groups</strong> to fetch from Model Coordination
+              </div>
+            </div>
+          </div>
+
+          <!-- Selection action bar -->
+          <div id="clashes-action-bar" class="hidden bg-white rounded-xl border border-brand/30 p-3 flex flex-wrap items-center gap-3 shadow-sm">
+            <span id="clashes-sel-count" class="text-sm font-semibold text-slate-700 flex-shrink-0"></span>
+            <div class="flex-1 flex flex-wrap items-center gap-2">
+              <select id="sel-apply-template" class="field-input text-sm py-1.5 flex-1 min-w-40">
+                <option value="">— choose template —</option>
+              </select>
+              <button id="btn-apply-template" class="btn-secondary text-sm">Apply Template</button>
+              <button id="btn-push-issues" class="btn-primary text-sm">
+                <svg class="w-3.5 h-3.5 inline -mt-0.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                </svg>
+                Push as Issues
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Templates Panel ─────────────────────────────────────────── -->
+        <div class="xl:col-span-2 flex flex-col gap-4">
+
+          <!-- Saved templates list -->
+          <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div class="px-4 py-2.5 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+              <h3 class="text-xs font-semibold text-slate-700">Clash Issue Templates</h3>
+              <button id="btn-new-template" class="text-xs text-brand font-semibold hover:text-brand-dark">+ New</button>
+            </div>
+            <div id="templates-list" class="p-3 space-y-2 overflow-y-auto" style="max-height:20rem">
+              <div class="p-4 text-center text-slate-400 text-xs">No templates yet — click + New to create one</div>
+            </div>
+          </div>
+
+          <!-- Naming patterns reference card -->
+          <div class="bg-slate-50 rounded-xl border border-slate-200 p-4">
+            <h4 class="text-xs font-semibold text-slate-700 mb-2">Naming Pattern Reference</h4>
+            <div class="space-y-2 text-xs text-slate-600">
+              <div class="flex items-start gap-2">
+                <span class="font-mono bg-white border border-slate-200 rounded px-1.5 py-0.5 text-slate-700 flex-shrink-0">Pattern 1</span>
+                <div>
+                  <p class="font-medium">Level · Test · Selections</p>
+                  <p class="text-slate-400 font-mono">"Level 1 | ARCH vs STRC | Walls vs Conduits"</p>
+                  <p class="text-brand font-mono">→ L01_A_vs_S_WLS_vs_CDT</p>
+                </div>
+              </div>
+              <div class="flex items-start gap-2">
+                <span class="font-mono bg-white border border-slate-200 rounded px-1.5 py-0.5 text-slate-700 flex-shrink-0">Pattern 2</span>
+                <div>
+                  <p class="font-medium">Test · Discipline · Sequence</p>
+                  <p class="text-slate-400 font-mono">"ARCH vs STRC | ELEC | 3rd group"</p>
+                  <p class="text-brand font-mono">→ A_vs_S_ELEC_003</p>
+                </div>
+              </div>
+              <div class="flex items-start gap-2">
+                <span class="font-mono bg-white border border-slate-200 rounded px-1.5 py-0.5 text-slate-700 flex-shrink-0">Custom</span>
+                <div>
+                  <p class="font-medium">Tokens: <code class="bg-white border border-slate-200 px-1 rounded">{L} {T} {A} {B} {D} {seq}</code></p>
+                  <p class="text-slate-400">L=Level, T=Test, A/B=Selections, D=Discipline, seq=sequence</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Template Editor Modal ───────────────────────────────────── -->
+      <div id="template-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+        <div class="modal-panel" style="max-width:540px">
+          <div class="modal-header">
+            <h3 id="template-modal-title" class="card-title">New Clash Template</h3>
+            <button id="btn-template-modal-close" class="modal-close" aria-label="Close">×</button>
+          </div>
+          <div class="modal-body space-y-4">
+            <input type="hidden" id="template-edit-id"/>
+
+            <div class="grid grid-cols-2 gap-3">
+              <div class="field-row col-span-2">
+                <label class="field-label">Template Name <span class="text-red-500">*</span></label>
+                <input id="template-edit-name" type="text" class="field-input" placeholder="e.g. Electrical Clash"/>
+              </div>
+              <div class="field-row col-span-2">
+                <label class="field-label">Description</label>
+                <input id="template-edit-desc" type="text" class="field-input" placeholder="Short description…"/>
+              </div>
+            </div>
+
+            <div class="border-t border-slate-100 pt-3">
+              <p class="text-xs font-semibold text-slate-700 mb-2">Assignee</p>
+              <div class="flex gap-4 mb-3 text-sm">
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="template-assignee-type" value="company" id="template-at-company" checked class="w-3.5 h-3.5"/>
+                  Company
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="template-assignee-type" value="individual" id="template-at-individual" class="w-3.5 h-3.5"/>
+                  Individual
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="template-assignee-type" value="none" id="template-at-none" class="w-3.5 h-3.5"/>
+                  None
+                </label>
+              </div>
+              <div id="template-company-row" class="field-row">
+                <label class="field-label">Company Name</label>
+                <input id="template-edit-company" type="text" class="field-input" placeholder="e.g. ABC Electrical Ltd"/>
+              </div>
+              <div id="template-individual-row" class="field-row hidden">
+                <label class="field-label">Assignee Name / Email</label>
+                <input id="template-edit-assignee" type="text" class="field-input" placeholder="e.g. john.smith@example.com"/>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3 border-t border-slate-100 pt-3">
+              <div class="field-row">
+                <label class="field-label">Level / Location</label>
+                <input id="template-edit-location" type="text" class="field-input" placeholder="e.g. Level 1"/>
+              </div>
+              <div class="field-row">
+                <label class="field-label">Due Date Offset (days)</label>
+                <input id="template-edit-due" type="number" min="1" max="365" class="field-input" value="14"/>
+              </div>
+            </div>
+
+            <div class="border-t border-slate-100 pt-3">
+              <p class="text-xs font-semibold text-slate-700 mb-2">Naming Pattern</p>
+              <div class="space-y-2">
+                <label class="flex items-start gap-3 p-2.5 rounded-lg border border-slate-200 cursor-pointer hover:border-brand/40 has-[:checked]:border-brand has-[:checked]:bg-blue-50">
+                  <input type="radio" name="template-naming" value="level-test-sel" class="mt-0.5 w-3.5 h-3.5 flex-shrink-0"/>
+                  <div class="text-xs">
+                    <p class="font-medium text-slate-800">Level · Test · Selections</p>
+                    <p class="text-slate-400 font-mono mt-0.5">{L}_{T}_{A}vs{B}</p>
+                    <p id="tpl-preview-1" class="text-brand font-mono mt-0.5"></p>
+                  </div>
+                </label>
+                <label class="flex items-start gap-3 p-2.5 rounded-lg border border-slate-200 cursor-pointer hover:border-brand/40 has-[:checked]:border-brand has-[:checked]:bg-blue-50">
+                  <input type="radio" name="template-naming" value="test-disc-seq" class="mt-0.5 w-3.5 h-3.5 flex-shrink-0"/>
+                  <div class="text-xs">
+                    <p class="font-medium text-slate-800">Test · Discipline · Sequence</p>
+                    <p class="text-slate-400 font-mono mt-0.5">{T}_{D}_{seq}</p>
+                    <p id="tpl-preview-2" class="text-brand font-mono mt-0.5"></p>
+                  </div>
+                </label>
+                <label class="flex items-start gap-3 p-2.5 rounded-lg border border-slate-200 cursor-pointer hover:border-brand/40 has-[:checked]:border-brand has-[:checked]:bg-blue-50">
+                  <input type="radio" name="template-naming" value="custom" class="mt-0.5 w-3.5 h-3.5 flex-shrink-0"/>
+                  <div class="text-xs flex-1">
+                    <p class="font-medium text-slate-800">Custom Pattern</p>
+                    <input id="template-edit-custom-pattern" type="text" class="field-input font-mono text-xs mt-1 w-full"
+                      placeholder="{L}_{T}_{A}vs{B}_{seq}"/>
+                    <p id="tpl-preview-custom" class="text-brand font-mono mt-1"></p>
+                  </div>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer flex gap-2 justify-end p-4 border-t border-slate-200">
+            <button id="btn-template-delete" class="btn-danger text-xs mr-auto hidden">Delete</button>
+            <button id="btn-template-cancel" class="btn-secondary text-sm">Cancel</button>
+            <button id="btn-template-save" class="btn-primary text-sm">Save Template</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Push Preview Modal ──────────────────────────────────────── -->
+      <div id="push-preview-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+        <div class="modal-panel" style="max-width:600px">
+          <div class="modal-header">
+            <h3 class="card-title">Push Clash Groups as ACC Issues</h3>
+            <button id="btn-push-preview-close" class="modal-close" aria-label="Close">×</button>
+          </div>
+          <div class="modal-body space-y-3">
+            <p class="text-sm text-slate-600">The following issues will be created in ACC. Review before pushing.</p>
+            <div id="push-preview-list" class="max-h-80 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100 text-xs"></div>
+            <div id="push-progress" class="hidden">
+              <div class="flex items-center gap-2 mb-2">
+                <div id="push-progress-bar-wrap" class="flex-1 bg-slate-200 rounded-full h-1.5">
+                  <div id="push-progress-bar" class="bg-brand rounded-full h-1.5 transition-all" style="width:0%"></div>
+                </div>
+                <span id="push-progress-label" class="text-xs text-slate-500 flex-shrink-0"></span>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer flex gap-2 justify-end p-4 border-t border-slate-200">
+            <button id="btn-push-cancel" class="btn-secondary text-sm">Cancel</button>
+            <button id="btn-push-confirm" class="btn-primary text-sm">
+              <svg class="w-3.5 h-3.5 inline -mt-0.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+              </svg>
+              Confirm &amp; Push
+            </button>
+          </div>
+        </div>
+      </div>
+
     </div>
 
     <!-- ══════════════════════════════ TAB: SETTINGS ════════════════════ -->

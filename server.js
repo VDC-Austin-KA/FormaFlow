@@ -1031,6 +1031,21 @@ app.put('/api/config/workflow', (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.get('/api/config/clash-issue-templates', (_req, res) => {
+  try {
+    const tplPath = resolve(CONFIG_DIR, 'clash-issue-templates.json');
+    const raw = existsSync(tplPath)
+      ? JSON.parse(readFileSync(tplPath, 'utf8'))
+      : { templates: [] };
+    res.json(raw);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/config/clash-issue-templates', (req, res) => {
+  try { writeConfig('clash-issue-templates.json', req.body); res.json({ ok: true }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Routes — ACC Admin (project access management)
