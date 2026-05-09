@@ -70,7 +70,7 @@ async function main() {
   // ── 2. Resolve model set ───────────────────────────────────────────────
   logger.info('Fetching model sets from container...');
   const modelSetsResponse = await mcClient.listModelSets();
-  const modelSets = modelSetsResponse?.data ?? modelSetsResponse ?? [];
+  const modelSets = modelSetsResponse?.modelSets ?? modelSetsResponse?.data ?? (Array.isArray(modelSetsResponse) ? modelSetsResponse : []);
 
   if (!modelSets.length) {
     logger.error('No model sets found in container %s', process.env.MC_CONTAINER_ID);
@@ -84,14 +84,14 @@ async function main() {
 
   // ── 3. Get latest version ─────────────────────────────────────────────
   const versionsResponse = await mcClient.getModelSetVersions(modelSetId);
-  const versions = versionsResponse?.data ?? versionsResponse ?? [];
+  const versions = versionsResponse?.modelSetVersions ?? versionsResponse?.data ?? versionsResponse ?? [];
   const latestVersion = versions[versions.length - 1];
-  const versionIndex = latestVersion?.versionIndex ?? latestVersion?.index ?? 1;
+  const versionIndex = latestVersion?.version ?? latestVersion?.versionIndex ?? latestVersion?.index ?? 1;
   logger.info('Latest model set version: %d', versionIndex);
 
   // ── 4. Extract model descriptors via Model Derivative ─────────────────
   logger.info('Extracting model properties for discipline identification...');
-  const documents = latestVersion?.documents ?? [];
+  const documents = latestVersion?.documentVersions ?? latestVersion?.documents ?? [];
 
   if (!documents.length) {
     logger.warn('No documents found in version %d — using filename-only classification', versionIndex);
