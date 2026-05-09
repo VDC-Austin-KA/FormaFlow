@@ -1565,7 +1565,7 @@ app.get('/api/mc/modelsets/:id/views', async (req, res) => {
   try {
     const mc = await buildMcClient(req);
     const raw = await mc.listModelSetViews(req.params.id);
-    const data = raw?.views ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
+    const data = raw?.modelSetViews ?? raw?.views ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
     res.json({ data });
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
@@ -1612,13 +1612,13 @@ app.get('/api/mc/space-documents', async (req, res) => {
     const mc = await buildMcClient(req);
 
     const versResp = await mc.getModelSetVersions(modelSetId);
-    const versions = toArray(versResp, 'versions');
+    const versions = toArray(versResp, 'modelSetVersions', 'versions');
     const latest   = versions[versions.length - 1];
     // Default to 1 like the workflow does. Some MC API responses omit the
-    // versionIndex field on the lightweight version object even though
+    // version field on the lightweight version object even though
     // version 1 exists; without this default the UI silently shows 0 documents
     // while the workflow still finds them via the full-manifest fallback.
-    const versionIndex = latest?.versionIndex ?? latest?.index ?? 1;
+    const versionIndex = latest?.version ?? latest?.versionIndex ?? latest?.index ?? 1;
 
     // The versions-list endpoint often returns lightweight objects without documents[].
     // Always try the full-manifest endpoint when the lightweight shape is empty —
@@ -1667,11 +1667,11 @@ app.get('/api/mc/clash-tests', async (req, res) => {
     const mc = await buildMcClient(req);
 
     const versResp = await mc.getModelSetVersions(modelSetId);
-    const versions = toArray(versResp, 'versions');
+    const versions = toArray(versResp, 'modelSetVersions', 'versions');
     const latest   = versions[versions.length - 1];
     if (!latest) return res.json({ versionIndex: null, tests: [] });
 
-    const versionIndex = latest.versionIndex ?? 1;
+    const versionIndex = latest?.version ?? latest?.versionIndex ?? 1;
     const data = await mc.listClashTests(modelSetId, versionIndex);
     res.json({ versionIndex, tests: toArray(data, 'tests', 'clashTests') });
   } catch (err) {
@@ -1679,17 +1679,176 @@ app.get('/api/mc/clash-tests', async (req, res) => {
   }
 });
 
-/** Get clash groups for a specific test */
+/** Get clash groups for a specific test (all types — tries assigned, closed, then legacy paths) */
 app.get('/api/mc/clash-groups', async (req, res) => {
   try {
     const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
     const versionIndex = req.query.versionIndex;
     const testId = req.query.testId;
-    if (!modelSetId || !versionIndex || !testId) {
-      return res.status(400).json({ error: 'modelSetId, versionIndex, testId required' });
+    if (!modelSetId || !testId) {
+      return res.status(400).json({ error: 'modelSetId and testId required' });
     }
     const mc = await buildMcClient(req);
-    const data = await mc.getGroupedClashes(modelSetId, parseInt(versionIndex, 10), testId);
+    const data = await mc.getGroupedClashes(modelSetId, parseInt(versionIndex, 10) || 1, testId);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Get CLOSED clash groups for a specific test (dismissed/resolved groups) */
+app.get('/api/mc/clash-groups/closed', async (req, res) => {
+  try {
+    const testId = req.query.testId;
+    if (!testId) return res.status(400).json({ error: 'testId required' });
+    const mc = await buildMcClient(req);
+    const data = await mc.getClosedClashGroups(testId, {
+      pageLimit:         req.query.pageLimit,
+      continuationToken: req.query.continuationToken,
+    });
+    const groups = data?.groups ?? (Array.isArray(data) ? data : []);
+    res.json({ testId, groups, page: data?.page ?? null, modelSetId: data?.modelSetId, modelSetVersion: data?.modelSetVersion });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Get ASSIGNED clash groups for a specific test (linked to ACC Issues) */
+app.get('/api/mc/clash-groups/assigned', async (req, res) => {
+  try {
+    const testId = req.query.testId;
+    if (!testId) return res.status(400).json({ error: 'testId required' });
+    const mc = await buildMcClient(req);
+    const data = await mc.getAssignedClashGroups(testId, {
+      pageLimit:         req.query.pageLimit,
+      continuationToken: req.query.continuationToken,
+    });
+    const groups = data?.groups ?? (Array.isArray(data) ? data : []);
+    res.json({ testId, groups, page: data?.page ?? null, modelSetId: data?.modelSetId, modelSetVersion: data?.modelSetVersion });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Get full issue details for a set of assigned clash group IDs */
+app.post('/api/mc/clash-groups/assigned/details', async (req, res) => {
+  try {
+    const testId   = req.query.testId ?? req.body?.testId;
+    const groupIds = req.body?.groupIds ?? (Array.isArray(req.body) ? req.body : null);
+    if (!testId)   return res.status(400).json({ error: 'testId required' });
+    if (!groupIds) return res.status(400).json({ error: 'groupIds array required in body' });
+    const mc = await buildMcClient(req);
+    const data = await mc.getAssignedClashGroupDetails(testId, groupIds);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** List closed clash groups model-set-wide */
+app.get('/api/mc/modelsets/:id/clashes/closed', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const data = await mc.listClosedClashGroups(req.params.id, {
+      pageLimit:         req.query.pageLimit,
+      continuationToken: req.query.continuationToken,
+      clashTestId:       req.query.clashTestId,
+      reason:            req.query.reason,
+      createdBy:         req.query.createdBy,
+      after:             req.query.after,
+      before:            req.query.before,
+      sort:              req.query.sort,
+    });
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** List assigned clash groups model-set-wide */
+app.get('/api/mc/modelsets/:id/clashes/assigned', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const data = await mc.listAssignedClashGroups(req.params.id, {
+      pageLimit:         req.query.pageLimit,
+      continuationToken: req.query.continuationToken,
+      clashTestId:       req.query.clashTestId,
+      issueId:           req.query.issueId,
+      createdBy:         req.query.createdBy,
+      after:             req.query.after,
+      before:            req.query.before,
+      sort:              req.query.sort,
+    });
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Create a model set view */
+app.post('/api/mc/modelsets/:id/views', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const data = await mc.createModelSetView(req.params.id, req.body);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Create a model set */
+app.post('/api/mc/modelsets', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const data = await mc.createModelSet(req.body);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Update a model set (name/description) */
+app.patch('/api/mc/modelsets/:id', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const data = await mc.updateModelSet(req.params.id, req.body);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Get model set versions list */
+app.get('/api/mc/modelsets/:id/versions', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const raw = await mc.getModelSetVersions(req.params.id, {
+      pageLimit:         req.query.pageLimit,
+      continuationToken: req.query.continuationToken,
+    });
+    const versions = toArray(raw, 'modelSetVersions', 'versions');
+    res.json({ versions, page: raw?.page ?? null });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Get a specific model set version (use 'latest' for the tip) */
+app.get('/api/mc/modelsets/:id/versions/:version', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const data = await mc.getModelSetVersion(req.params.id, req.params.version);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** Get clash group job status */
+app.get('/api/mc/clash-group-jobs/:jobId', async (req, res) => {
+  try {
+    const mc = await buildMcClient(req);
+    const data = await mc.getClashGroupJobStatus(req.params.jobId);
     res.json(data);
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
@@ -1706,9 +1865,9 @@ app.get('/api/mc/search-sets', async (req, res) => {
     let versionIndex = Number(req.query.versionIndex) || null;
     if (!versionIndex) {
       const versResp = await mc.getModelSetVersions(modelSetId);
-      const versions = toArray(versResp, 'versions');
+      const versions = toArray(versResp, 'modelSetVersions', 'versions');
       const latest   = versions[versions.length - 1];
-      versionIndex   = latest?.versionIndex ?? latest?.index ?? 1;
+      versionIndex   = latest?.version ?? latest?.versionIndex ?? latest?.index ?? 1;
     }
     try {
       const data = await mc.listSearchSets(modelSetId, versionIndex);
@@ -2008,9 +2167,9 @@ app.post('/api/mc/search-sets/import', async (req, res) => {
     // Try /searchsets first (legacy containers)
     try {
       const versResp = await mc.getModelSetVersions(modelSetId);
-      const versions = toArray(versResp, 'versions');
+      const versions = toArray(versResp, 'modelSetVersions', 'versions');
       const latest   = versions[versions.length - 1];
-      const versionIndex = latest?.versionIndex ?? latest?.index ?? 1;
+      const versionIndex = latest?.version ?? latest?.versionIndex ?? latest?.index ?? 1;
 
       const ssGen = new SearchSetGenerator(mc, {
         overwriteExisting: req.body?.overwrite ?? false,
@@ -2074,9 +2233,9 @@ app.get('/api/debug/searchsets-probe', async (req, res) => {
     try {
       const mc = new ModelCoordinationClient(client, containerId);
       const versResp = await mc.getModelSetVersions(modelSetId);
-      const versions = toArray(versResp, 'versions');
+      const versions = toArray(versResp, 'modelSetVersions', 'versions');
       const latest   = versions[versions.length - 1];
-      versionIndex   = latest?.versionIndex ?? latest?.index ?? 1;
+      versionIndex   = latest?.version ?? latest?.versionIndex ?? latest?.index ?? 1;
     } catch (_) { /* keep default 1 */ }
 
     // Expanded probe: all four bases × multiple sub-resource names.
@@ -2153,9 +2312,9 @@ app.get('/api/debug/modelset-raw', async (req, res) => {
     const out = {};
     try { out.modelSet      = await mc.getModelSet(modelSetId); } catch (e) { out.modelSet      = { error: e.message, status: e.status }; }
     try { out.versions      = await mc.getModelSetVersions(modelSetId); } catch (e) { out.versions      = { error: e.message, status: e.status }; }
-    const versionIndex = out.versions?.versions?.[out.versions?.versions?.length - 1]?.versionIndex
-      ?? out.versions?.data?.[out.versions?.data?.length - 1]?.versionIndex
-      ?? 1;
+    const _verArray = out.versions?.modelSetVersions ?? out.versions?.versions ?? out.versions?.data ?? [];
+    const _lastVer  = _verArray[_verArray.length - 1];
+    const versionIndex = _lastVer?.version ?? _lastVer?.versionIndex ?? 1;
     try { out.fullVersion   = await mc.getModelSetVersion(modelSetId, versionIndex); } catch (e) { out.fullVersion   = { error: e.message, status: e.status }; }
     try { out.views         = await mc.listModelSetViews(modelSetId); } catch (e) { out.views         = { error: e.message, status: e.status }; }
     res.json({ containerId, modelSetId, versionIndex, ...out });
@@ -2186,9 +2345,9 @@ app.get('/api/debug/clash-anatomy', async (req, res) => {
     let versionIndex = 1;
     try {
       const versResp = await mc.getModelSetVersions(modelSetId);
-      const versions = toArray(versResp, 'versions');
+      const versions = toArray(versResp, 'modelSetVersions', 'versions');
       const latest   = versions[versions.length - 1];
-      versionIndex   = latest?.versionIndex ?? latest?.index ?? 1;
+      versionIndex   = latest?.version ?? latest?.versionIndex ?? latest?.index ?? 1;
     } catch (_) {}
 
     const out = { tokenKind, containerId, modelSetId, versionIndex };
@@ -2631,7 +2790,7 @@ app.get('/api/views', async (req, res) => {
           const url = `${base}/containers/${containerId}/modelsets/${modelSetId}/views`;
           try {
             const data = await client.get(url);
-            mc = toArray(data, 'views').map(v => ({
+            mc = toArray(data, 'modelSetViews', 'views').map(v => ({
               id:          `mc:${v.id ?? v.viewId}`,
               name:        v.name ?? v.title ?? `MC View ${v.id ?? ''}`,
               source:      'mc',
@@ -2761,7 +2920,7 @@ app.get('/api/mc/views', async (req, res) => {
     const url = `https://developer.api.autodesk.com/bim360/modelset/v3/containers/${containerId}/modelsets/${modelSetId}/views`;
     try {
       const data = await client.get(url);
-      res.json({ supported: true, views: toArray(data, 'views') });
+      res.json({ supported: true, views: toArray(data, 'modelSetViews', 'views') });
     } catch (e) {
       if (e.status === 404) {
         // Endpoint not enabled for this container — return supported:false
@@ -2875,9 +3034,9 @@ app.post('/api/workflow/run', async (req, res) => {
     emit('info', `✓ Coordination space: ${ms.name ?? modelSetId}`);
 
     const versResp = await mcClient.getModelSetVersions(modelSetId);
-    const versions = toArray(versResp, 'versions');
+    const versions = toArray(versResp, 'modelSetVersions', 'versions');
     const latest   = versions[versions.length - 1];
-    const versionIndex = latest?.versionIndex ?? 1;
+    const versionIndex = latest?.version ?? latest?.versionIndex ?? 1;
     // The versions-list endpoint returns lightweight objects — documents[] is often absent.
     // Fall back to the individual version endpoint to get the full manifest.
     let versionObj = latest ?? {};
