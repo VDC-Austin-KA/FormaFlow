@@ -1614,7 +1614,7 @@ function setViewerSource(src) {
     b.classList.toggle('active', b.dataset.src === src)
   );
   el('btn-load-viewer-models').textContent = src === 'space'
-    ? 'Load from Coord. Space' : 'Load from Folder';
+    ? 'Load Discipline Selection' : 'Load from Folder';
 
   // Federation loader is only meaningful for coordination spaces.
   el('btn-load-federation')?.classList.toggle('hidden', src !== 'space');
@@ -1763,11 +1763,15 @@ async function loadSelectedView() {
     const seen = new Set();
     for (const id of v.modelIds ?? []) {
       const stripped = id.replace(/^urn:/i, '');
+      const lineageIdMatch = id.match(/dm\.lineage:([^?&:/]+)/);
+      const lineageId = lineageIdMatch?.[1];
       const doc = docs.find(d =>
         d.id === id || d.id === stripped ||
         d.rawUrn === id || d.rawUrn === stripped ||
         d.derivativeUrn === id || d.derivativeUrn === stripped ||
-        d.viewerUrn === id || d.viewerUrn === stripped
+        d.viewerUrn === id || d.viewerUrn === stripped ||
+        (d.lineageUrn && (d.lineageUrn === id || d.lineageUrn.replace(/^urn:/i, '') === stripped)) ||
+        (lineageId && d.rawUrn && d.rawUrn.includes(lineageId))
       );
       if (doc?.viewerUrn && !seen.has(doc.viewerUrn)) {
         seen.add(doc.viewerUrn);
@@ -2015,11 +2019,34 @@ async function loadViewerModels() {
       ? `${merged.length - nwcCount} viewable + ${nwcCount} NWC + ${extrasShown} cross-folder disciplined`
       : `Found ${merged.length - nwcCount} viewable + ${nwcCount} NWC coordination model(s)`;
     toast(msg);
+
+    // For coordination space source: load the discipline-selected models directly into the 3D viewer
+    if (_viewerState.source === 'space' && _viewerState.viewer) {
+      const includes = _coordState.clashIncludes;
+      const toLoad = merged.filter(m => {
+        if (!m.viewerUrn) return false;
+        if (!includes.length) return true; // nothing selected → load all
+        return includes.includes(m.id) || includes.includes(m.itemId);
+      });
+      let loadedCount = 0;
+      for (const m of toLoad) {
+        if (_viewerState.loadedModels.find(lm => lm.urn === m.viewerUrn)) continue;
+        try { await loadModelToViewer(m); loadedCount++; } catch (_) {}
+      }
+      if (loadedCount) {
+        updateViewerModelCounter();
+        el('btn-unload-all-models').classList.toggle('hidden', _viewerState.loadedModels.length === 0);
+        toast(`Loaded ${loadedCount} discipline-selected model(s) into viewer`);
+        setTimeout(() => {
+          try { _viewerState.viewer.navigation.fitBounds(true); } catch (_) {}
+        }, 500);
+      }
+    }
   } catch (err) {
     toast('Failed to list models: ' + err.message, 'error');
   } finally {
     btn.disabled = false;
-    btn.textContent = _viewerState.source === 'space' ? 'Load from Coord. Space' : 'Load from Folder';
+    btn.textContent = _viewerState.source === 'space' ? 'Load Discipline Selection' : 'Load from Folder';
   }
 }
 
@@ -3090,8 +3117,8 @@ async function loadViewIntoViewer() {
 
     // Navigate to viewer tab and ensure the viewer is initialised
     navigate('viewer');
-    if (!_viewerState.sdkLoaded) {
-      // initViewerTab() was called by navigate(); wait for the SDK to be ready
+    if (!_viewerState.viewer) {
+      // initViewerTab() was called by navigate(); wait for the viewer object to be ready
       await new Promise(resolve => {
         const t = setInterval(() => { if (_viewerState.viewer) { clearInterval(t); resolve(); } }, 200);
         setTimeout(() => { clearInterval(t); resolve(); }, 15_000);
@@ -3595,10 +3622,10 @@ function renderMcClashGroups(testId, data, container) {
     <div class="mc-groups-table-header">
       <span>Group</span><span>Severity</span><span>Clashes</span><span>Status</span>
     </div>
-    ${groups.slice(0, 100).map(g => {
+    ${groups.slice(0, 100).map((g, gi) => {
       const sev   = (g.severity ?? g.clashSeverity ?? 'none').toLowerCase();
       const count = g.clashCount ?? g.count ?? '';
-      const name  = g.name ?? g.groupName ?? g.id ?? 'Group';
+      const name  = _resolveGroupName(g, gi);
       const stat  = g.status ?? g.groupStatus ?? '';
       return `<div class="mc-group-row">
         <span class="mc-group-name">${escapeHtml(name)}</span>
@@ -3676,13 +3703,13 @@ function renderWorkflowClashResults() {
     <div class="mc-groups-table-header mt-2">
       <span>Group / Test</span><span>Severity</span><span>Clashes</span><span>Disciplines</span>
     </div>
-    ${groups.slice(0, 200).map(g => {
+    ${groups.slice(0, 200).map((g, gi) => {
       const sev  = (g.severity ?? 'none').toLowerCase();
       const cnt  = g.clashCount ?? g.count ?? g.clashes?.length ?? '';
       const disc = [g.disciplineA, g.disciplineB].filter(Boolean).join(' × ') || (g.disciplines ?? []).join(' × ') || '';
       return `<div class="mc-group-row">
         <div>
-          <span class="mc-group-name">${escapeHtml(g.name ?? g.testName ?? g.id ?? 'Group')}</span>
+          <span class="mc-group-name">${escapeHtml(_resolveGroupName(g, gi))}</span>
           ${g.testName ? `<span class="mc-row-sub">${escapeHtml(g.testName)}</span>` : ''}
         </div>
         <span class="mc-badge" style="background:${SEV_COLOR[sev] ?? SEV_COLOR.none}22;color:${SEV_COLOR[sev] ?? SEV_COLOR.none};border-color:${SEV_COLOR[sev] ?? SEV_COLOR.none}44">${escapeHtml(sev)}</span>
@@ -3893,12 +3920,29 @@ function _filteredGroups() {
   }
   if (_clashesState.filterText) {
     const q = _clashesState.filterText.toLowerCase();
-    groups = groups.filter(g =>
-      (g.name ?? g.id ?? '').toLowerCase().includes(q) ||
+    groups = groups.filter((g, gi) =>
+      _resolveGroupName(g, gi).toLowerCase().includes(q) ||
       (g._testName ?? '').toLowerCase().includes(q)
     );
   }
   return groups;
+}
+
+function _isGuidOrBase64(str) {
+  if (!str) return true;
+  const s = str.trim();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return true;
+  if (s.length >= 20 && /^[A-Za-z0-9+/=_-]+$/.test(s) && !s.includes(' ')) return true;
+  return false;
+}
+
+function _resolveGroupName(g, idx) {
+  const raw = g.name ?? g.groupName ?? '';
+  if (!raw || _isGuidOrBase64(raw)) {
+    const testName = g._testName ?? '';
+    return testName ? `${testName} · Group ${idx + 1}` : `Group ${idx + 1}`;
+  }
+  return raw;
 }
 
 function _getGroupPreviewName(g, tpl, seq) {
@@ -3935,7 +3979,7 @@ function renderClashGroupsList() {
   let previewSeq = 0;
   groups.forEach((g, idx) => {
     const id        = g.id ?? g.groupId ?? g.clashGroupId ?? String(idx);
-    const name      = g.name ?? g.groupName ?? `Group ${idx + 1}`;
+    const name      = _resolveGroupName(g, idx);
     const cnt       = g.clashCount ?? g.count ?? g.clashes?.length ?? '—';
     const testName  = g._testName ?? '';
     const type      = g._type ?? '';
@@ -4375,10 +4419,10 @@ function openPushPreview() {
   previewList.innerHTML = '';
 
   let warned = false;
-  selectedGroups.forEach(g => {
+  selectedGroups.forEach((g, gi) => {
     const id     = g.id ?? g.groupId ?? g.clashGroupId;
     const assign = _clashesState.assignments[id];
-    const title  = assign?.title ?? g.name ?? `Clash Group ${id}`;
+    const title  = assign?.title ?? _resolveGroupName(g, gi);
 
     if (!assign && !warned) {
       warned = true;
@@ -4433,10 +4477,10 @@ async function confirmPushIssues() {
     issueSubtypeId = clashType?.subtypes?.[0]?.id;
   } catch (_) {}
 
-  for (const g of selectedGroups) {
+  for (const [gi, g] of selectedGroups.entries()) {
     const id     = g.id ?? g.groupId ?? g.clashGroupId;
     const assign = _clashesState.assignments[id];
-    const title  = assign?.title ?? g.name ?? `Clash Group ${id}`;
+    const title  = assign?.title ?? _resolveGroupName(g, gi);
 
     try {
       const body = {
