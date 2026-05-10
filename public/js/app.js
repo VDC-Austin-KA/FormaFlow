@@ -3227,6 +3227,7 @@ async function loadViewIntoViewer() {
         onViewSelected();
       }
     }
+
     if (!_viewerState.viewer) {
       // initViewerTab() was called by navigate(); wait for the viewer object to be ready
       await new Promise(resolve => {
