@@ -674,6 +674,7 @@ function normalizeDocuments(versionObj) {
     name:          d.name ?? d.fileName ?? d.displayName ?? null,
     urn:           d.versionUrn ?? d.urn ?? null,
     derivativeUrn: d.derivativeUrn ?? null,
+    lineageUrn:    d.lineageUrn ?? d.lineageId ?? null,   // persistent doc identity across versions
     size:          d.size ?? null,
     lastModified:  d.lastModifiedTime ?? d.modifiedAt ?? d.createTime ?? null,
   }));
@@ -983,6 +984,62 @@ app.get('/api/hub/projects', async (req, res) => {
     res.json({ ...data, _hubId: hubId });
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
+/** List companies in the ACC account (for template assignee dropdowns) */
+app.get('/api/hub/companies', async (req, res) => {
+  try {
+    const env = readEnv();
+    const accountId = (req.query.accountId ?? env.ACC_ACCOUNT_ID ?? '').replace(/^b\./, '');
+    if (!accountId) return res.status(400).json({ error: 'accountId required (set ACC_ACCOUNT_ID)' });
+    const client = await makeAPSClient();
+    const token  = await client.getToken();
+    const r = await fetch(
+      `https://developer.api.autodesk.com/hq/v1/accounts/${accountId}/companies?limit=100&sort=name`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!r.ok) {
+      const body = await r.text();
+      return res.status(r.status).json({ error: `ACC HQ API ${r.status}`, details: body });
+    }
+    const data = await r.json();
+    const companies = (Array.isArray(data) ? data : data.companies ?? data.results ?? []).map(c => ({
+      id:    c.id,
+      name:  c.name,
+      trade: c.trade ?? null,
+    }));
+    res.json({ companies });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message });
+  }
+});
+
+/** List project members (for individual assignee dropdowns) */
+app.get('/api/hub/members', async (req, res) => {
+  try {
+    const env = readEnv();
+    const projectId = (req.query.projectId ?? env.ACC_PROJECT_ID ?? '').replace(/^b\./, '');
+    if (!projectId) return res.status(400).json({ error: 'projectId required (set ACC_PROJECT_ID)' });
+    const client = await makeAPSClient();
+    const token  = await client.getToken();
+    const r = await fetch(
+      `${ACC_ADMIN_BASE}/projects/${projectId}/users?limit=200&sort=name`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!r.ok) {
+      const body = await r.text();
+      return res.status(r.status).json({ error: `ACC Admin API ${r.status}`, details: body });
+    }
+    const data = await r.json();
+    const members = (data.results ?? data.users ?? []).map(u => ({
+      id:    u.autodeskId ?? u.id,
+      name:  u.name ?? `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
+      email: u.email ?? null,
+    }));
+    res.json({ members });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message });
   }
 });
 
@@ -1566,6 +1623,45 @@ app.get('/api/models/properties', async (req, res) => {
   }
 });
 
+/**
+ * Get unique level names from a model's properties.
+ * Requires urn (base64 viewerUrn from /api/mc/space-documents).
+ * Filters the Model Derivative property collection for Level, Reference Level, Base Level.
+ */
+app.get('/api/models/levels', async (req, res) => {
+  try {
+    const { urn } = req.query;
+    if (!urn) return res.status(400).json({ error: 'urn required (base64 viewerUrn from space-documents)' });
+    const client = await makeAPSClient();
+    const { ModelDerivativeClient } = await import('./src/api/model-derivative.js');
+    const md = new ModelDerivativeClient(client);
+    const token = await client.getToken();
+
+    const views = await md._derivative.getModelViews(urn, { accessToken: token });
+    const guid  = views?.data?.metadata?.[0]?.guid;
+    if (!guid) return res.status(404).json({ error: 'No viewable found — model may still be translating' });
+
+    const raw = await md._derivative.getAllProperties(urn, guid, { accessToken: token });
+    const levels = new Set();
+    for (const obj of raw?.data?.collection ?? []) {
+      for (const bag of Object.values(obj.properties ?? {})) {
+        if (!bag || typeof bag !== 'object') continue;
+        const val = bag['Level'] ?? bag['Reference Level'] ?? bag['Base Level'] ?? bag['Story'];
+        if (val && typeof val === 'string' && val.trim()) levels.add(val.trim());
+      }
+    }
+    // Natural sort: "Level 1" before "Level 10"
+    const sorted = [...levels].sort((a, b) => {
+      const numA = parseInt(a.replace(/\D+/g, '')) || 0;
+      const numB = parseInt(b.replace(/\D+/g, '')) || 0;
+      return numA !== numB ? numA - numB : a.localeCompare(b);
+    });
+    res.json({ levels: sorted });
+  } catch (err) {
+    res.status(err.status ?? 500).json({ error: err.message, details: err.body });
+  }
+});
+
 /** List model sets in a container */
 app.get('/api/project/modelsets', async (req, res) => {
   try {
@@ -1674,6 +1770,7 @@ app.get('/api/mc/space-documents', async (req, res) => {
         rawUrn:       versionUrn,
         derivativeUrn,
         viewerUrn,
+        lineageUrn:   d.lineageUrn ?? null,  // matches view definition's lineageUrn for model filtering
         size:         d.size ?? null,
         lastModified: d.lastModified ?? null,
       };

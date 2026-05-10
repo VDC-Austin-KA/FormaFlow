@@ -1315,23 +1315,41 @@
               </div>
               <div id="template-company-row" class="field-row">
                 <label class="field-label">Company Name</label>
-                <input id="template-edit-company" type="text" class="field-input" placeholder="e.g. ABC Electrical Ltd"/>
+                <input id="template-edit-company" type="text" class="field-input" placeholder="e.g. ABC Electrical Ltd" list="company-suggestions" autocomplete="off"/>
+                <datalist id="company-suggestions"></datalist>
+                <p id="companies-loading" class="text-xs text-slate-400 mt-1 hidden">Loading companies…</p>
               </div>
               <div id="template-individual-row" class="field-row hidden">
                 <label class="field-label">Assignee Name / Email</label>
-                <input id="template-edit-assignee" type="text" class="field-input" placeholder="e.g. john.smith@example.com"/>
+                <input id="template-edit-assignee" type="text" class="field-input" placeholder="e.g. john.smith@example.com" list="member-suggestions" autocomplete="off"/>
+                <datalist id="member-suggestions"></datalist>
               </div>
             </div>
 
             <div class="grid grid-cols-2 gap-3 border-t border-slate-100 pt-3">
-              <div class="field-row">
-                <label class="field-label">Level / Location</label>
-                <input id="template-edit-location" type="text" class="field-input" placeholder="e.g. Level 1"/>
+              <div class="field-row col-span-2">
+                <label class="field-label">Level / Location <span class="text-slate-400 font-normal">(used in naming pattern)</span></label>
+                <div class="flex gap-2">
+                  <input id="template-edit-location" type="text" class="field-input flex-1" placeholder="e.g. Level 1" list="level-suggestions" autocomplete="off"/>
+                  <datalist id="level-suggestions"></datalist>
+                </div>
+                <div class="mt-1.5 flex items-center gap-2">
+                  <select id="template-model-picker" class="field-input text-xs py-1 flex-1">
+                    <option value="">— pick a model to browse levels —</option>
+                  </select>
+                  <button id="btn-load-levels" class="btn-secondary text-xs py-1 px-2 whitespace-nowrap" title="Load levels from selected model">Load Levels</button>
+                </div>
+                <p id="levels-loading" class="text-xs text-slate-400 mt-1 hidden">Loading levels…</p>
               </div>
               <div class="field-row">
                 <label class="field-label">Due Date Offset (days)</label>
                 <input id="template-edit-due" type="number" min="1" max="365" class="field-input" value="14"/>
               </div>
+            </div>
+
+            <div class="border-t border-slate-100 pt-3">
+              <p class="text-xs font-semibold text-slate-700 mb-1.5">Discipline Preview <span class="font-normal text-slate-400">(from model file names in this space)</span></p>
+              <div id="template-disc-preview" class="text-xs text-slate-500 italic">Open a coordination space and click "Load Clash Groups" to populate model names.</div>
             </div>
 
             <div class="border-t border-slate-100 pt-3">

@@ -3047,12 +3047,20 @@ async function loadViewIntoViewer() {
 
     const findDoc = (ref) => {
       const bare = ref.replace(/^urn:/i, '');
-      return docs.find(d =>
-        d.id === ref || d.id === bare ||
-        d.rawUrn === ref || d.rawUrn === bare ||
-        d.derivativeUrn === ref || d.derivativeUrn === bare ||
-        (d.rawUrn && (d.rawUrn.includes(bare) || bare.includes(d.rawUrn.split('?')[0])))
-      );
+      // Extract lineage ID from urn:adsk.xxx:dm.lineage:{lineageId}
+      const lineageIdMatch = ref.match(/dm\.lineage:([^?&:/]+)/);
+      const lineageId = lineageIdMatch?.[1];
+      return docs.find(d => {
+        if (d.id === ref || d.id === bare) return true;
+        if (d.rawUrn === ref || d.rawUrn === bare) return true;
+        if (d.derivativeUrn === ref || d.derivativeUrn === bare) return true;
+        if (d.lineageUrn && (d.lineageUrn === ref || d.lineageUrn.replace(/^urn:/i,'') === bare)) return true;
+        if (d.rawUrn && d.rawUrn.includes(bare)) return true;
+        if (bare && d.rawUrn && bare.includes(d.rawUrn.split('?')[0])) return true;
+        // Match by lineage ID embedded in rawUrn as vf.{lineageId}
+        if (lineageId && d.rawUrn && d.rawUrn.includes(lineageId)) return true;
+        return false;
+      });
     };
 
     for (const ref of allRefs) {
@@ -3699,6 +3707,10 @@ const _clashesState = {
   assignments: {},      // groupId → { company, assignee, dueDate, title }
   filterTestId: '',
   filterText: '',
+  companies: [],        // { id, name, trade } from ACC hub
+  members: [],          // { id, name, email } from ACC project
+  spaceModels: [],      // { name, viewerUrn, lineageUrn } from space-documents
+  levels: [],           // string[] — level names from last-loaded model
 };
 
 // ── Naming engine ─────────────────────────────────────────────────────────────
@@ -3889,6 +3901,20 @@ function _filteredGroups() {
   return groups;
 }
 
+function _getGroupPreviewName(g, tpl, seq) {
+  if (!tpl) return null;
+  const id = g.id ?? g.groupId ?? g.clashGroupId;
+  if (_clashesState.assignments[id]?.title) return _clashesState.assignments[id].title;
+  return _applyNamingPattern(tpl.namingPatternId, {
+    level:      tpl.location,
+    testName:   g._testName ?? '',
+    selA:       g.selectionAName ?? g.modelAName ?? '',
+    selB:       g.selectionBName ?? g.modelBName ?? '',
+    discipline: g.discipline ?? g.disciplines?.[0] ?? '',
+    sequence:   seq,
+  }, tpl.customPattern);
+}
+
 function renderClashGroupsList() {
   const list = el('clashes-list');
   const groups = _filteredGroups();
@@ -3901,7 +3927,12 @@ function renderClashGroupsList() {
     return;
   }
 
+  // Get the active template for preview names
+  const activeTplId = el('sel-apply-template')?.value;
+  const activeTpl   = activeTplId ? _clashesState.templates.find(t => t.id === activeTplId) : null;
+
   list.innerHTML = '';
+  let previewSeq = 0;
   groups.forEach((g, idx) => {
     const id        = g.id ?? g.groupId ?? g.clashGroupId ?? String(idx);
     const name      = g.name ?? g.groupName ?? `Group ${idx + 1}`;
@@ -3910,6 +3941,9 @@ function renderClashGroupsList() {
     const type      = g._type ?? '';
     const assign    = _clashesState.assignments[id];
     const isChecked = _clashesState.selected.has(id);
+
+    previewSeq++;
+    const previewName = _getGroupPreviewName(g, activeTpl, previewSeq);
 
     const TYPE_COLOR = { assigned: '#3b82f6', closed: '#64748b' };
     const typeColor  = TYPE_COLOR[type] ?? '#9ca3af';
@@ -3929,6 +3963,7 @@ function renderClashGroupsList() {
             <span class="text-xs text-slate-400 font-mono">${cnt !== '—' ? cnt + ' 💥' : ''}</span>
           </div>
           ${testName ? `<p class="text-xs text-slate-500 truncate mt-0.5">${escapeHtml(testName)}</p>` : ''}
+          ${previewName && !assign ? `<p class="text-xs font-mono text-amber-600 mt-0.5" title="Issue name preview">→ ${escapeHtml(previewName)}</p>` : ''}
           ${assign ? `
           <div class="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
             ${assign.company ? `<span class="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded px-1.5 py-0.5">🏢 ${escapeHtml(assign.company)}</span>` : ''}
@@ -4029,6 +4064,159 @@ function _populateTemplateSelect() {
 
 // ── Template editor modal ─────────────────────────────────────────────────────
 
+// ── Discipline inference from model file name ─────────────────────────────────
+
+function _inferDisciplineFromName(name = '') {
+  const n = name.toUpperCase();
+  const patterns = [
+    { re: /[-_.](ARCH|ARCHITECTURAL|AR)[-_.]/, abbrev: 'A',  disc: 'ARCH' },
+    { re: /[-_.](STRC|STRUCT|STR|ST)[-_.]/, abbrev: 'S',  disc: 'STRC' },
+    { re: /[-_.](MECH|MEP|MEC|ME)[-_.]/, abbrev: 'M',  disc: 'MECH' },
+    { re: /[-_.](PLMB|PLUMB|PL)[-_.]/, abbrev: 'P',  disc: 'PLMB' },
+    { re: /[-_.](ELEC|ELE|EL)[-_.]/, abbrev: 'E',  disc: 'ELEC' },
+    { re: /[-_.](FP|FIRE|FIREPROT)[-_.]/, abbrev: 'FP', disc: 'FP' },
+    { re: /[-_.](CIVIL|CIV|CV)[-_.]/, abbrev: 'C',  disc: 'CIVIL' },
+    { re: /[-_.](LSCP|LAND|LA)[-_.]/, abbrev: 'LA', disc: 'LSCP' },
+    { re: /[-_.](INT|INTR|ID)[-_.]/, abbrev: 'I',  disc: 'INT' },
+    // Single-letter with delimiter — check after multi-letter to avoid false positives
+    { re: /[-_](A)[-_.]/, abbrev: 'A', disc: 'ARCH' },
+    { re: /[-_](S)[-_.]/, abbrev: 'S', disc: 'STRC' },
+    { re: /[-_](M)[-_.]/, abbrev: 'M', disc: 'MECH' },
+    { re: /[-_](P)[-_.]/, abbrev: 'P', disc: 'PLMB' },
+    { re: /[-_](E)[-_.]/, abbrev: 'E', disc: 'ELEC' },
+    { re: /[-_](C)[-_.]/, abbrev: 'C', disc: 'CIVIL' },
+  ];
+  for (const { re, abbrev, disc } of patterns) {
+    if (re.test(n)) return { abbrev, disc };
+  }
+  // Fallback: keyword anywhere in name
+  if (n.includes('ARCH')) return { abbrev: 'A', disc: 'ARCH' };
+  if (n.includes('STRU') || n.includes('STRC')) return { abbrev: 'S', disc: 'STRC' };
+  if (n.includes('MECH') || n.includes('MEP')) return { abbrev: 'M', disc: 'MECH' };
+  if (n.includes('ELEC')) return { abbrev: 'E', disc: 'ELEC' };
+  if (n.includes('PLUM')) return { abbrev: 'P', disc: 'PLMB' };
+  if (n.includes('FIRE') || n.includes('SPRINK')) return { abbrev: 'FP', disc: 'FP' };
+  const stem = name.replace(/\.[^.]+$/, '').trim();
+  return { abbrev: (stem.slice(0, 2) || '??').toUpperCase(), disc: 'UNKN' };
+}
+
+// ── Template editor data loaders ──────────────────────────────────────────────
+
+async function _loadCompaniesForEditor() {
+  const accountId = State.config?.env?.ACC_ACCOUNT_ID || el('inp-account-id')?.value?.trim() || '';
+  if (!accountId) return;
+  if (_clashesState.companies.length) { _populateCompanyDatalist(_clashesState.companies); return; }
+  el('companies-loading')?.classList.remove('hidden');
+  try {
+    const data = await api('GET', `/api/hub/companies?accountId=${encodeURIComponent(accountId)}`);
+    _clashesState.companies = data?.companies ?? [];
+    _populateCompanyDatalist(_clashesState.companies);
+  } catch { /* non-critical */ } finally {
+    el('companies-loading')?.classList.add('hidden');
+  }
+}
+
+function _populateCompanyDatalist(companies) {
+  const dl = el('company-suggestions');
+  if (!dl) return;
+  dl.innerHTML = '';
+  companies.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.name;
+    if (c.trade) opt.title = c.trade;
+    dl.appendChild(opt);
+  });
+}
+
+async function _loadMembersForEditor() {
+  const projectId = State.config?.env?.ACC_PROJECT_ID || el('inp-project-id')?.value?.trim() || '';
+  if (!projectId) return;
+  if (_clashesState.members.length) { _populateMemberDatalist(_clashesState.members); return; }
+  try {
+    const data = await api('GET', `/api/hub/members?projectId=${encodeURIComponent(projectId)}`);
+    _clashesState.members = data?.members ?? [];
+    _populateMemberDatalist(_clashesState.members);
+  } catch { /* non-critical */ }
+}
+
+function _populateMemberDatalist(members) {
+  const dl = el('member-suggestions');
+  if (!dl) return;
+  dl.innerHTML = '';
+  members.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m.email ?? m.name;
+    opt.label = m.name;
+    dl.appendChild(opt);
+  });
+}
+
+async function _loadSpaceModelsForEditor() {
+  if (_clashesState.spaceModels.length) { _populateModelPicker(_clashesState.spaceModels); _updateDiscPreview(); return; }
+  const modelSetId = getActiveCoordSpaceId();
+  if (!modelSetId) return;
+  try {
+    const containerId = el('inp-container-id')?.value?.trim() || '';
+    const qs = new URLSearchParams({ modelSetId });
+    if (containerId) qs.set('containerId', containerId);
+    const data = await api('GET', `/api/mc/space-documents?${qs}`);
+    _clashesState.spaceModels = (data?.documents ?? []).filter(d => d.viewerUrn).map(d => ({ name: d.name, viewerUrn: d.viewerUrn }));
+    _populateModelPicker(_clashesState.spaceModels);
+    _updateDiscPreview();
+    _updateNamingPreviews();
+  } catch { /* non-critical */ }
+}
+
+function _populateModelPicker(models) {
+  const sel = el('template-model-picker');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— pick a model to browse levels —</option>';
+  models.forEach(m => sel.add(new Option(m.name, m.viewerUrn)));
+  if (current && sel.querySelector(`option[value="${CSS.escape(current)}"]`)) sel.value = current;
+}
+
+function _updateDiscPreview() {
+  const previewEl = el('template-disc-preview');
+  if (!previewEl) return;
+  const models = _clashesState.spaceModels;
+  if (!models.length) {
+    previewEl.innerHTML = '<span class="italic">Open a coordination space to populate model names.</span>';
+    return;
+  }
+  const chips = models.map(m => {
+    const { abbrev } = _inferDisciplineFromName(m.name);
+    return `<span class="inline-flex items-center gap-1 bg-slate-100 rounded px-2 py-0.5 mr-1 mb-1 text-xs">
+      <span class="font-mono font-bold text-brand">${abbrev}</span>
+      <span class="text-slate-600">${escapeHtml(m.name.replace(/\.[^.]+$/, ''))}</span>
+    </span>`;
+  });
+  previewEl.innerHTML = chips.join('');
+}
+
+async function _loadLevelsForModel(viewerUrn) {
+  if (!viewerUrn) return;
+  el('levels-loading')?.classList.remove('hidden');
+  try {
+    const data = await api('GET', `/api/models/levels?urn=${encodeURIComponent(viewerUrn)}`);
+    _clashesState.levels = data?.levels ?? [];
+    const dl = el('level-suggestions');
+    if (dl) {
+      dl.innerHTML = '';
+      _clashesState.levels.forEach(l => {
+        const opt = document.createElement('option'); opt.value = l; dl.appendChild(opt);
+      });
+    }
+    toast(_clashesState.levels.length ? `${_clashesState.levels.length} levels available` : 'No Level property found in this model', _clashesState.levels.length ? 'success' : 'warn');
+  } catch (err) {
+    toast('Could not load levels: ' + err.message, 'error');
+  } finally {
+    el('levels-loading')?.classList.add('hidden');
+  }
+}
+
+// ── Template editor modal ─────────────────────────────────────────────────────
+
 function openTemplateEditor(templateId) {
   const t = templateId ? _clashesState.templates.find(x => x.id === templateId) : null;
   el('template-modal-title').textContent = t ? 'Edit Template' : 'New Clash Template';
@@ -4050,6 +4238,12 @@ function openTemplateEditor(templateId) {
   if (radioEl) radioEl.checked = true;
 
   el('btn-template-delete').classList.toggle('hidden', !t);
+
+  // Load real project data for autocomplete and previews (non-blocking)
+  _loadCompaniesForEditor();
+  _loadMembersForEditor();
+  _loadSpaceModelsForEditor();
+
   _updateNamingPreviews();
   el('template-modal').classList.remove('hidden');
 }
@@ -4061,9 +4255,22 @@ function _updateAssigneeRows(type) {
 
 function _updateNamingPreviews() {
   const custom = el('template-edit-custom-pattern').value;
-  el('tpl-preview-1').textContent = '→ ' + _namingPreview('level-test-sel', '');
-  el('tpl-preview-2').textContent = '→ ' + _namingPreview('test-disc-seq', '');
-  el('tpl-preview-custom').textContent = custom ? '→ ' + _namingPreview('custom', custom) : '';
+  const level  = el('template-edit-location')?.value?.trim() || 'Level 1';
+
+  // Use actual test name from loaded tests, or infer from space model names
+  let testName = 'ARCH vs STRC';
+  if (_clashesState.tests.length) {
+    testName = _clashesState.tests[0].name ?? testName;
+  } else if (_clashesState.spaceModels.length >= 2) {
+    const discA = _inferDisciplineFromName(_clashesState.spaceModels[0].name).abbrev;
+    const discB = _inferDisciplineFromName(_clashesState.spaceModels[1].name).abbrev;
+    if (discA && discB && discA !== discB) testName = `${discA} vs ${discB}`;
+  }
+
+  const ctx = { level, testName, selA: 'Walls', selB: 'Conduits', discipline: 'STRUCT', sequence: 3 };
+  el('tpl-preview-1').textContent     = '→ ' + _applyNamingPattern('level-test-sel', ctx, '');
+  el('tpl-preview-2').textContent     = '→ ' + _applyNamingPattern('test-disc-seq',  ctx, '');
+  el('tpl-preview-custom').textContent = custom ? '→ ' + _applyNamingPattern('custom', ctx, custom) : '';
 }
 
 async function saveTemplate() {
@@ -4904,6 +5111,16 @@ async function init() {
     r.addEventListener('change', _updateNamingPreviews);
   });
   el('template-edit-custom-pattern').addEventListener('input', _updateNamingPreviews);
+  // Live preview updates as the user types a level/location
+  el('template-edit-location').addEventListener('input', _updateNamingPreviews);
+  // Level picker: load levels from the selected model
+  el('btn-load-levels').addEventListener('click', () => {
+    const urn = el('template-model-picker')?.value;
+    if (!urn) { toast('Pick a model first', 'error'); return; }
+    _loadLevelsForModel(urn);
+  });
+  // Clash group naming preview refreshes when template selection changes
+  el('sel-apply-template')?.addEventListener('change', renderClashGroupsList);
 
   // Issues tab
   el('btn-load-issues').addEventListener('click', loadIssues);
