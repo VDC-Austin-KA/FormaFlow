@@ -4263,12 +4263,13 @@ function _inferDisciplineFromName(name = '') {
 // ── Template editor data loaders ──────────────────────────────────────────────
 
 async function _loadCompaniesForEditor() {
-  const accountId = State.config?.env?.ACC_ACCOUNT_ID || el('inp-account-id')?.value?.trim() || '';
-  if (!accountId) return;
   if (_clashesState.companies.length) { _populateCompanyDatalist(_clashesState.companies); return; }
   el('companies-loading')?.classList.remove('hidden');
   try {
-    const data = await api('GET', `/api/hub/companies?accountId=${encodeURIComponent(accountId)}`);
+    // Pass accountId if available client-side; server falls back to ACC_ACCOUNT_ID env var
+    const accountId = State.config?.env?.ACC_ACCOUNT_ID || el('inp-account-id')?.value?.trim() || '';
+    const qs = accountId ? `?accountId=${encodeURIComponent(accountId)}` : '';
+    const data = await api('GET', `/api/hub/companies${qs}`);
     _clashesState.companies = data?.companies ?? [];
     _populateCompanyDatalist(_clashesState.companies);
   } catch { /* non-critical */ } finally {
@@ -4289,11 +4290,12 @@ function _populateCompanyDatalist(companies) {
 }
 
 async function _loadMembersForEditor() {
-  const projectId = State.config?.env?.ACC_PROJECT_ID || el('inp-project-id')?.value?.trim() || '';
-  if (!projectId) return;
   if (_clashesState.members.length) { _populateMemberDatalist(_clashesState.members); return; }
   try {
-    const data = await api('GET', `/api/hub/members?projectId=${encodeURIComponent(projectId)}`);
+    // Pass projectId if available client-side; server falls back to ACC_PROJECT_ID env var
+    const projectId = State.config?.env?.ACC_PROJECT_ID || el('inp-project-id')?.value?.trim() || '';
+    const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+    const data = await api('GET', `/api/hub/members${qs}`);
     _clashesState.members = data?.members ?? [];
     _populateMemberDatalist(_clashesState.members);
   } catch { /* non-critical */ }
@@ -4305,14 +4307,36 @@ function _populateMemberDatalist(members) {
   dl.innerHTML = '';
   members.forEach(m => {
     const opt = document.createElement('option');
-    opt.value = m.email ?? m.name;
-    opt.label = m.name;
+    // Use "Name <email>" format so the datalist shows names but captures identity
+    opt.value = m.name && m.email ? `${m.name} <${m.email}>` : (m.name ?? m.email ?? '');
     dl.appendChild(opt);
   });
 }
 
 async function _loadSpaceModelsForEditor() {
-  if (_clashesState.spaceModels.length) { _populateModelPicker(_clashesState.spaceModels); _updateDiscPreview(); return; }
+  // Prefer: already-loaded viewer models → coord clashIncludes → all space docs
+  const loadedModels = _viewerState.loadedModels.map(lm => ({ name: lm.name, viewerUrn: lm.urn }));
+  const coordModels  = _coordState.models
+    .filter(m => m.viewerUrn && (!_coordState.clashIncludes.length || _coordState.clashIncludes.includes(m.id)))
+    .map(m => ({ name: m.name, viewerUrn: m.viewerUrn }));
+
+  if (loadedModels.length) {
+    _clashesState.spaceModels = loadedModels;
+    _populateModelPicker(_clashesState.spaceModels);
+    _updateDiscPreview();
+    _updateNamingPreviews();
+    return;
+  }
+
+  if (coordModels.length) {
+    _clashesState.spaceModels = coordModels;
+    _populateModelPicker(_clashesState.spaceModels);
+    _updateDiscPreview();
+    _updateNamingPreviews();
+    return;
+  }
+
+  // Fall back to space documents API
   const modelSetId = getActiveCoordSpaceId();
   if (!modelSetId) return;
   try {
@@ -4399,7 +4423,9 @@ function openTemplateEditor(templateId) {
 
   el('btn-template-delete').classList.toggle('hidden', !t);
 
-  // Load real project data for autocomplete and previews (non-blocking)
+  // Load real project data for autocomplete and previews (non-blocking).
+  // Always refresh model list so it reflects currently-loaded viewer models.
+  _clashesState.spaceModels = [];
   _loadCompaniesForEditor();
   _loadMembersForEditor();
   _loadSpaceModelsForEditor();
