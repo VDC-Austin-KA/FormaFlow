@@ -1783,6 +1783,15 @@ app.get('/api/mc/space-documents', async (req, res) => {
 });
 
 /** List clash tests for the latest version of a coordination space */
+function sanitizeClashTestName(name, index) {
+  if (!name) return `Test ${index + 1}`;
+  const trimmed = name.trim();
+  const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed);
+  const isBase64Like = trimmed.length >= 20 && /^[A-Za-z0-9+/=_-]+$/.test(trimmed) && !trimmed.includes(' ');
+  if (isUUID || isBase64Like) return `Test ${index + 1}`;
+  return name;
+}
+
 app.get('/api/mc/clash-tests', async (req, res) => {
   try {
     const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
@@ -1796,7 +1805,9 @@ app.get('/api/mc/clash-tests', async (req, res) => {
 
     const versionIndex = latest?.version ?? latest?.versionIndex ?? 1;
     const data = await mc.listClashTests(modelSetId, versionIndex);
-    res.json({ versionIndex, tests: toArray(data, 'tests', 'clashTests') });
+    const rawTests = toArray(data, 'tests', 'clashTests');
+    const tests = rawTests.map((t, i) => ({ ...t, name: sanitizeClashTestName(t.name, i) }));
+    res.json({ versionIndex, tests });
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
   }
@@ -2927,7 +2938,12 @@ app.get('/api/views', async (req, res) => {
               name:        v.name ?? v.title ?? `MC View ${v.id ?? ''}`,
               source:      'mc',
               modelSetId,
-              modelIds:    v.modelIds ?? v.documentIds ?? [],
+              modelIds:    (() => {
+                if (v.modelIds?.length) return v.modelIds;
+                if (v.documentIds?.length) return v.documentIds;
+                // MC v3 views store model refs in definition[].lineageUrn — fall back to those
+                return (v.definition ?? []).map(d => d.lineageUrn).filter(Boolean);
+              })(),
               clashTestId: v.clashTestId ?? null,
               createdAt:   v.createdAt ?? v.created ?? null,
               raw:         v,
