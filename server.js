@@ -1783,12 +1783,43 @@ app.get('/api/mc/space-documents', async (req, res) => {
 });
 
 /** List clash tests for the latest version of a coordination space */
-function sanitizeClashTestName(name, index) {
-  if (!name) return `Test ${index + 1}`;
+const DISC_PATTERNS_SERVER = [
+  { re: /\bARCH\b|_A_|_AR_|ARCHITECTURAL|INTERIOR/i, disc: 'ARCH' },
+  { re: /\bINT\b|_INT_|INT[-_]/i,                     disc: 'INT'  },
+  { re: /\bSTRUCT\b|_S_|_STR_|STRUCTURAL|FOUNDATION|CONCRETE|STEEL[-_]/i, disc: 'STRC' },
+  { re: /\bMECH\b|_M_|HVAC|DUCT|MECHANICAL/i,         disc: 'MECH' },
+  { re: /\bPLUMB\b|_P_|PLMB|SANIT|SANITARY/i,         disc: 'PLMB' },
+  { re: /\bELEC\b|_E_|ELE[-_]|ELECTRICAL|POWER|LIGHTING/i, disc: 'ELEC' },
+  { re: /\bFP\b|FP[-_]|FIRE[-_ ]?PROTECTION|SPRINK/i, disc: 'FP'   },
+  { re: /\bCIVIL\b|SITE[-_]|GRADING|SURVEY/i,         disc: 'CIVIL'},
+];
+
+function _guessDisciplineAbbrev(fileName) {
+  const n = (fileName ?? '').toUpperCase();
+  for (const { re, disc } of DISC_PATTERNS_SERVER) {
+    if (re.test(n)) return disc;
+  }
+  return null;
+}
+
+function buildClashTestName(test, index) {
+  const name = test.name ?? '';
   const trimmed = name.trim();
   const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed);
   const isBase64Like = trimmed.length >= 20 && /^[A-Za-z0-9+/=_-]+$/.test(trimmed) && !trimmed.includes(' ');
-  if (isUUID || isBase64Like) return `Test ${index + 1}`;
+
+  if (!name || isUUID || isBase64Like) {
+    // Try to derive a discipline-pair name from the test's document list
+    const docs = test.documents ?? test.resources ?? test.models ?? test.checks ?? [];
+    const discs = [...new Set(
+      docs
+        .map(d => _guessDisciplineAbbrev(d.viewableName ?? d.name ?? d.fileName ?? ''))
+        .filter(Boolean)
+    )];
+    if (discs.length >= 2) return `${discs[0]} vs ${discs[1]}`;
+    if (discs.length === 1) return `${discs[0]} Clashes`;
+    return `Test ${index + 1}`;
+  }
   return name;
 }
 
@@ -1806,7 +1837,7 @@ app.get('/api/mc/clash-tests', async (req, res) => {
     const versionIndex = latest?.version ?? latest?.versionIndex ?? 1;
     const data = await mc.listClashTests(modelSetId, versionIndex);
     const rawTests = toArray(data, 'tests', 'clashTests');
-    const tests = rawTests.map((t, i) => ({ ...t, name: sanitizeClashTestName(t.name, i) }));
+    const tests = rawTests.map((t, i) => ({ ...t, name: buildClashTestName(t, i) }));
     res.json({ versionIndex, tests });
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });
