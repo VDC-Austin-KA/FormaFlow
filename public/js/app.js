@@ -17,7 +17,7 @@ const State = {
   ssFilter: 'ALL',
   runSessionId: null,
   runSSE: null,
-  stepMap: { auth: 0, modelset: 1, identify: 2, searchsets: 3, clashtests: 4, results: 5 },
+  stepMap: { auth: 0, modelset: 1, identify: 2, searchsets: 3, results: 4 },
 };
 
 // Discipline colour map (matches CSS variables)
@@ -74,8 +74,6 @@ const TAB_META = {
   coordination: { title: 'Coordination', sub: 'Assign disciplines, pick clash models, align to PBP / origin / survey / manual offsets' },
   clashes:    { title: 'Clashes',         sub: 'View clash groups, apply templates, and push as ACC issues' },
   issues:     { title: 'Issues',         sub: 'View, filter, comment, and create ACC project issues' },
-  searchsets: { title: 'Search Sets',   sub: 'Toggle and preview reusable property-based filters' },
-  clashtests: { title: 'Clash Tests',   sub: 'Enable, disable, and fine-tune clash test pairs' },
   settings:   { title: 'Settings',      sub: 'Workflow options, naming conventions, and output' },
   run:        { title: 'Run Workflow',   sub: 'Execute the full automated coordination workflow' },
 };
@@ -100,7 +98,7 @@ function navigate(tab) {
   el('tab-title').textContent = meta.title || tab;
   el('tab-sub').textContent = meta.sub || '';
   el('header-actions').innerHTML = '';
-  if (tab === 'clashtests' || tab === 'searchsets' || tab === 'settings') renderSaveBtn(tab);
+  if (tab === 'settings') renderSaveBtn(tab);
   // Lazy-init viewer — trigger if never initialized OR if SDK loaded but viewer was lost
   if (tab === 'viewer' && !_viewerState.viewer && !_viewerState.initializing) initViewerTab();
   // Lazy-load coordination data
@@ -1422,13 +1420,11 @@ function inferStep(message) {
   if (message.includes('Step 2')) return { step: 'modelset',   state: 'active' };
   if (message.includes('Step 3')) return { step: 'identify',   state: 'active' };
   if (message.includes('Step 4')) return { step: 'searchsets', state: 'active' };
-  if (message.includes('Step 5')) return { step: 'clashtests', state: 'active' };
   if (message.includes('Step 6')) return { step: 'results',    state: 'active' };
   if (message.includes('✓ APS auth'))   return { step: 'auth',       state: 'done' };
   if (message.includes('✓ Model set'))  return { step: 'modelset',   state: 'done' };
   if (message.includes('Disciplines'))  return { step: 'identify',   state: 'done' };
   if (message.includes('Search Sets'))  return { step: 'searchsets', state: 'done' };
-  if (message.includes('Clash tests'))  return { step: 'clashtests', state: 'done' };
   return null;
 }
 
