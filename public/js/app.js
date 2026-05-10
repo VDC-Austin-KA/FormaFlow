@@ -101,8 +101,8 @@ function navigate(tab) {
   el('tab-sub').textContent = meta.sub || '';
   el('header-actions').innerHTML = '';
   if (tab === 'clashtests' || tab === 'searchsets' || tab === 'settings') renderSaveBtn(tab);
-  // Lazy-init viewer on first open
-  if (tab === 'viewer' && !_viewerState.sdkLoaded) initViewerTab();
+  // Lazy-init viewer — trigger if never initialized OR if SDK loaded but viewer was lost
+  if (tab === 'viewer' && !_viewerState.viewer && !_viewerState.initializing) initViewerTab();
   // Lazy-load coordination data
   if (tab === 'coordination' && !_coordState.loaded) loadCoordinationData();
   // Lazy-load clashes
@@ -1540,6 +1540,7 @@ const DISC_COLORS_HEX = {
 const _viewerState = {
   sdkLoaded: false,
   viewer: null,
+  initializing: false, // true while initViewerTab() is in progress
   loadedModels: [],   // { urn, name, discipline, model }
   clashGroups: [],
   activeGroup: null,
@@ -1550,8 +1551,52 @@ const _viewerState = {
   globalOffset: null,
 };
 
-const RECENT_MODELS_KEY = 'formaflow.recentModels';
+const RECENT_MODELS_KEY   = 'formaflow.recentModels';
 const RECENT_MODELS_LIMIT = 10;
+const DISC_PATTERNS_KEY   = 'formaflow.discPatterns';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Learned discipline patterns — persisted across sessions in localStorage.
+// Key: normalized model name segment (no numbers, extension stripped).
+// Value: discipline code ('ARCH', 'STRUCT', etc.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function _loadDiscPatterns() {
+  try { return JSON.parse(localStorage.getItem(DISC_PATTERNS_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+function _saveDiscPattern(modelName, disc) {
+  if (!modelName || !disc || disc === 'UNKNOWN') return;
+  const key = _normalizeNameForPattern(modelName);
+  if (!key) return;
+  const patterns = _loadDiscPatterns();
+  patterns[key] = disc;
+  localStorage.setItem(DISC_PATTERNS_KEY, JSON.stringify(patterns));
+}
+
+function _normalizeNameForPattern(name = '') {
+  // Strip file extension, numbers, and common separators to get the stable part
+  return name
+    .replace(/\.\w+$/, '')          // remove extension
+    .replace(/[-_\s]+\d+[-_\s]*/g, '_') // collapse number sequences into _
+    .replace(/[^A-Za-z_]/g, '')     // keep only letters and underscores
+    .toUpperCase()
+    .slice(0, 40);
+}
+
+function _lookupLearnedDisc(modelName) {
+  const key = _normalizeNameForPattern(modelName);
+  if (!key) return null;
+  const patterns = _loadDiscPatterns();
+  // Exact match first
+  if (patterns[key]) return patterns[key];
+  // Partial match: any stored key that is a substring of key or vice versa
+  for (const [k, v] of Object.entries(patterns)) {
+    if (k.length >= 4 && (key.includes(k) || k.includes(key))) return v;
+  }
+  return null;
+}
 
 function loadRecentModels() {
   try { return JSON.parse(localStorage.getItem(RECENT_MODELS_KEY) || '[]'); }
@@ -1793,11 +1838,24 @@ async function loadSelectedView() {
       return;
     }
 
-    // Load them sequentially (viewer's loadDocumentNode handles concurrency badly)
+    // Load them sequentially — call loadModelToViewer directly (not toggleViewerModel,
+    // which requires a real sidebar item DOM element with .model-status child)
+    let loaded = 0;
     for (const t of targets) {
-      const fauxEl = document.createElement('div');
-      fauxEl.dataset.urn = t.viewerUrn;
-      try { await toggleViewerModel(fauxEl, t); } catch (_) {}
+      try {
+        el('viewer-status-text').textContent = `Loading ${t.name}…`;
+        await loadModelToViewer(t);
+        loaded++;
+        // Sync sidebar item state if it exists
+        const item = document.querySelector(`.viewer-model-item[data-urn="${t.viewerUrn}"]`);
+        if (item) {
+          item.classList.remove('loading'); item.classList.add('loaded');
+          const st = item.querySelector('.model-status');
+          if (st) st.textContent = '✓';
+        }
+      } catch (err) {
+        console.warn('loadSelectedView: model load failed for', t.name, err);
+      }
     }
 
     // Apply camera if available
@@ -1815,8 +1873,16 @@ async function loadSelectedView() {
       } catch (_) { /* camera restore is best-effort */ }
     }
 
-    toast(`View loaded: ${targets.length} model(s)`);
-    el('viewer-status-text').textContent = `View "${v.name}" applied`;
+    if (loaded) {
+      toast(`View "${v.name}" — ${loaded} model(s) loaded`);
+      el('viewer-status-text').textContent = `View "${v.name}" — ${loaded} model(s)`;
+      updateViewerModelCounter();
+      el('btn-unload-all-models').classList.toggle('hidden', _viewerState.loadedModels.length === 0);
+      setTimeout(() => { try { _viewerState.viewer?.fitToView?.(); } catch (_) {} }, 500);
+    } else {
+      toast(`No models could be loaded for view "${v.name}" — derivatives may not be ready`, 'error');
+      el('viewer-status-text').textContent = '';
+    }
     // Show issue pushpin markers for the models just loaded
     showIssuePushpinsInViewer().catch(() => {});
   } catch (err) {
@@ -1905,6 +1971,8 @@ async function loadViewerSDK() {
 }
 
 async function initViewerTab() {
+  if (_viewerState.initializing) return; // prevent duplicate init
+  _viewerState.initializing = true;
   el('viewer-status-text').textContent = 'Loading viewer SDK…';
   try {
     await loadViewerSDK();
@@ -1918,6 +1986,7 @@ async function initViewerTab() {
             onToken(data.access_token, data.expires_in ?? 3600);
           } catch (e) {
             toast('Viewer auth failed: ' + e.message, 'error');
+            reject(e);
           }
         },
       }, () => {
@@ -1934,6 +2003,8 @@ async function initViewerTab() {
   } catch (err) {
     el('viewer-status-text').textContent = 'Viewer failed to load';
     toast('Viewer SDK error: ' + err.message, 'error');
+  } finally {
+    _viewerState.initializing = false;
   }
 }
 
@@ -2023,10 +2094,18 @@ async function loadViewerModels() {
     // For coordination space source: load the discipline-selected models directly into the 3D viewer
     if (_viewerState.source === 'space' && _viewerState.viewer) {
       const includes = _coordState.clashIncludes;
+      // Build a Set of included viewerUrns by cross-referencing _coordState.models
+      // (fetchSpaceViewerModels returns models without id, so we can't use m.id directly)
+      const includedUrns = new Set(
+        _coordState.models
+          .filter(cm => !includes.length || includes.includes(cm.id))
+          .map(cm => cm.viewerUrn)
+          .filter(Boolean)
+      );
       const toLoad = merged.filter(m => {
         if (!m.viewerUrn) return false;
-        if (!includes.length) return true; // nothing selected → load all
-        return includes.includes(m.id) || includes.includes(m.itemId);
+        if (!includes.length || !includedUrns.size) return true; // nothing selected → load all
+        return includedUrns.has(m.viewerUrn);
       });
       let loadedCount = 0;
       for (const m of toLoad) {
@@ -2241,7 +2320,8 @@ function guessDiscFromName(name = '') {
   if (/\bFP\b|FP[-_]|FIRE[-_ ]?PROTECTION|SPRINK|SUPPRESSION/.test(n)) return 'FP';
   // Civil / Site — CIVIL, SITE, GRADING, SURVEY, TOPO, INFRASTRUCTURE
   if (/\bCIVIL\b|SITE[-_]|GRADING|SURVEY|TOPO|INFRASTRUCTURE/.test(n)) return 'CIVIL';
-  return 'UNKNOWN';
+  // Fall back to user-learned pattern from previous explicit assignments
+  return _lookupLearnedDisc(name) ?? 'UNKNOWN';
 }
 
 async function toggleViewerModel(itemEl, modelDef) {
@@ -2904,6 +2984,8 @@ function renderModels() {
         for (const k of [m.id, m.viewerUrn, m.name].filter(Boolean)) {
           _coordState.modelDisciplines[k] = newDisc;
         }
+        // Learn this name→discipline mapping for future auto-assignment
+        _saveDiscPattern(m.name, newDisc);
         saveCoordinationDebounced();
       });
 
@@ -2988,6 +3070,17 @@ async function loadCoordinationData() {
       for (const v of views) {
         vSel.add(new Option(v.name, v.id));
       }
+      // Sync changes to viewer tab sel-view (MC views appear there with "mc:" prefix)
+      vSel.addEventListener('change', () => {
+        const rawId = vSel.value;
+        const viewerSel = el('sel-view');
+        if (!viewerSel || !rawId) return;
+        const mcId = `mc:${rawId}`;
+        if (viewerSel.querySelector(`option[value="${mcId}"]`)) {
+          viewerSel.value = mcId;
+          onViewSelected();
+        }
+      });
     }
 
     // Apply persisted overrides on top of guesses
@@ -3009,9 +3102,16 @@ async function loadCoordinationData() {
       return;
     }
 
-    // Auto-include any model that's assigned to a discipline if state is fresh
-    if (!_coordState.clashIncludes.length && Object.keys(_coordState.assignments).length === 0) {
-      _coordState.clashIncludes = _coordState.models.map(m => m.id);
+    // Default clashIncludes: prefer discipline-assigned/detected models only.
+    // This implements "Disciplines Only" as the default selection mode.
+    if (!_coordState.clashIncludes.length) {
+      const withDisc = _coordState.models.filter(m => {
+        const disc = getUserDiscipline(m) || guessDiscFromName(m.name);
+        return disc && disc !== 'UNKNOWN';
+      });
+      _coordState.clashIncludes = withDisc.length
+        ? withDisc.map(m => m.id)
+        : _coordState.models.map(m => m.id); // all models as fallback if none detected
     }
 
     el('sel-align-snap').value = String(_coordState.alignSnap);
@@ -3117,6 +3217,17 @@ async function loadViewIntoViewer() {
 
     // Navigate to viewer tab and ensure the viewer is initialised
     navigate('viewer');
+
+    // Sync selected view in viewer-tab sel-view to the same view (MC views have "mc:" prefix there)
+    const viewerSel = el('sel-view');
+    if (viewerSel && viewId) {
+      const mcId = `mc:${viewId}`;
+      if (viewerSel.querySelector(`option[value="${mcId}"]`)) {
+        viewerSel.value = mcId;
+        onViewSelected();
+      }
+    }
+
     if (!_viewerState.viewer) {
       // initViewerTab() was called by navigate(); wait for the viewer object to be ready
       await new Promise(resolve => {
@@ -3187,8 +3298,14 @@ function renderCoordDisciplineRows() {
     `;
     row.querySelector('select').addEventListener('change', e => {
       const id = e.target.value;
-      if (id) _coordState.assignments[disc] = id;
-      else delete _coordState.assignments[disc];
+      if (id) {
+        _coordState.assignments[disc] = id;
+        // Learn name→discipline for this assignment
+        const m = _coordState.models.find(x => x.id === id);
+        if (m) _saveDiscPattern(m.name, disc);
+      } else {
+        delete _coordState.assignments[disc];
+      }
       saveCoordinationDebounced();
     });
     host.appendChild(row);
@@ -4147,12 +4264,13 @@ function _inferDisciplineFromName(name = '') {
 // ── Template editor data loaders ──────────────────────────────────────────────
 
 async function _loadCompaniesForEditor() {
-  const accountId = State.config?.env?.ACC_ACCOUNT_ID || el('inp-account-id')?.value?.trim() || '';
-  if (!accountId) return;
   if (_clashesState.companies.length) { _populateCompanyDatalist(_clashesState.companies); return; }
   el('companies-loading')?.classList.remove('hidden');
   try {
-    const data = await api('GET', `/api/hub/companies?accountId=${encodeURIComponent(accountId)}`);
+    // Pass accountId if available client-side; server falls back to ACC_ACCOUNT_ID env var
+    const accountId = State.config?.env?.ACC_ACCOUNT_ID || el('inp-account-id')?.value?.trim() || '';
+    const qs = accountId ? `?accountId=${encodeURIComponent(accountId)}` : '';
+    const data = await api('GET', `/api/hub/companies${qs}`);
     _clashesState.companies = data?.companies ?? [];
     _populateCompanyDatalist(_clashesState.companies);
   } catch { /* non-critical */ } finally {
@@ -4173,11 +4291,12 @@ function _populateCompanyDatalist(companies) {
 }
 
 async function _loadMembersForEditor() {
-  const projectId = State.config?.env?.ACC_PROJECT_ID || el('inp-project-id')?.value?.trim() || '';
-  if (!projectId) return;
   if (_clashesState.members.length) { _populateMemberDatalist(_clashesState.members); return; }
   try {
-    const data = await api('GET', `/api/hub/members?projectId=${encodeURIComponent(projectId)}`);
+    // Pass projectId if available client-side; server falls back to ACC_PROJECT_ID env var
+    const projectId = State.config?.env?.ACC_PROJECT_ID || el('inp-project-id')?.value?.trim() || '';
+    const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+    const data = await api('GET', `/api/hub/members${qs}`);
     _clashesState.members = data?.members ?? [];
     _populateMemberDatalist(_clashesState.members);
   } catch { /* non-critical */ }
@@ -4189,14 +4308,36 @@ function _populateMemberDatalist(members) {
   dl.innerHTML = '';
   members.forEach(m => {
     const opt = document.createElement('option');
-    opt.value = m.email ?? m.name;
-    opt.label = m.name;
+    // Use "Name <email>" format so the datalist shows names but captures identity
+    opt.value = m.name && m.email ? `${m.name} <${m.email}>` : (m.name ?? m.email ?? '');
     dl.appendChild(opt);
   });
 }
 
 async function _loadSpaceModelsForEditor() {
-  if (_clashesState.spaceModels.length) { _populateModelPicker(_clashesState.spaceModels); _updateDiscPreview(); return; }
+  // Prefer: already-loaded viewer models → coord clashIncludes → all space docs
+  const loadedModels = _viewerState.loadedModels.map(lm => ({ name: lm.name, viewerUrn: lm.urn }));
+  const coordModels  = _coordState.models
+    .filter(m => m.viewerUrn && (!_coordState.clashIncludes.length || _coordState.clashIncludes.includes(m.id)))
+    .map(m => ({ name: m.name, viewerUrn: m.viewerUrn }));
+
+  if (loadedModels.length) {
+    _clashesState.spaceModels = loadedModels;
+    _populateModelPicker(_clashesState.spaceModels);
+    _updateDiscPreview();
+    _updateNamingPreviews();
+    return;
+  }
+
+  if (coordModels.length) {
+    _clashesState.spaceModels = coordModels;
+    _populateModelPicker(_clashesState.spaceModels);
+    _updateDiscPreview();
+    _updateNamingPreviews();
+    return;
+  }
+
+  // Fall back to space documents API
   const modelSetId = getActiveCoordSpaceId();
   if (!modelSetId) return;
   try {
@@ -4283,7 +4424,9 @@ function openTemplateEditor(templateId) {
 
   el('btn-template-delete').classList.toggle('hidden', !t);
 
-  // Load real project data for autocomplete and previews (non-blocking)
+  // Load real project data for autocomplete and previews (non-blocking).
+  // Always refresh model list so it reflects currently-loaded viewer models.
+  _clashesState.spaceModels = [];
   _loadCompaniesForEditor();
   _loadMembersForEditor();
   _loadSpaceModelsForEditor();
