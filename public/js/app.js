@@ -5447,56 +5447,6 @@ async function init() {
     inp.type = inp.type === 'password' ? 'text' : 'password';
   });
 
-  // Search Sets tab — discipline filter pills
-  document.querySelectorAll('.disc-pill').forEach(pill => {
-    pill.addEventListener('click', () => {
-      document.querySelectorAll('.disc-pill').forEach(p => p.classList.remove('active'));
-      pill.classList.add('active');
-      State.ssFilter = pill.dataset.disc;
-      renderSearchSets(State.config.searchSets, State.ssFilter);
-    });
-  });
-
-  // Search Sets tab — toolbar
-  el('btn-ss-new').addEventListener('click', () => openSSCreator());
-  el('btn-ss-save').addEventListener('click', saveSearchSets);
-  el('btn-ss-import').addEventListener('click', () => el('ss-import-file').click());
-  el('ss-import-file').addEventListener('change', (e) => {
-    const file = e.target.files?.[0];
-    if (file) handleNavisworksFile(file);
-    e.target.value = ''; // allow re-selecting the same file
-  });
-
-  // Editor modal
-  el('ss-modal-close').addEventListener('click', closeSSEditor);
-  el('btn-ss-cancel').addEventListener('click', closeSSEditor);
-  el('btn-ss-save-modal').addEventListener('click', commitSSEditor);
-  el('btn-ss-delete').addEventListener('click', deleteCurrentSS);
-  el('btn-ss-add-cond').addEventListener('click', () => {
-    SSEditor.draft.filter.conditions.push({ property: '', operator: 'equals', value: '' });
-    renderConditionRows();
-  });
-  el('ss-edit-join').addEventListener('change', (e) => {
-    el('ss-edit-join-label').textContent = (e.target.value || 'or').toUpperCase();
-  });
-  el('btn-ss-pull-props').addEventListener('click', openModelPicker);
-
-  // Import preview modal
-  el('ss-import-close').addEventListener('click', () => el('ss-import-modal').classList.add('hidden'));
-  el('btn-import-cancel').addEventListener('click', () => el('ss-import-modal').classList.add('hidden'));
-  el('btn-import-confirm').addEventListener('click', mergeImportedSets);
-
-  // Model picker modal
-  el('ss-model-close').addEventListener('click', () => el('ss-model-modal').classList.add('hidden'));
-  el('btn-model-cancel').addEventListener('click', () => el('ss-model-modal').classList.add('hidden'));
-  el('ss-model-folder').addEventListener('change', (e) => { if (e.target.value) loadFolderModels(e.target.value); });
-  el('ss-model-pick').addEventListener('change', (e) => { el('btn-model-pull').disabled = !e.target.value; });
-  el('btn-model-pull').addEventListener('click', pullModelProperties);
-
-  // Clash Tests tab
-  el('btn-enable-all').addEventListener('click',  () => setAllClashTests(true));
-  el('btn-disable-all').addEventListener('click', () => setAllClashTests(false));
-  el('btn-save-clashes').addEventListener('click', saveClashConfig);
 
   // Settings tab
   el('btn-save-settings').addEventListener('click', saveSettings);
