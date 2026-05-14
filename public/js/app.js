@@ -5703,14 +5703,22 @@ async function init() {
     return;
   }
 
-  // Populate all tabs
-  populateConnect(State.config);
-  populateSettings(State.config);
+  // Guard against null config (server returned 200 with non-JSON body, e.g. cold start)
+  if (!State.config || !State.config.env) {
+    toast('Invalid configuration response — please refresh', 'error');
+    return;
+  }
+
+  // Populate all tabs — wrapped in try-catch so a bad config value can't kill all of init()
+  try { populateConnect(State.config); } catch (e) { console.error('[init] populateConnect failed:', e); }
+  try { populateSettings(State.config); } catch (e) { console.error('[init] populateSettings failed:', e); }
 
   // Reflect connection state if credentials already set
   if (State.config.env.APS_CLIENT_ID && State.config.hasSecret) {
-    el('conn-dot').className = 'w-2 h-2 rounded-full flex-shrink-0 bg-slate-500';
-    el('conn-label').textContent = 'Credentials loaded';
+    const connDotEl = el('conn-dot');
+    if (connDotEl) connDotEl.className = 'w-2 h-2 rounded-full flex-shrink-0 bg-slate-500';
+    const connLabelEl = el('conn-label');
+    if (connLabelEl) connLabelEl.textContent = 'Credentials loaded';
   }
 
   // Load service account auth status (await so we know whether user is logged in)
@@ -5727,42 +5735,42 @@ async function init() {
   });
 
   // Viewer tab
-  el('btn-load-viewer-models').addEventListener('click', loadViewerModels);
+  el('btn-load-viewer-models')?.addEventListener('click', loadViewerModels);
   el('btn-load-federation')?.addEventListener('click', loadFederation);
-  el('btn-unload-all-models').addEventListener('click', unloadAllModels);
-  el('btn-clear-recent').addEventListener('click', clearRecentModels);
+  el('btn-unload-all-models')?.addEventListener('click', unloadAllModels);
+  el('btn-clear-recent')?.addEventListener('click', clearRecentModels);
   document.querySelectorAll('.viewer-src-btn').forEach(btn => {
     btn.addEventListener('click', () => setViewerSource(btn.dataset.src));
   });
-  el('btn-viewer-home').addEventListener('click', () => {
+  el('btn-viewer-home')?.addEventListener('click', () => {
     if (_viewerState.viewer) _viewerState.viewer.fitToView();
   });
-  el('btn-viewer-explode').addEventListener('click', () => {
+  el('btn-viewer-explode')?.addEventListener('click', () => {
     if (!_viewerState.viewer) return;
     const current = _viewerState.viewer.getExplodeScale?.() ?? 0;
     _viewerState.viewer.explode(current > 0 ? 0 : 0.5);
   });
-  el('btn-show-clashes').addEventListener('click', showAllClashMarkers);
-  el('btn-clear-markers').addEventListener('click', clearClashMarkers);
-  el('btn-load-clash-results').addEventListener('click', loadClashResultsForViewer);
+  el('btn-show-clashes')?.addEventListener('click', showAllClashMarkers);
+  el('btn-clear-markers')?.addEventListener('click', clearClashMarkers);
+  el('btn-load-clash-results')?.addEventListener('click', loadClashResultsForViewer);
   el('btn-show-issue-markers')?.addEventListener('click', () => {
     if (_issueMarkersShown) { clearIssuePushpins(); }
     else { showIssuePushpinsInViewer(); }
   });
   el('btn-clear-issue-markers')?.addEventListener('click', clearIssuePushpins);
-  el('inp-clash-filter').addEventListener('input', () => renderClashGroups(_viewerState.clashGroups));
+  el('inp-clash-filter')?.addEventListener('input', () => renderClashGroups(_viewerState.clashGroups));
 
   // Coordination space
-  el('btn-load-coord-spaces').addEventListener('click', loadCoordinationSpaces);
+  el('btn-load-coord-spaces')?.addEventListener('click', loadCoordinationSpaces);
   el('btn-load-coord-spaces-mc')?.addEventListener('click', loadCoordinationSpaces);
-  el('sel-coord-space').addEventListener('change', onCoordSpaceChange);
+  el('sel-coord-space')?.addEventListener('change', onCoordSpaceChange);
   el('sel-coord-space-mc')?.addEventListener('change', onCoordSpaceChange);
 
   // Saved Views
-  el('sel-view').addEventListener('change', onViewSelected);
-  el('btn-view-load').addEventListener('click', loadSelectedView);
-  el('btn-view-save').addEventListener('click', saveCurrentAsView);
-  el('btn-view-delete').addEventListener('click', deleteSelectedView);
+  el('sel-view')?.addEventListener('change', onViewSelected);
+  el('btn-view-load')?.addEventListener('click', loadSelectedView);
+  el('btn-view-save')?.addEventListener('click', saveCurrentAsView);
+  el('btn-view-delete')?.addEventListener('click', deleteSelectedView);
 
   // Initialize viewer source toggle + recents on load
   setViewerSource('space');
@@ -5771,7 +5779,7 @@ async function init() {
   reloadViewsList().catch(() => {});
 
   // Clashes tab
-  el('btn-load-clash-groups').addEventListener('click', loadClashGroups);
+  el('btn-load-clash-groups')?.addEventListener('click', loadClashGroups);
   el('btn-smart-group')?.addEventListener('click', runSmartGroupAnalysis);
   el('btn-smart-group-close')?.addEventListener('click', () => el('smart-group-panel')?.classList.add('hidden'));
   el('btn-smart-approve-all')?.addEventListener('click', () => {
@@ -5783,20 +5791,20 @@ async function init() {
     }
     toast(`Marked soft/interface clashes as approved (not yet pushed to ACC)`);
   });
-  el('btn-new-template').addEventListener('click', () => openTemplateEditor(null));
-  el('btn-apply-template').addEventListener('click', applyTemplateToSelected);
-  el('btn-push-issues').addEventListener('click', openPushPreview);
-  el('btn-template-save').addEventListener('click', saveTemplate);
-  el('btn-template-cancel').addEventListener('click', () => el('template-modal').classList.add('hidden'));
-  el('btn-template-modal-close').addEventListener('click', () => el('template-modal').classList.add('hidden'));
-  el('btn-template-delete').addEventListener('click', () => {
-    const id = el('template-edit-id').value;
+  el('btn-new-template')?.addEventListener('click', () => openTemplateEditor(null));
+  el('btn-apply-template')?.addEventListener('click', applyTemplateToSelected);
+  el('btn-push-issues')?.addEventListener('click', openPushPreview);
+  el('btn-template-save')?.addEventListener('click', saveTemplate);
+  el('btn-template-cancel')?.addEventListener('click', () => el('template-modal')?.classList.add('hidden'));
+  el('btn-template-modal-close')?.addEventListener('click', () => el('template-modal')?.classList.add('hidden'));
+  el('btn-template-delete')?.addEventListener('click', () => {
+    const id = el('template-edit-id')?.value;
     if (id) deleteTemplate(id);
   });
-  el('btn-push-confirm').addEventListener('click', confirmPushIssues);
-  el('btn-push-cancel').addEventListener('click', () => el('push-preview-modal').classList.add('hidden'));
-  el('btn-push-preview-close').addEventListener('click', () => el('push-preview-modal').classList.add('hidden'));
-  el('chk-clashes-all').addEventListener('change', e => {
+  el('btn-push-confirm')?.addEventListener('click', confirmPushIssues);
+  el('btn-push-cancel')?.addEventListener('click', () => el('push-preview-modal')?.classList.add('hidden'));
+  el('btn-push-preview-close')?.addEventListener('click', () => el('push-preview-modal')?.classList.add('hidden'));
+  el('chk-clashes-all')?.addEventListener('change', e => {
     const groups = _filteredGroups();
     groups.forEach(g => {
       const id = g.id ?? g.groupId ?? g.clashGroupId;
@@ -5805,11 +5813,11 @@ async function init() {
     });
     renderClashGroupsList();
   });
-  el('sel-clashes-test').addEventListener('change', e => {
+  el('sel-clashes-test')?.addEventListener('change', e => {
     _clashesState.filterTestId = e.target.value;
     renderClashGroupsList();
   });
-  el('inp-clashes-search').addEventListener('input', e => {
+  el('inp-clashes-search')?.addEventListener('input', e => {
     _clashesState.filterText = e.target.value;
     renderClashGroupsList();
   });
@@ -5819,11 +5827,11 @@ async function init() {
   document.querySelectorAll('input[name="template-naming"]').forEach(r => {
     r.addEventListener('change', _updateNamingPreviews);
   });
-  el('template-edit-custom-pattern').addEventListener('input', _updateNamingPreviews);
+  el('template-edit-custom-pattern')?.addEventListener('input', _updateNamingPreviews);
   // Live preview updates as the user types a level/location
-  el('template-edit-location').addEventListener('input', _updateNamingPreviews);
+  el('template-edit-location')?.addEventListener('input', _updateNamingPreviews);
   // Level picker: load levels from the selected model
-  el('btn-load-levels').addEventListener('click', () => {
+  el('btn-load-levels')?.addEventListener('click', () => {
     const urn = el('template-model-picker')?.value;
     if (!urn) { toast('Pick a model first', 'error'); return; }
     _loadLevelsForModel(urn);
@@ -5832,12 +5840,12 @@ async function init() {
   el('sel-apply-template')?.addEventListener('change', renderClashGroupsList);
 
   // Issues tab
-  el('btn-load-issues').addEventListener('click', loadIssues);
-  el('btn-new-issue').addEventListener('click', openNewIssueModal);
-  el('btn-issue-new-close').addEventListener('click', () => el('issue-new-modal').classList.add('hidden'));
-  el('btn-issue-cancel').addEventListener('click', () => el('issue-new-modal').classList.add('hidden'));
-  el('btn-issue-create').addEventListener('click', createIssue);
-  el('inp-issue-search').addEventListener('input', e => {
+  el('btn-load-issues')?.addEventListener('click', loadIssues);
+  el('btn-new-issue')?.addEventListener('click', openNewIssueModal);
+  el('btn-issue-new-close')?.addEventListener('click', () => el('issue-new-modal')?.classList.add('hidden'));
+  el('btn-issue-cancel')?.addEventListener('click', () => el('issue-new-modal')?.classList.add('hidden'));
+  el('btn-issue-create')?.addEventListener('click', createIssue);
+  el('inp-issue-search')?.addEventListener('input', e => {
     _issuesState.filterText = e.target.value;
     renderIssuesList();
   });
@@ -5852,11 +5860,11 @@ async function init() {
   });
 
   // Coordination tab
-  el('btn-coord-refresh').addEventListener('click', () => {
+  el('btn-coord-refresh')?.addEventListener('click', () => {
     _coordState.loaded = false;
     loadCoordinationData();
   });
-  el('btn-load-view').addEventListener('click', loadViewIntoViewer);
+  el('btn-load-view')?.addEventListener('click', loadViewIntoViewer);
   el('btn-create-view')?.addEventListener('click', openCreateViewModal);
 
   // Discipline search bar
@@ -5924,28 +5932,28 @@ async function init() {
     if (e.target === el('create-view-modal')) closeCreateViewModal();
   });
 
-  el('btn-clash-incl-all').addEventListener('click', () => {
+  el('btn-clash-incl-all')?.addEventListener('click', () => {
     _coordState.clashIncludes = _coordState.models.map(m => m.id);
     renderCoordClashRows();
     saveCoordinationDebounced();
   });
-  el('btn-clash-incl-none').addEventListener('click', () => {
+  el('btn-clash-incl-none')?.addEventListener('click', () => {
     _coordState.clashIncludes = [];
     renderCoordClashRows();
     saveCoordinationDebounced();
   });
-  el('btn-clash-incl-disc').addEventListener('click', () => {
+  el('btn-clash-incl-disc')?.addEventListener('click', () => {
     _coordState.clashIncludes = Object.values(_coordState.assignments);
     renderCoordClashRows();
     saveCoordinationDebounced();
   });
-  el('sel-align-snap').addEventListener('change', e => {
+  el('sel-align-snap')?.addEventListener('change', e => {
     _coordState.alignSnap = parseFloat(e.target.value || '1');
     saveCoordinationDebounced();
   });
-  el('btn-load-mc-ss').addEventListener('click', loadMcSearchSets);
-  el('btn-load-mc-ct').addEventListener('click', loadMcClashTests);
-  el('btn-load-wf-results').addEventListener('click', loadWorkflowClashResults);
+  el('btn-load-mc-ss')?.addEventListener('click', loadMcSearchSets);
+  el('btn-load-mc-ct')?.addEventListener('click', loadMcClashTests);
+  el('btn-load-wf-results')?.addEventListener('click', loadWorkflowClashResults);
 
   el('btn-import-mc-ss')?.addEventListener('click', async () => {
     const modelSetId = getActiveCoordSpaceId();
@@ -5982,7 +5990,7 @@ async function init() {
   });
 
   // Models tab
-  el('btn-load-models').addEventListener('click', loadModels);
+  el('btn-load-models')?.addEventListener('click', loadModels);
   document.querySelectorAll('#models-disc-filter .disc-pill').forEach(pill => {
     pill.addEventListener('click', () => {
       document.querySelectorAll('#models-disc-filter .disc-pill').forEach(p => p.classList.remove('active'));
@@ -5993,9 +6001,9 @@ async function init() {
   });
 
   // Hub tab
-  el('btn-load-hub-projects').addEventListener('click', loadHubProjects);
-  el('inp-hub-search').addEventListener('input', () => renderHubProjects(_hubProjects));
-  el('sel-hub-sort').addEventListener('change', e => {
+  el('btn-load-hub-projects')?.addEventListener('click', loadHubProjects);
+  el('inp-hub-search')?.addEventListener('input', () => renderHubProjects(_hubProjects));
+  el('sel-hub-sort')?.addEventListener('change', e => {
     _hubSort = e.target.value;
     renderHubProjects(_hubProjects);
   });
@@ -6025,29 +6033,29 @@ async function init() {
   });
 
   // Connect tab — project access
-  el('btn-check-mc-access').addEventListener('click', checkMcAccess);
-  el('btn-grant-access').addEventListener('click', grantProjectAccess);
-  el('btn-load-admins').addEventListener('click', loadAccountAdmins);
+  el('btn-check-mc-access')?.addEventListener('click', checkMcAccess);
+  el('btn-grant-access')?.addEventListener('click', grantProjectAccess);
+  el('btn-load-admins')?.addEventListener('click', loadAccountAdmins);
 
   // Connect tab
-  el('btn-test-conn').addEventListener('click', testConnection);
-  el('btn-load-folders').addEventListener('click', loadFolders);
-  el('btn-detect-container').addEventListener('click', detectContainer);
-  el('btn-save-env').addEventListener('click', saveEnv);
-  el('btn-refresh-caps').addEventListener('click', loadCapabilities);
-  el('btn-toggle-secret').addEventListener('click', () => {
+  el('btn-test-conn')?.addEventListener('click', testConnection);
+  el('btn-load-folders')?.addEventListener('click', loadFolders);
+  el('btn-detect-container')?.addEventListener('click', detectContainer);
+  el('btn-save-env')?.addEventListener('click', saveEnv);
+  el('btn-refresh-caps')?.addEventListener('click', loadCapabilities);
+  el('btn-toggle-secret')?.addEventListener('click', () => {
     const inp = el('inp-client-secret');
-    inp.type = inp.type === 'password' ? 'text' : 'password';
+    if (inp) inp.type = inp.type === 'password' ? 'text' : 'password';
   });
 
 
   // Settings tab
-  el('btn-save-settings').addEventListener('click', saveSettings);
-  el('set-naming-format').addEventListener('input', updateNamingPreview);
+  el('btn-save-settings')?.addEventListener('click', saveSettings);
+  el('set-naming-format')?.addEventListener('input', updateNamingPreview);
 
   // Run tab
-  el('btn-run').addEventListener('click', runWorkflow);
-  el('btn-clear-log').addEventListener('click', () => { el('log-output').innerHTML = ''; });
+  el('btn-run')?.addEventListener('click', runWorkflow);
+  el('btn-clear-log')?.addEventListener('click', () => { if (el('log-output')) el('log-output').innerHTML = ''; });
 
   // Keyboard shortcut: Cmd/Ctrl+Enter → Run
   document.addEventListener('keydown', e => {
