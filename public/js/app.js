@@ -107,6 +107,8 @@ function navigate(tab) {
   if (tab === 'clashes' && !_clashesState.templates.length) _loadClashTemplates();
   // Lazy-load issues + types
   if (tab === 'issues' && !_issuesState.loaded) loadIssues();
+  // Auto-load hub projects when navigating to the hub tab (if logged in and not loaded yet)
+  if (tab === 'hub' && !_hubProjectsLoaded) _autoLoadHubProjects();
 }
 
 function renderSaveBtn(tab) {
@@ -2675,11 +2677,42 @@ function flyToIssuePushpin(issueId) {
 let _hubProjects = [];
 let _hubFilter = 'all';
 let _hubSort   = 'name';
+let _hubProjectsLoaded = false; // true once successfully fetched at least once
+
+// Auto-load hub projects silently (no UI spinner required — grid shows skeleton)
+async function _autoLoadHubProjects() {
+  const status = await api('GET', '/api/auth/status').catch(() => null);
+  if (!status?.loggedIn) return; // not logged in yet
+  loadHubProjects();
+}
+
+// Update the Connect tab "active project" card based on current inp-project-id
+function _refreshConnectProjectCard() {
+  const projectId   = el('inp-project-id')?.value?.trim() ?? '';
+  const activeCard  = el('connect-active-project');
+  const noProject   = el('connect-no-project');
+  const nameEl      = el('connect-project-name');
+  const idEl        = el('connect-project-id-display');
+
+  if (!projectId) {
+    activeCard?.classList.add('hidden');
+    noProject?.classList.remove('hidden');
+    return;
+  }
+
+  noProject?.classList.add('hidden');
+  activeCard?.classList.remove('hidden');
+
+  // Find display name from loaded projects
+  const proj = _hubProjects.find(p => (p.id ?? '').replace(/^b\./, '') === projectId);
+  if (nameEl) nameEl.textContent = proj?.attributes?.name ?? projectId;
+  if (idEl)   idEl.textContent   = projectId;
+}
 
 async function loadHubProjects() {
   const btn = el('btn-load-hub-projects');
   const errorEl = el('hub-error');
-  btn.disabled = true; btn.textContent = 'Loading…';
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
   errorEl.classList.add('hidden');
 
   // Skeleton placeholders while loading
@@ -2721,6 +2754,8 @@ async function loadHubProjects() {
     const current = _hubProjects.find(p => p.id?.replace(/^b\./, '') === currentProjId);
     el('hub-stat-active').textContent = current?.attributes?.name ?? 'None';
 
+    _hubProjectsLoaded = true;
+    _refreshConnectProjectCard();
     toast(`Loaded ${_hubProjects.length} project(s)`);
   } catch (err) {
     grid.innerHTML = '';
@@ -2729,11 +2764,11 @@ async function loadHubProjects() {
     el('hub-error-hint').textContent = err.status === 403
       ? 'Tip: Your APS app may not be authorized for this ACC hub. An ACC Account Admin needs to add your Client ID under Account Admin → Settings → Custom Integrations.'
       : err.status === 401
-      ? 'Tip: Verify APS Client ID/Secret on the Connect tab and click Test Connection.'
+      ? 'Tip: Sign in with Autodesk on the Connect tab.'
       : '';
     toast('Failed to load hub projects', 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Load Projects';
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; }
   }
 }
 
@@ -2828,6 +2863,7 @@ async function switchHubProject(projectId, projectName) {
   if (nameSpan) { nameSpan.textContent = 'No folder selected'; nameSpan.className = 'text-sm text-slate-500 flex-1 truncate'; }
   el('hub-stat-active').textContent = projectName;
   renderHubProjects(_hubProjects);
+  _refreshConnectProjectCard();
 
   // Persist project + container IDs, then jump straight to coordination
   try {
@@ -2836,12 +2872,13 @@ async function switchHubProject(projectId, projectName) {
       State.config.env.ACC_PROJECT_ID  = projectId;
       State.config.env.MC_CONTAINER_ID = projectId;
     }
-    toast(`Switched to "${projectName}" — loading coordination spaces…`);
+    toast(`"${projectName}" activated — loading coordination spaces…`);
     navigate('coordination');
     await loadCoordinationSpaces();
   } catch (err) {
-    toast(`Switched to "${projectName}" — save credentials on the Connect tab to persist`, 'warn');
-    navigate('connect');
+    toast(`Switched to "${projectName}" — loading coordination…`, 'warn');
+    navigate('coordination');
+    await loadCoordinationSpaces().catch(() => {});
   }
 }
 
@@ -5571,7 +5608,7 @@ async function loadAuthStatus() {
     // Check URL for post-OAuth redirect result
     const params = new URLSearchParams(window.location.search);
     if (params.get('auth') === 'success') {
-      toast('Service account signed in successfully', 'success');
+      toast('Signed in with Autodesk successfully');
       window.history.replaceState({}, '', '/');
       // Go straight to Hub Projects so the user can pick a project
       navigate('hub');
@@ -5579,6 +5616,14 @@ async function loadAuthStatus() {
     } else if (params.get('auth') === 'error') {
       toast('Sign-in failed: ' + (params.get('msg') || 'Unknown error'), 'error');
       window.history.replaceState({}, '', '/');
+    } else if (status?.loggedIn && !_hubProjectsLoaded) {
+      // Already logged in from a previous session — auto-load hub projects in background
+      loadHubProjects();
+      // Also auto-load coordination spaces if a project is already configured
+      const projectId = el('inp-project-id')?.value?.trim() ?? State.config?.env?.ACC_PROJECT_ID ?? '';
+      if (projectId) {
+        loadCoordinationSpaces().catch(() => {});
+      }
     }
 
     return status;
@@ -5586,32 +5631,41 @@ async function loadAuthStatus() {
 }
 
 function renderAuthStatus(status) {
-  const loggedOut = el('sa-logged-out');
-  const loggedIn  = el('sa-logged-in');
-  const badge     = el('sa-status-badge');
-  const callbackEl = el('sa-callback-display');
+  // New simplified UI elements
+  const heroEl      = el('connect-login-hero');
+  const loggedInEl  = el('connect-logged-in');
+  const callbackEl  = el('sa-callback-display');
+  const capsSection = el('capabilities-section');
 
-  // Use the server-provided callback URL (which auto-detects Railway public domain).
-  // Falls back to window.location.origin so local dev still works without config.
   if (callbackEl) {
     callbackEl.textContent = State.config?.callbackUrl ?? `${window.location.origin}/api/auth/callback`;
   }
 
+  // Legacy hidden elements (keep functional for JS that references them)
+  el('sa-logged-out')?.classList.add('hidden');
+  el('sa-logged-in')?.classList.add('hidden');
+
   if (!status?.loggedIn) {
-    loggedOut?.classList.remove('hidden');
-    loggedIn?.classList.add('hidden');
-    if (badge) {
-      badge.className = 'hidden';
-    }
+    heroEl?.classList.remove('hidden');
+    loggedInEl?.classList.add('hidden');
+    capsSection?.classList.add('hidden');
+
+    // Update hub empty message
+    const hubMsg = el('hub-empty-msg');
+    if (hubMsg) hubMsg.textContent = 'Sign in with Autodesk on the Connect tab to see your projects';
     return;
   }
 
-  loggedOut?.classList.add('hidden');
-  loggedIn?.classList.remove('hidden');
+  // Logged in — show dashboard view
+  heroEl?.classList.add('hidden');
+  loggedInEl?.classList.remove('hidden');
+  capsSection?.classList.remove('hidden');
 
+  const badge = el('sa-status-badge');
   if (badge) {
     badge.textContent = '● Connected';
-    badge.className = 'flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-300';
+    badge.className = 'text-xs font-semibold px-2.5 py-1 rounded-full border bg-emerald-100 text-emerald-700 border-emerald-300';
+    badge.classList.remove('hidden');
   }
 
   if (el('sa-account-name') && status.name) el('sa-account-name').textContent = status.name;
@@ -5624,8 +5678,10 @@ function renderAuthStatus(status) {
       : `Token valid · refreshes in ~${diffMin} min`;
   }
 
-  // Railway persistence: show the refresh token copy section only when the env
-  // var is NOT yet set (so the user knows they need to configure it once).
+  // Update active project display
+  _refreshConnectProjectCard();
+
+  // Railway persistence
   const persistEl = el('sa-railway-persist');
   const envOkEl   = el('sa-railway-ok');
   if (status.envVarSet) {
