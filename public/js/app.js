@@ -3185,18 +3185,24 @@ async function fetchCoordSpaceModels() {
 }
 
 async function loadViewIntoViewer() {
-  const viewId  = el('sel-coord-view').value;
+  const viewId  = el('sel-coord-view')?.value;
   const spaceId = getActiveCoordSpaceId();
   if (!viewId)  { toast('Select a view first', 'error'); return; }
   if (!spaceId) { toast('Select a Coordination Space first', 'error'); return; }
 
   const btn     = el('btn-load-view');
-  const oldText = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Loading…';
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+
+  // containerId is needed by buildMcClient on the server — pass it if we have it
+  const containerId = el('inp-container-id')?.value?.trim() || State.config?.env?.MC_CONTAINER_ID || '';
 
   try {
     // Fetch view definition from MC API — v3 format uses definition[].lineageUrn
-    const view = await api('GET', `/api/mc/modelsets/${spaceId}/views/${viewId}`);
+    const qs = new URLSearchParams({ modelSetId: spaceId });
+    if (containerId) qs.set('containerId', containerId);
+    const raw  = await api('GET', `/api/mc/modelsets/${spaceId}/views/${viewId}?${qs}`);
+    // MC API may return the view wrapped: { modelSetView: {...} } or directly
+    const view = raw?.modelSetView ?? raw;
     const viewName = view?.name ?? viewId;
 
     // Extract document identifiers: prefer v3 definition[].lineageUrn, fall back to modelIds
@@ -3205,10 +3211,9 @@ async function loadViewIntoViewer() {
     const allRefs     = [...new Set([...lineageUrns, ...legacyIds])];
 
     // Fetch all documents in the coordination space to resolve viewerUrns
-    const containerId = el('inp-container-id').value.trim();
-    const qs = new URLSearchParams({ modelSetId: spaceId });
-    if (containerId) qs.set('containerId', containerId);
-    const spaceResp = await api('GET', `/api/mc/space-documents?${qs}`);
+    const docsQs = new URLSearchParams({ modelSetId: spaceId });
+    if (containerId) docsQs.set('containerId', containerId);
+    const spaceResp = await api('GET', `/api/mc/space-documents?${docsQs}`);
     const docs = spaceResp?.documents ?? [];
 
     const targets = [];
@@ -3304,7 +3309,7 @@ async function loadViewIntoViewer() {
   } catch (err) {
     toast('Failed to load view: ' + err.message, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = oldText;
+    if (btn) { btn.disabled = false; btn.textContent = 'Load View'; }
   }
 }
 
@@ -3330,9 +3335,9 @@ function renderCoordDisciplineRows() {
   host.innerHTML = '';
 
   const searchText = _discSearchText.toLowerCase().trim();
-  const hasLevelFilter = !!_levelFilter.level && _levelFilter.matchedIds.size > 0;
 
-  // Sort all models alphabetically for consistent dropdown ordering
+  // Sort all models alphabetically — always show every model in discipline dropdowns;
+  // the level filter only drives the level name picker, not which models appear here
   const allSorted = [..._coordState.models].sort((a, b) => a.name.localeCompare(b.name));
 
   for (const disc of COORD_DISC_KEYS) {
@@ -3342,15 +3347,11 @@ function renderCoordDisciplineRows() {
     const isSuggested = (m) =>
       m.discipline === disc || _lookupLearnedDisc(m.name) === disc;
 
-    // Apply level filter first, then search filter
-    const afterLevel = hasLevelFilter
-      ? allSorted.filter(m => _levelFilter.matchedIds.has(m.id) || m.id === assignedId)
-      : allSorted;
-
+    // Apply search filter only (level filter does not narrow discipline dropdowns)
     const afterSearch = searchText
-      ? afterLevel.filter(m =>
+      ? allSorted.filter(m =>
           m.name.toLowerCase().includes(searchText) || m.id === assignedId)
-      : afterLevel;
+      : allSorted;
 
     // Split into suggested (pinned first) and others
     const suggested = afterSearch.filter(m => isSuggested(m));
@@ -3374,7 +3375,7 @@ function renderCoordDisciplineRows() {
 
     const candidateCount = _coordState.models.filter(m => isSuggested(m)).length;
     const filteredCount = afterSearch.length;
-    const countLabel = hasLevelFilter || searchText
+    const countLabel = searchText
       ? `${filteredCount} shown`
       : (candidateCount ? `${candidateCount} suggested` : 'no suggestions');
 
