@@ -55,6 +55,72 @@ export class DisciplineClassifier {
     return results;
   }
 
+  /**
+   * Classify a clash group's discipline pair from its `groupingValues[]`.
+   *
+   * Used by ClashResultsProcessor (Stage 3) — given a multi-property
+   * hierarchy like ["Level 3", "Supply Air", "PipeFitting:Elbow"], match each
+   * value against `groupingValuePatterns` in config/discipline-rules.json to
+   * find one or two implied disciplines. When `testHint` is provided (e.g.
+   * `["MECH", "STRUCT"]` from the clash test template), that takes precedence.
+   *
+   * Returns `{ disciplineA, disciplineB, level, system }` — any field may be
+   * null when no match is found.
+   *
+   * @param {string[]} groupingValues
+   * @param {string[]|null} [testHint]
+   * @returns {{disciplineA: string|null, disciplineB: string|null, level: string|null, system: string|null}}
+   */
+  classifyFromGroupingValues(groupingValues, testHint = null) {
+    const out = { disciplineA: null, disciplineB: null, level: null, system: null };
+    if (!Array.isArray(groupingValues) || !groupingValues.length) {
+      if (Array.isArray(testHint) && testHint.length >= 2) {
+        out.disciplineA = testHint[0];
+        out.disciplineB = testHint[1];
+      }
+      return out;
+    }
+
+    const matchedDisciplines = new Set();
+    for (const raw of groupingValues) {
+      if (typeof raw !== 'string') continue;
+      const value = raw.trim();
+      if (!value) continue;
+
+      // Level detection (e.g. "Level 3", "L03", "Roof", "Basement 1")
+      if (!out.level && /(^|\s)(level\s*\d+|l\d+|roof|basement|ground)/i.test(value)) {
+        out.level = value;
+      }
+
+      // System detection — any value that matches a known systemClassifications entry
+      for (const [key, def] of Object.entries(this.disciplines)) {
+        if (key === 'UNKNOWN') continue;
+        if (def.systemClassifications?.some(sc => sc.toLowerCase() === value.toLowerCase())) {
+          if (!out.system) out.system = value;
+          matchedDisciplines.add(key);
+        }
+        // groupingValuePatterns is an optional discipline-rules.json extension
+        // (regex list per discipline) for matching ad-hoc grouping property values.
+        const patterns = def.groupingValuePatterns ?? [];
+        if (patterns.some(p => new RegExp(p, 'i').test(value))) {
+          matchedDisciplines.add(key);
+        }
+      }
+    }
+
+    // Test hint always wins when both are known
+    if (Array.isArray(testHint) && testHint.length >= 2) {
+      out.disciplineA = testHint[0];
+      out.disciplineB = testHint[1];
+      return out;
+    }
+
+    const ordered = [...matchedDisciplines].sort();
+    out.disciplineA = ordered[0] ?? null;
+    out.disciplineB = ordered[1] ?? null;
+    return out;
+  }
+
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------

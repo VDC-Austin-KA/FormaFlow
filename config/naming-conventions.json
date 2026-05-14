@@ -1,7 +1,8 @@
 {
   "$schema": "../schemas/naming-conventions.schema.json",
-  "version": "1.0.0",
-  "description": "Standardised naming rules for clash groups and clash test results. Ensures every clash group has a globally unique, human-readable identifier that is transferable and sortable across projects.",
+  "version": "2.0.0",
+  "mode": "fallback",
+  "description": "FALLBACK-ONLY naming rules. The default behaviour now preserves the ACC UI auto-generated `group.name` from GET /modelsets/{m}/clashes/grouped verbatim. These rules apply only when the API returns no name (Stage 1 discipline-pair synthetic groups, legacy containers, or raw clash instances).",
   "clashGroupNaming": {
     "format": "[Level]_[TestName]_[SearchSetA]_vs_[SearchSetB]_[Sequence]",
     "example": "L03_ARCH_vs_STRUCT_ARCH_Floors_vs_STRUCT_Framing_001",

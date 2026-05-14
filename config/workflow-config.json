@@ -41,6 +41,14 @@
     "generateUniqueNames": true,
     "namingConvention": "standard",
     "exportFormat": "json",
-    "exportPath": "./output/clash-results"
+    "exportPath": "./output/clash-results",
+    "collapseThreshold": 500,
+    "preserveApiNames": true
+  },
+  "autoAssign": {
+    "enabled": false,
+    "priorityThreshold": 3,
+    "issueTypeId": null,
+    "dryRun": true
   }
 }

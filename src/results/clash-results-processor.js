@@ -1,34 +1,50 @@
 /**
  * ClashResultsProcessor
  *
- * Fetches raw clash results from the Model Coordination API, groups them
- * by Level + System Classification + Category (multi-property grouping),
- * and assigns unique, descriptive names following the convention defined
- * in config/naming-conventions.json.
+ * Fetches grouped clash results from `GET /modelsets/{m}/clashes/grouped`,
+ * preserves the API/UI auto-generated names verbatim, and enriches each
+ * group with FormaFlow-inferred metadata (discipline pair, normalised level,
+ * collapsed-by-FamilyType signal).
  *
- * Naming format:
- *   [Level]_[TestName]_[SearchSetA]_vs_[SearchSetB]_[Sequence]
- *   e.g.  L03_ARCH_vs_STRUCT_ARCH_Floors_vs_STRUCT_Framing_001
+ * Naming policy:
+ *   - When the API returns `group.name`, pass it through unchanged so the
+ *     FormaFlow report decodes 1:1 with what the ACC Coordination UI shows.
+ *   - When the API does not return a name (Stage 1 fallback: discipline-pair
+ *     synthetic groups, or older container shapes), build a fallback name
+ *     using the legacy convention in config/naming-conventions.json.
+ *
+ * Stages:
+ *   3 — Multi-property hierarchy: walk `groupingValues[]` to infer disciplines.
+ *   4 — High-cardinality collapse: when a discipline pair yields > N leaf
+ *       groups, collapse them by `Family:Type` to keep reports readable.
+ *   5 — Auto-assign to issues (orchestrated by the workflow, not here): this
+ *       processor only flags `autoAssignCandidate=true` on groups whose
+ *       priority exceeds the configured threshold.
  */
 
 import { readFileSync, mkdirSync, writeFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createLogger } from '../utils/logger.js';
+import { DisciplineClassifier } from '../model-identification/discipline-classifier.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const NAMING_PATH = resolve(__dirname, '../../config/naming-conventions.json');
 
 const logger = createLogger('ClashResultsProcessor');
 
+const DEFAULT_COLLAPSE_THRESHOLD = Number(process.env.PRIORITY_COLLAPSE_THRESHOLD ?? 500);
+
 export class ClashResultsProcessor {
   /**
    * @param {import('../api/model-coordination.js').ModelCoordinationClient} mcClient
    * @param {object} [options]
-   * @param {boolean} [options.groupByLevel=true]
-   * @param {boolean} [options.groupBySystem=true]
+   * @param {boolean} [options.groupByLevel=true]            - legacy fallback grouping
+   * @param {boolean} [options.groupBySystem=true]           - legacy fallback grouping
    * @param {string}  [options.outputPath='./output/clash-results']
    * @param {boolean} [options.dryRun=false]
+   * @param {number}  [options.collapseThreshold]            - Stage 4 threshold (default 500)
+   * @param {number}  [options.priorityThreshold]            - Stage 5 auto-assign threshold (1..10)
    */
   constructor(mcClient, options = {}) {
     this._mc = mcClient;
@@ -37,6 +53,9 @@ export class ClashResultsProcessor {
     this._groupBySystem = options.groupBySystem ?? true;
     this._outputPath = options.outputPath ?? './output/clash-results';
     this._dryRun = options.dryRun ?? false;
+    this._collapseThreshold = options.collapseThreshold ?? DEFAULT_COLLAPSE_THRESHOLD;
+    this._priorityThreshold = options.priorityThreshold ?? null;
+    this._classifier = new DisciplineClassifier();
   }
 
   /**
@@ -48,8 +67,6 @@ export class ClashResultsProcessor {
    * @returns {Promise<ProcessedClashReport>}
    */
   async processAll(modelSetId, versionIndex, clashTests) {
-    // Include any test with a remote ID — covers both newly-created tests and
-    // existing ACC tests used as fallback (where created is false).
     const completedTests = clashTests.filter(t => t.remoteId);
     logger.info('Processing results for %d clash test(s)', completedTests.length);
 
@@ -59,11 +76,16 @@ export class ClashResultsProcessor {
       allGroups.push(...groups);
     }
 
+    // Stage 4: collapse high-cardinality discipline pairs
+    const collapsed = this._maybeCollapseHighCardinality(allGroups);
+
     const report = {
       generatedAt: new Date().toISOString(),
-      totalGroups: allGroups.length,
-      totalClashes: allGroups.reduce((sum, g) => sum + g.clashCount, 0),
-      groups: allGroups
+      totalGroups: collapsed.length,
+      totalClashes: collapsed.reduce((sum, g) => sum + g.clashCount, 0),
+      collapseThreshold: this._collapseThreshold,
+      priorityThreshold: this._priorityThreshold,
+      groups: collapsed
     };
 
     if (!this._dryRun) {
@@ -109,26 +131,24 @@ export class ClashResultsProcessor {
       }
     }
 
-    // Pre-grouped path: if items look like clash groups (have count/clashCount) rather than
-    // individual clash instances, treat them as already-grouped and skip re-grouping.
+    // Pre-grouped path: API returned canonical clash groups.
     if (clashes.length && this._looksPreGrouped(clashes[0])) {
       logger.info('Test %s results appear pre-grouped (%d groups)', test.name, clashes.length);
-      return this._namePreGrouped(clashes, test);
+      return this._processPreGrouped(clashes, test);
     }
 
+    // Legacy fallback: API returned raw clash instances — apply our own grouping.
     const groups = this._groupClashes(clashes, test);
-    return this._nameGroups(groups, test);
+    return this._nameFallbackGroups(groups, test);
   }
 
   _normaliseClashes(raw) {
     if (!raw) return [];
     if (Array.isArray(raw)) return raw;
-    // Try all known array keys across API versions
-    for (const key of ['clashes', 'data', 'groups', 'clashGroups', 'items',
+    for (const key of ['groups', 'clashGroups', 'clashes', 'data', 'items',
                         'clashInstances', 'results', 'clashResults', 'tests']) {
       if (Array.isArray(raw[key])) return raw[key];
     }
-    // Nested result/pagination wrapper
     if (raw.result && typeof raw.result === 'object') return this._normaliseClashes(raw.result);
     if (raw.pagination && Array.isArray(raw.data)) return raw.data;
     return [];
@@ -136,27 +156,139 @@ export class ClashResultsProcessor {
 
   _looksPreGrouped(item) {
     return item && typeof item === 'object' &&
-      ('count' in item || 'clashCount' in item || 'clashesCount' in item) &&
+      ('count' in item || 'clashCount' in item || 'clashesCount' in item || 'groupingValues' in item) &&
       !('objectId' in item) && !('objectIdA' in item);
   }
 
-  _namePreGrouped(preGrouped, test) {
+  /**
+   * Process pre-grouped clashes (the modern `/modelsets/{m}/clashes/grouped` path).
+   *
+   * Preserves the verbatim API name, walks `groupingValues` to infer
+   * disciplines (Stage 3), and flags `autoAssignCandidate` per Stage 5 policy.
+   */
+  _processPreGrouped(preGrouped, test) {
     return preGrouped.map((g, index) => {
-      const seq   = String(index + 1).padStart(3, '0');
-      const level = this._normaliseLevel(g.levelName ?? g.level ?? g.levelKey ?? 'ZUNK');
+      const seq = String(index + 1).padStart(3, '0');
+      const groupingValues = Array.isArray(g.groupingValues) ? g.groupingValues : [];
+
+      // Stage 3: preserve API name verbatim; derive a fallback only if absent.
+      const apiName = g.name ?? g.displayName ?? null;
+      const name = apiName ?? this._buildFallbackName(g, test, seq);
+
+      // Stage 3: infer discipline pair from groupingValues + test metadata.
+      const disciplinePair = this._classifier.classifyFromGroupingValues(
+        groupingValues,
+        test.requiredDisciplines ?? null
+      );
+
+      // Stage 4 input: extract Family:Type signature for downstream collapse.
+      const familyType = g.familyType ?? g.family ?? this._extractFamilyType(g);
+
+      // Stage 5 candidate flag — workflow decides whether to actually assign.
+      const priority = test.priority ?? null;
+      const autoAssignCandidate = this._priorityThreshold !== null
+        && priority !== null
+        && priority <= this._priorityThreshold;
+
+      logger.debug(
+        'group naming: { apsName: %j, formaFlowName: %j, source: %s }',
+        apiName, name, apiName ? 'api' : 'fallback'
+      );
+
       return {
-        name:       this._buildGroupName(level, test.name, seq),
-        level,
-        system:     g.systemClassification ?? g.system ?? null,
+        // Identity
+        groupId: g.id ?? g.groupId ?? null,
+        name,
+        nameSource: apiName ? 'api' : 'fallback',
+        // Hierarchy
+        groupingValues,
+        familyType,
+        // Metrics
         clashCount: g.count ?? g.clashCount ?? g.clashesCount ?? 0,
-        clashes:    [],
-        testId:     test.remoteId,
-        testName:   test.name,
-        sequence:   seq,
+        // Test linkage
+        testId: test.remoteId,
+        testName: test.name,
+        sequence: seq,
+        // Stage 3 enrichment
+        disciplineA: disciplinePair?.disciplineA ?? null,
+        disciplineB: disciplinePair?.disciplineB ?? null,
+        level: disciplinePair?.level ?? null,
+        system: disciplinePair?.system ?? null,
+        // Stage 5 input
+        priority,
+        autoAssignCandidate,
+        // Provenance
         preGrouped: true,
+        collapsedFrom: null,
       };
     });
   }
+
+  _extractFamilyType(group) {
+    // Look for Family:Type-like values inside groupingValues
+    const gv = group.groupingValues ?? [];
+    for (const v of gv) {
+      if (typeof v === 'string' && v.includes(':')) return v;
+    }
+    return null;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Stage 4: high-cardinality collapse
+  // ─────────────────────────────────────────────────────────────────────────
+
+  _maybeCollapseHighCardinality(groups) {
+    // Bucket by (disciplineA, disciplineB)
+    const byPair = new Map();
+    for (const g of groups) {
+      const key = `${g.disciplineA ?? '?'}__${g.disciplineB ?? '?'}`;
+      if (!byPair.has(key)) byPair.set(key, []);
+      byPair.get(key).push(g);
+    }
+
+    const out = [];
+    for (const [pairKey, pairGroups] of byPair) {
+      if (pairGroups.length <= this._collapseThreshold) {
+        out.push(...pairGroups);
+        continue;
+      }
+
+      logger.info(
+        'Stage 4: collapsing %d groups for pair %s by Family:Type (threshold=%d)',
+        pairGroups.length, pairKey, this._collapseThreshold
+      );
+
+      // Sub-bucket by familyType
+      const byFamily = new Map();
+      for (const g of pairGroups) {
+        const ft = g.familyType ?? '_no_family_';
+        if (!byFamily.has(ft)) byFamily.set(ft, []);
+        byFamily.get(ft).push(g);
+      }
+
+      for (const [familyType, familyGroups] of byFamily) {
+        // Preserve the first group's API name and append the Family:Type
+        const first = familyGroups[0];
+        const collapsedName = familyType === '_no_family_'
+          ? first.name
+          : `${first.name} — ${familyType}`;
+
+        out.push({
+          ...first,
+          name: collapsedName,
+          nameSource: 'collapsed',
+          clashCount: familyGroups.reduce((s, g) => s + g.clashCount, 0),
+          collapsedFrom: familyGroups.map(g => g.groupId).filter(Boolean),
+          familyType: familyType === '_no_family_' ? null : familyType,
+        });
+      }
+    }
+    return out;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Legacy fallback path (raw clash instances)
+  // ─────────────────────────────────────────────────────────────────────────
 
   _groupClashes(clashes, test) {
     const buckets = new Map();
@@ -177,8 +309,7 @@ export class ClashResultsProcessor {
     return [...buckets.values()];
   }
 
-  _nameGroups(rawGroups, test) {
-    // Sort groups: by level then system for deterministic sequence numbers
+  _nameFallbackGroups(rawGroups, test) {
     const sorted = rawGroups.sort((a, b) => {
       const lc = (a.levelKey ?? '').localeCompare(b.levelKey ?? '');
       if (lc !== 0) return lc;
@@ -188,28 +319,41 @@ export class ClashResultsProcessor {
     return sorted.map((group, index) => {
       const seq = String(index + 1).padStart(3, '0');
       const level = this._normaliseLevel(group.levelKey);
-      const name = this._buildGroupName(level, test.name, seq);
+      const name = this._buildFallbackNameFromParts(level, test.name, seq);
+      logger.debug('group naming: { apsName: null, formaFlowName: %j, source: fallback }', name);
 
       return {
+        groupId: null,
         name,
-        level,
-        system: group.systemKey,
+        nameSource: 'fallback',
+        groupingValues: [level, group.systemKey].filter(Boolean),
+        familyType: null,
         clashCount: group.clashes.length,
-        clashes: group.clashes,
         testId: test.remoteId,
         testName: test.name,
-        sequence: seq
+        sequence: seq,
+        disciplineA: null,
+        disciplineB: null,
+        level,
+        system: group.systemKey,
+        priority: test.priority ?? null,
+        autoAssignCandidate: false,
+        preGrouped: false,
+        collapsedFrom: null,
       };
     });
   }
 
-  _buildGroupName(level, testName, seq) {
-    const parts = [level, testName, seq].filter(Boolean);
-    return parts.join('_');
+  _buildFallbackName(group, test, seq) {
+    const level = this._normaliseLevel(group.levelName ?? group.level ?? 'ZUNK');
+    return this._buildFallbackNameFromParts(level, test.name, seq);
+  }
+
+  _buildFallbackNameFromParts(level, testName, seq) {
+    return [level, testName, seq].filter(Boolean).join('_');
   }
 
   _extractLevel(clash) {
-    // Level may be on either element of the clash pair
     const levelA = clash?.levelA ?? clash?.elementA?.level ?? clash?.level;
     const levelB = clash?.levelB ?? clash?.elementB?.level;
     return levelA ?? levelB ?? 'ZUNK';
@@ -226,14 +370,12 @@ export class ClashResultsProcessor {
     for (const rule of patterns) {
       const m = new RegExp(rule.match, 'i').exec(raw);
       if (m) {
-        // Replace {n:02} placeholder with zero-padded capture group
         const num = m[1] ? parseInt(m[1], 10) : null;
         return rule.normalised
           .replace('{n:02}', num !== null ? String(num).padStart(2, '0') : '')
           .replace('{n}', String(num ?? ''));
       }
     }
-    // Fallback: uppercase, trim, max 8 chars
     return raw.toUpperCase().replace(/\s+/g, '').slice(0, 8);
   }
 
@@ -242,7 +384,7 @@ export class ClashResultsProcessor {
       const resources = await this._mc.getClashTestResources(modelSetId, versionIndex, testId);
       const docs = resources?.data ?? resources ?? [];
       const allClashes = [];
-      for (const doc of docs.slice(0, 10)) {  // cap at 10 resource docs
+      for (const doc of docs.slice(0, 10)) {
         const docData = await this._mc.getClashDocument(modelSetId, versionIndex, testId, doc.key ?? doc.id);
         const clashes = docData?.clashes ?? docData ?? [];
         allClashes.push(...(Array.isArray(clashes) ? clashes : []));
@@ -270,14 +412,23 @@ export class ClashResultsProcessor {
 
 /**
  * @typedef {Object} ClashGroup
- * @property {string}   name       - Unique group name per naming convention
- * @property {string}   level
- * @property {string}   system
- * @property {number}   clashCount
- * @property {any[]}    clashes
- * @property {string}   testId
- * @property {string}   testName
- * @property {string}   sequence
+ * @property {string|null}    groupId
+ * @property {string}         name              - Verbatim from ACC UI when nameSource='api'
+ * @property {'api'|'fallback'|'collapsed'} nameSource
+ * @property {string[]}       groupingValues    - Hierarchy values from the active Saved Clash Check
+ * @property {string|null}    familyType        - Stage 4 collapse signature
+ * @property {number}         clashCount
+ * @property {string}         testId
+ * @property {string}         testName
+ * @property {string}         sequence
+ * @property {string|null}    disciplineA       - Stage 3 inference
+ * @property {string|null}    disciplineB       - Stage 3 inference
+ * @property {string|null}    level             - normalised
+ * @property {string|null}    system            - normalised
+ * @property {number|null}    priority
+ * @property {boolean}        autoAssignCandidate
+ * @property {boolean}        preGrouped
+ * @property {string[]|null}  collapsedFrom     - source group IDs when nameSource='collapsed'
  */
 
 /**
@@ -285,5 +436,7 @@ export class ClashResultsProcessor {
  * @property {string}       generatedAt
  * @property {number}       totalGroups
  * @property {number}       totalClashes
+ * @property {number}       collapseThreshold
+ * @property {number|null}  priorityThreshold
  * @property {ClashGroup[]} groups
  */
