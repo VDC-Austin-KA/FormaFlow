@@ -691,6 +691,82 @@ code { font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace; }
   border-radius: 9999px;
 }
 
+/* Stage 3 — property-hierarchy breadcrumb on each clash-group row */
+.clash-group-item .cg-breadcrumb {
+  font-size: 0.62rem;
+  color: #fbbf24;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  margin-top: 0.2rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem;
+  line-height: 1.3;
+}
+.clash-group-item .cg-bc-sep {
+  color: #475569;
+  font-weight: 700;
+  padding: 0 0.05rem;
+}
+
+/* Stage 3 — inferred discipline pair badge */
+.clash-group-item .cg-pair {
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  background: #1e293b;
+  border: 1px solid #334155;
+  padding: 0.05rem 0.4rem;
+  border-radius: 0.25rem;
+}
+
+/* Stage 5 / Stage 4 — small action badges */
+.clash-group-item .cg-badge {
+  font-size: 0.58rem;
+  font-weight: 600;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.25rem;
+  white-space: nowrap;
+}
+.clash-group-item .cg-badge-auto {
+  color: #6ee7b7;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+.clash-group-item .cg-badge-collapsed {
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+/* Stage 3 — "verbatim from ACC" marker */
+.cg-verbatim {
+  display: inline-block;
+  color: #94a3b8;
+  font-weight: 700;
+  margin-right: 0.25rem;
+  cursor: help;
+  opacity: 0.8;
+}
+
+/* Source-test name tag inside meta row */
+.clash-group-item .cg-test {
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.6rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 9rem;
+  white-space: nowrap;
+}
+
+/* Detail panel under the clash-group list */
+.viewer-clash-panel #viewer-clash-detail code {
+  background: rgba(15, 23, 42, 0.5);
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.2rem;
+}
+
 /* Discipline chip in clash panel */
 .clash-disc-chip {
   font-size: 0.6rem;

@@ -599,10 +599,25 @@
 
         <!-- Groups list -->
         <div id="viewer-clash-list" class="flex-1 overflow-y-auto min-h-0 divide-y divide-slate-800">
-          <div class="p-6 text-center text-xs text-slate-600">
-            Run the workflow then click "Load Results" to visualize clash groups
+          <div class="p-4 text-xs text-slate-400 space-y-2">
+            <div class="text-slate-300 font-semibold text-sm">What you'll see here</div>
+            <div class="leading-relaxed">
+              Each <b class="text-slate-200">clash group</b> is one batch of intersections that share the same
+              property values (e.g. same level, same system, same family). Names are read
+              <b class="text-slate-200">verbatim from the Forma "Clashes" panel</b> so the labels here match
+              what your team sees on <code class="text-amber-400">acc.autodesk.com</code> exactly.
+            </div>
+            <ul class="text-[11px] text-slate-500 space-y-0.5 pl-3 list-disc">
+              <li><span class="cg-verbatim">∥</span> &nbsp;means the name came straight from the API</li>
+              <li><span class="text-emerald-400">🤖 auto</span> &nbsp;means the group is eligible for auto-Issue creation</li>
+              <li><span class="text-blue-400">⤴ N</span> &nbsp;means the group was rolled up from N sub-groups</li>
+            </ul>
+            <div class="pt-1 text-slate-500 italic">Click <b>Load Results</b> above to populate.</div>
           </div>
         </div>
+
+        <!-- Detail panel for selected group (Stage 3-5 enrichment) -->
+        <div id="viewer-clash-detail" class="hidden border-t border-slate-700 bg-slate-900/60"></div>
 
         <!-- Footer totals -->
         <div id="clash-results-footer" class="hidden border-t border-slate-700 px-3 py-2 flex justify-between text-xs text-slate-400">
@@ -1003,6 +1018,19 @@
       <div id="clashes-error" class="hidden mb-4 p-3 rounded text-sm bg-amber-50 border border-amber-300 text-amber-900">
         <p id="clashes-error-msg" class="font-medium"></p>
         <p id="clashes-error-hint" class="text-xs mt-1 text-amber-800"></p>
+      </div>
+
+      <!-- Reading guide — what each row's symbols mean -->
+      <div id="clashes-legend" class="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+        <div class="font-semibold text-slate-700 mb-1.5">How to read these rows</div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 leading-relaxed">
+          <div><span class="text-slate-400 font-mono">∥</span> &nbsp;name is verbatim from Forma's Clashes panel</div>
+          <div><span class="text-amber-700 font-mono">Level&nbsp;3 › Supply&nbsp;Air › Ducts</span> &nbsp;= property hierarchy</div>
+          <div><span class="font-semibold">MECH × STRUCT</span> &nbsp;= clashing discipline pair</div>
+          <div><span class="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded px-1 py-0.5">🤖 auto</span> &nbsp;= eligible for auto-Issue</div>
+          <div><span class="text-slate-400 font-mono">N 💥</span> &nbsp;= number of clashes in the group</div>
+          <div><span class="bg-blue-50 text-blue-700 border border-blue-200 rounded px-1 py-0.5">⤴ N</span> &nbsp;= collapsed from N sub-groups</div>
+        </div>
       </div>
 
       <!-- Body: groups table (left) + templates panel (right) -->

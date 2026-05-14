@@ -1251,18 +1251,27 @@ function renderClashTests(config) {
       `<span class="disc-tag" style="background:${DISC_COLOR[d]||'#94a3b8'}">${d}</span>`
     ).join('');
 
+    // Build side A/B labels and search-set hints for the description row
+    const sideA = t.sideA?.label ?? (t.requiredDisciplines?.[0] ?? 'A');
+    const sideB = t.sideB?.label ?? (t.requiredDisciplines?.[1] ?? 'B');
+    const ssA   = (t.sideA?.searchSetIds ?? []).join(', ') || 'auto';
+    const ssB   = (t.sideB?.searchSetIds ?? []).join(', ') || 'auto';
+
     const row = document.createElement('tr');
     row.dataset.testId = t.id;
     row.innerHTML = `
-      <td class="text-slate-400 font-mono text-xs">${t.priority}</td>
-      <td class="font-medium text-slate-800 font-mono text-xs">${t.name}</td>
-      <td>${discs}</td>
-      <td><span class="text-xs px-2 py-1 rounded-md bg-slate-100 text-slate-600 font-medium">${t.clashType}</span></td>
-      <td><input class="clash-tol-input" type="number" step="0.001" min="0" value="${t.tolerance}" data-test-id="${t.id}" data-field="tolerance"/></td>
-      <td class="text-center">
+      <td class="text-slate-400 font-mono text-xs align-top">${t.priority}</td>
+      <td class="align-top">
+        <div class="font-medium text-slate-800 font-mono text-xs">${escapeHtml(t.name)}</div>
+        ${t.displayName ? `<div class="text-xs text-slate-500 mt-0.5">${escapeHtml(t.displayName)}</div>` : ''}
+      </td>
+      <td class="align-top">${discs}</td>
+      <td class="align-top"><span class="text-xs px-2 py-1 rounded-md bg-slate-100 text-slate-600 font-medium">${t.clashType}</span></td>
+      <td class="align-top"><input class="clash-tol-input" type="number" step="0.001" min="0" value="${t.tolerance}" data-test-id="${t.id}" data-field="tolerance"/></td>
+      <td class="text-center align-top">
         ${t.subTests?.length ? `<button class="text-xs text-brand hover:underline" data-expand="${t.id}">${t.subTests.length} ▾</button>` : '<span class="text-slate-300">—</span>'}
       </td>
-      <td class="text-center">
+      <td class="text-center align-top">
         <label class="toggle-switch">
           <input type="checkbox" ${t.enabled ? 'checked' : ''} data-test-id="${t.id}" data-field="enabled"/>
           <span class="toggle-knob"></span>
@@ -1270,6 +1279,24 @@ function renderClashTests(config) {
       </td>
     `;
     tbody.appendChild(row);
+
+    // Description row — always visible (the user said tests were unexplainable)
+    if (t.notes || t.sideA || t.sideB) {
+      const descRow = document.createElement('tr');
+      descRow.className = 'desc-row';
+      descRow.dataset.parentId = t.id;
+      descRow.innerHTML = `
+        <td></td>
+        <td colspan="6" class="text-xs text-slate-600 pb-2">
+          ${t.notes ? `<div class="mb-1 italic">${escapeHtml(t.notes)}</div>` : ''}
+          <div class="grid grid-cols-2 gap-3 text-[11px] text-slate-500">
+            <div><span class="font-semibold text-slate-700">Side A — ${escapeHtml(sideA)}:</span> <span class="font-mono">${escapeHtml(ssA)}</span></div>
+            <div><span class="font-semibold text-slate-700">Side B — ${escapeHtml(sideB)}:</span> <span class="font-mono">${escapeHtml(ssB)}</span></div>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(descRow);
+    }
 
     // Sub-tests (hidden by default)
     if (t.subTests?.length) {
@@ -1280,7 +1307,7 @@ function renderClashTests(config) {
         subRow.style.display = 'none';
         subRow.innerHTML = `
           <td></td>
-          <td colspan="2" class="font-mono text-xs text-slate-500">↳ ${sub.name}</td>
+          <td colspan="2" class="font-mono text-xs text-slate-500">↳ ${escapeHtml(sub.name)}</td>
           <td></td><td></td>
           <td></td>
           <td></td>
@@ -2474,36 +2501,76 @@ function renderClashGroups(groups) {
 
   list.innerHTML = '';
   if (!filtered.length) {
-    list.innerHTML = '<div class="p-4 text-xs text-slate-600 text-center">No groups match the filter</div>';
+    list.innerHTML = `
+      <div class="p-4 text-xs text-slate-400 space-y-2">
+        <div class="text-center text-slate-300 font-medium">No clash groups match the filter</div>
+        <div class="text-slate-500 leading-relaxed">
+          A <b class="text-slate-300">clash group</b> is one batch of intersections that share the same
+          property values (e.g. same level, same system). Names come straight from the Forma "Clashes" panel
+          and read like a breadcrumb: <code class="text-amber-400">Level&nbsp;3 &gt; Supply&nbsp;Air &gt; Ducts</code>.
+        </div>
+      </div>`;
     return;
   }
 
-  // Build discipline summary chips
+  // Build discipline summary chips (sum clash counts by discipline pair)
   const discCounts = {};
   filtered.forEach(g => {
-    const d = g.disciplines?.[0] ?? 'UNKNOWN';
-    discCounts[d] = (discCounts[d] ?? 0) + (g.clashes?.length ?? g.count ?? 0);
+    const pair = (g.disciplineA && g.disciplineB)
+      ? `${g.disciplineA}×${g.disciplineB}`
+      : (g.disciplines?.[0] ?? 'UNKNOWN');
+    discCounts[pair] = (discCounts[pair] ?? 0) + (g.clashes?.length ?? g.count ?? g.clashCount ?? 0);
   });
   const chips = el('clash-disc-chips');
-  chips.innerHTML = Object.entries(discCounts).map(([d, n]) =>
-    `<span class="clash-disc-chip" style="background:${DISC_COLORS_HEX[d] ?? '#9ca3af'}" data-disc="${d}">${d} ${n}</span>`
-  ).join('');
+  chips.innerHTML = Object.entries(discCounts).map(([d, n]) => {
+    const headDisc = d.split('×')[0];
+    return `<span class="clash-disc-chip" style="background:${DISC_COLORS_HEX[headDisc] ?? '#9ca3af'}" data-disc="${d}">${d} ${n}</span>`;
+  }).join('');
   chips.classList.remove('hidden');
 
   let totalClashes = 0;
   filtered.forEach(g => {
-    const count = g.clashes?.length ?? g.count ?? 0;
+    const count = g.clashes?.length ?? g.count ?? g.clashCount ?? 0;
     totalClashes += count;
+
+    // Hierarchy breadcrumb from `groupingValues` (Stage 3 — matches ACC UI labels)
+    const breadcrumb = Array.isArray(g.groupingValues) && g.groupingValues.length
+      ? g.groupingValues.map(v => `<span>${escapeHtml(String(v))}</span>`).join('<span class="cg-bc-sep">›</span>')
+      : '';
+
+    // Discipline pair badge (Stage 3 inference)
+    const pairBadge = (g.disciplineA || g.disciplineB)
+      ? `<span class="cg-pair" title="Discipline pair (inferred)">${g.disciplineA ?? '?'} × ${g.disciplineB ?? '?'}</span>`
+      : '';
+
+    // Auto-assign candidate (Stage 5)
+    const autoBadge = g.autoAssignCandidate
+      ? `<span class="cg-badge cg-badge-auto" title="High priority — eligible for automatic Issue creation">🤖 auto</span>`
+      : '';
+
+    // Collapsed-from indicator (Stage 4)
+    const collapsedBadge = Array.isArray(g.collapsedFrom) && g.collapsedFrom.length
+      ? `<span class="cg-badge cg-badge-collapsed" title="Rolled up from ${g.collapsedFrom.length} sub-groups by Family:Type">⤴ ${g.collapsedFrom.length}</span>`
+      : '';
+
+    // Verbatim-from-ACC marker (Stage 3)
+    const verbatimMark = g.nameSource === 'api'
+      ? `<span class="cg-verbatim" title="Group name read verbatim from the Forma Clashes panel">∥</span>`
+      : '';
+
     const div = document.createElement('div');
     div.className = 'clash-group-item';
     div.innerHTML = `
-      <div class="flex items-center justify-between">
-        <span class="cg-name" title="${g.name ?? ''}">${g.name ?? 'Unnamed Group'}</span>
-        <span class="cg-count">${count}</span>
+      <div class="flex items-center justify-between gap-2">
+        <span class="cg-name" title="${escapeHtml(g.name ?? '')}">${verbatimMark}${escapeHtml(g.name ?? 'Unnamed Group')}</span>
+        <span class="cg-count" title="${count} clash${count === 1 ? '' : 'es'} in this group">${count}</span>
       </div>
+      ${breadcrumb ? `<div class="cg-breadcrumb">${breadcrumb}</div>` : ''}
       <div class="cg-meta">
-        <span>${g.level ?? ''}</span>
-        <span>${g.testName ?? ''}</span>
+        ${pairBadge}
+        ${g.testName ? `<span class="cg-test" title="Source clash test">${escapeHtml(g.testName)}</span>` : ''}
+        ${autoBadge}
+        ${collapsedBadge}
       </div>
     `;
     div.addEventListener('click', () => selectClashGroup(div, g));
@@ -2524,20 +2591,26 @@ function selectClashGroup(itemEl, group) {
 
 function showClashMarkersForGroup(group) {
   if (!_viewerState.viewer) return;
+  const viewer = _viewerState.viewer;
   const THREE = Autodesk.Viewing.Private.THREE;
   const SCENE = 'clash-markers';
 
-  if (_viewerState.viewer.overlays.hasScene(SCENE)) {
-    _viewerState.viewer.overlays.clearScene(SCENE);
+  if (viewer.overlays.hasScene(SCENE)) {
+    viewer.overlays.clearScene(SCENE);
   } else {
-    _viewerState.viewer.overlays.addScene(SCENE);
+    viewer.overlays.addScene(SCENE);
   }
 
   const clashes = group.clashes ?? [];
+  const members = Array.isArray(group.members) ? group.members : [];
   let hasPoints = false;
   const positions = [];
+  const dbIds = new Set();
 
+  // 1. Per-clash markers
   clashes.forEach(clash => {
+    if (clash?.objectIdA != null) dbIds.add(clash.objectIdA);
+    if (clash?.objectIdB != null) dbIds.add(clash.objectIdB);
     if (!clash.point) return;
     hasPoints = true;
     positions.push(new THREE.Vector3(clash.point.x, clash.point.y, clash.point.z));
@@ -2545,15 +2618,89 @@ function showClashMarkersForGroup(group) {
     const mat = new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true, opacity: 0.85 });
     const sphere = new THREE.Mesh(geo, mat);
     sphere.position.set(clash.point.x, clash.point.y, clash.point.z);
-    _viewerState.viewer.overlays.addMesh(sphere, SCENE);
+    viewer.overlays.addMesh(sphere, SCENE);
   });
 
-  if (hasPoints && positions.length) {
-    // Fly camera to the bounding box of this clash group
+  // 2. From `members` array (returned by GET /modelsets/{m}/clashes/grouped)
+  members.forEach(m => {
+    if (m?.objectId != null) dbIds.add(m.objectId);
+  });
+
+  // 3. Isolate the involved objects so the user can SEE what's clashing
+  if (dbIds.size > 0) {
+    try {
+      viewer.isolate([...dbIds]);
+      viewer.fitToView([...dbIds]);
+    } catch (_) {
+      // isolate fails silently if model not fully loaded — keep camera markers
+    }
+  } else if (hasPoints && positions.length) {
+    // No dbIds → fall back to clash-point bounding box
     const box = new THREE.Box3().setFromPoints(positions);
-    _viewerState.viewer.navigation.fitBounds(false, box, true);
+    viewer.navigation.fitBounds(false, box, true);
   }
-  toast(`Showing ${clashes.length} clash(es) for: ${group.name ?? 'group'}`);
+
+  // 4. Detail panel — show WHAT clashed, WHERE, and WHY
+  renderClashGroupDetailPanel(group, [...dbIds]);
+
+  toast(`Showing ${clashes.length || members.length || group.clashCount || 0} clash(es) — ${group.name ?? 'group'}`);
+}
+
+/**
+ * Render a side-panel detail card for the active clash group.
+ * Shows the breadcrumb, discipline pair, test source, member object IDs,
+ * and any auto-assign / collapsed-from state.
+ */
+function renderClashGroupDetailPanel(group, dbIds) {
+  const host = el('viewer-clash-detail');
+  if (!host) return; // detail panel not present yet — graceful no-op
+
+  const breadcrumb = Array.isArray(group.groupingValues) && group.groupingValues.length
+    ? group.groupingValues.map(v => escapeHtml(String(v))).join(' › ')
+    : '(no hierarchy reported)';
+
+  const count = group.clashCount ?? group.count ?? group.clashes?.length ?? 0;
+  const memberCount = Array.isArray(group.members) ? group.members.length : (dbIds?.length ?? 0);
+
+  host.innerHTML = `
+    <div class="space-y-2 p-3 text-xs">
+      <div class="flex items-center justify-between">
+        <div class="font-semibold text-slate-100 truncate" title="${escapeHtml(group.name ?? '')}">
+          ${group.nameSource === 'api' ? '<span class="cg-verbatim" title="Verbatim from Forma">∥</span>' : ''}
+          ${escapeHtml(group.name ?? 'Unnamed Group')}
+        </div>
+        <span class="text-xs px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 font-mono">${count} 💥</span>
+      </div>
+      <div class="text-slate-400 leading-snug">
+        <div class="text-slate-500 uppercase text-[10px] tracking-wide mb-0.5">Hierarchy</div>
+        <div class="text-amber-300 font-mono">${breadcrumb}</div>
+      </div>
+      ${(group.disciplineA || group.disciplineB) ? `
+      <div class="text-slate-400">
+        <div class="text-slate-500 uppercase text-[10px] tracking-wide mb-0.5">Disciplines</div>
+        <div><b>${group.disciplineA ?? '?'}</b> vs <b>${group.disciplineB ?? '?'}</b></div>
+      </div>` : ''}
+      ${group.testName ? `
+      <div class="text-slate-400">
+        <div class="text-slate-500 uppercase text-[10px] tracking-wide mb-0.5">Source clash test</div>
+        <div class="font-mono">${escapeHtml(group.testName)}</div>
+      </div>` : ''}
+      <div class="text-slate-400">
+        <div class="text-slate-500 uppercase text-[10px] tracking-wide mb-0.5">Objects involved</div>
+        <div>${memberCount} element${memberCount === 1 ? '' : 's'} ${dbIds.length ? `<span class="text-slate-500">(isolated in viewer)</span>` : ''}</div>
+      </div>
+      ${group.autoAssignCandidate ? `
+      <div class="bg-emerald-900/40 border border-emerald-700/50 rounded px-2 py-1.5">
+        <div class="text-emerald-300 font-medium">🤖 Auto-assign candidate</div>
+        <div class="text-emerald-400/80 text-[11px]">Priority within threshold — will be linked to a new ACC Issue when the workflow runs with <code>autoAssign.enabled=true</code>.</div>
+      </div>` : ''}
+      ${Array.isArray(group.collapsedFrom) && group.collapsedFrom.length ? `
+      <div class="bg-blue-900/40 border border-blue-700/50 rounded px-2 py-1.5">
+        <div class="text-blue-300 font-medium">⤴ Rolled up from ${group.collapsedFrom.length} sub-groups</div>
+        <div class="text-blue-400/80 text-[11px]">Collapsed by Family:Type to keep the report readable.</div>
+      </div>` : ''}
+    </div>`;
+  host.classList.remove('hidden');
 }
 
 function clearClashMarkers() {
@@ -4604,6 +4751,23 @@ function renderClashGroupsList() {
     const TYPE_COLOR = { assigned: '#3b82f6', closed: '#64748b' };
     const typeColor  = TYPE_COLOR[type] ?? '#9ca3af';
 
+    // Stage 3/4/5 enrichments
+    const breadcrumb = Array.isArray(g.groupingValues) && g.groupingValues.length
+      ? g.groupingValues.map(v => escapeHtml(String(v))).join(' › ')
+      : '';
+    const pairText = (g.disciplineA || g.disciplineB)
+      ? `${g.disciplineA ?? '?'} × ${g.disciplineB ?? '?'}`
+      : '';
+    const autoBadge = g.autoAssignCandidate
+      ? `<span class="text-xs px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200" title="High priority — eligible for automatic Issue creation">🤖 auto</span>`
+      : '';
+    const collapsedBadge = Array.isArray(g.collapsedFrom) && g.collapsedFrom.length
+      ? `<span class="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200" title="Rolled up from ${g.collapsedFrom.length} sub-groups by Family:Type">⤴ ${g.collapsedFrom.length}</span>`
+      : '';
+    const verbatimMark = g.nameSource === 'api'
+      ? `<span class="text-slate-400 text-xs" title="Group name read verbatim from the Forma Clashes panel">∥</span>`
+      : '';
+
     const row = document.createElement('div');
     row.className = `px-3 py-2.5 hover:bg-slate-50 transition-colors${isChecked ? ' bg-blue-50' : ''}`;
     row.dataset.groupId = id;
@@ -4613,12 +4777,20 @@ function renderClashGroupsList() {
           data-id="${id}" ${isChecked ? 'checked' : ''}/>
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 flex-wrap">
+            ${verbatimMark}
             <span class="text-sm font-medium text-slate-800 truncate" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
             <span class="text-xs px-1.5 py-0.5 rounded font-mono"
               style="background:${typeColor}22;color:${typeColor};border:1px solid ${typeColor}44">${type}</span>
             <span class="text-xs text-slate-400 font-mono">${cnt !== '—' ? cnt + ' 💥' : ''}</span>
+            ${autoBadge}
+            ${collapsedBadge}
           </div>
-          ${testName ? `<p class="text-xs text-slate-500 truncate mt-0.5">${escapeHtml(testName)}</p>` : ''}
+          ${breadcrumb ? `<p class="text-xs text-amber-700 font-mono truncate mt-0.5" title="Property hierarchy from the active Saved Clash Check">${breadcrumb}</p>` : ''}
+          ${pairText || testName ? `<p class="text-xs text-slate-500 truncate mt-0.5">
+            ${pairText ? `<span class="font-medium">${pairText}</span>` : ''}
+            ${pairText && testName ? `<span class="text-slate-300 mx-1">·</span>` : ''}
+            ${testName ? `${escapeHtml(testName)}` : ''}
+          </p>` : ''}
           ${previewName && !assign ? `<p class="text-xs font-mono text-amber-600 mt-0.5" title="Issue name preview">→ ${escapeHtml(previewName)}</p>` : ''}
           ${assign ? `
           <div class="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
