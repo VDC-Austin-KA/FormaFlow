@@ -3039,6 +3039,15 @@ const ALIGN_MODES = [
 
 const COORD_DISC_KEYS = ['ARCH','STRUCT','MECH','PLUMB','ELEC','FP','CIVIL','INT','TECH'];
 
+// ─── Level filter state ────────────────────────────────────────────────────
+const _levelFilter = {
+  refModelId: null,   // ID of model being used as level reference
+  level: null,        // selected level name (null = no filter)
+  matchedIds: new Set(), // model IDs confirmed to contain this level
+};
+
+let _discSearchText = ''; // live search text for discipline assignment filter
+
 async function loadCoordinationData() {
   el('coord-empty').classList.add('hidden');
   el('coord-sections').classList.add('hidden');
@@ -3263,6 +3272,17 @@ async function loadViewIntoViewer() {
 }
 
 function renderCoordinationTab() {
+  _refreshLevelRefSelect();
+  // Auto-select ARCH model as level reference if none chosen yet
+  if (!_levelFilter.refModelId) {
+    const archId = _coordState.assignments['ARCH'];
+    if (archId) {
+      _levelFilter.refModelId = archId;
+      const sel = el('sel-level-ref-model');
+      if (sel) sel.value = archId;
+      loadLevelOptions(archId);
+    }
+  }
   renderCoordDisciplineRows();
   renderCoordClashRows();
   renderCoordAlignRows();
@@ -3271,40 +3291,267 @@ function renderCoordinationTab() {
 function renderCoordDisciplineRows() {
   const host = el('coord-disc-rows');
   host.innerHTML = '';
+
+  const searchText = _discSearchText.toLowerCase().trim();
+  const hasLevelFilter = !!_levelFilter.level && _levelFilter.matchedIds.size > 0;
+
+  // Sort all models alphabetically for consistent dropdown ordering
+  const allSorted = [..._coordState.models].sort((a, b) => a.name.localeCompare(b.name));
+
   for (const disc of COORD_DISC_KEYS) {
     const assignedId = _coordState.assignments[disc] ?? '';
-    const candidateGuesses = _coordState.models.filter(m => m.discipline === disc);
+
+    // Models that auto-match this discipline (guessed or learned)
+    const isSuggested = (m) =>
+      m.discipline === disc || _lookupLearnedDisc(m.name) === disc;
+
+    // Apply level filter first, then search filter
+    const afterLevel = hasLevelFilter
+      ? allSorted.filter(m => _levelFilter.matchedIds.has(m.id) || m.id === assignedId)
+      : allSorted;
+
+    const afterSearch = searchText
+      ? afterLevel.filter(m =>
+          m.name.toLowerCase().includes(searchText) || m.id === assignedId)
+      : afterLevel;
+
+    // Split into suggested (pinned first) and others
+    const suggested = afterSearch.filter(m => isSuggested(m));
+    const others    = afterSearch.filter(m => !isSuggested(m));
+
+    const buildOpt = (m, star) => {
+      const label = star ? `★ ${m.name}` : m.name;
+      const suffix = star ? ' (suggested)' : '';
+      return `<option value="${m.id}"${assignedId === m.id ? ' selected' : ''} title="${m.name}${suffix}">${label}</option>`;
+    };
+
+    const divider = (suggested.length && others.length)
+      ? '<option disabled>──────────────────</option>' : '';
+
+    const optHtml = [
+      `<option value="">— unassigned —</option>`,
+      ...suggested.map(m => buildOpt(m, true)),
+      divider,
+      ...others.map(m => buildOpt(m, false)),
+    ].join('');
+
+    const candidateCount = _coordState.models.filter(m => isSuggested(m)).length;
+    const filteredCount = afterSearch.length;
+    const countLabel = hasLevelFilter || searchText
+      ? `${filteredCount} shown`
+      : (candidateCount ? `${candidateCount} suggested` : 'no suggestions');
 
     const row = document.createElement('div');
     row.className = 'coord-disc-row';
     row.innerHTML = `
       <div class="disc-dot flex-shrink-0" style="background:${DISC_COLOR[disc]}"></div>
       <div class="coord-disc-label">${DISC_LABEL[disc] ?? disc}</div>
-      <select class="field-input text-sm flex-1 max-w-2xl" data-disc="${disc}">
-        <option value="">— unassigned —</option>
-        ${_coordState.models.map(m => {
-          const isGuess = candidateGuesses.some(g => g.id === m.id);
-          return `<option value="${m.id}"${assignedId === m.id ? ' selected' : ''}>${
-            m.name}${isGuess ? '  (auto-detected)' : ''}</option>`;
-        }).join('')}
-      </select>
-      <span class="text-xs text-slate-400 w-32 text-right">${
-        candidateGuesses.length ? `${candidateGuesses.length} candidate${candidateGuesses.length === 1 ? '' : 's'}` : 'no candidates'
-      }</span>
+      <select class="field-input text-sm flex-1 max-w-2xl" data-disc="${disc}">${optHtml}</select>
+      <span class="text-xs text-slate-400 w-28 text-right whitespace-nowrap">${countLabel}</span>
     `;
+
     row.querySelector('select').addEventListener('change', e => {
       const id = e.target.value;
       if (id) {
         _coordState.assignments[disc] = id;
-        // Learn name→discipline for this assignment
         const m = _coordState.models.find(x => x.id === id);
-        if (m) _saveDiscPattern(m.name, disc);
+        if (m) {
+          _saveDiscPattern(m.name, disc);
+          // If ARCH is newly assigned and no level ref yet, pre-select it
+          if (disc === 'ARCH' && !_levelFilter.refModelId) {
+            _levelFilter.refModelId = id;
+            _refreshLevelRefSelect();
+            loadLevelOptions(id);
+          }
+        }
       } else {
         delete _coordState.assignments[disc];
       }
       saveCoordinationDebounced();
     });
+
     host.appendChild(row);
+  }
+
+  // No-match state
+  if (searchText && !host.querySelector('select option[value]:not([value=""])')) {
+    host.innerHTML = `<p class="text-sm text-slate-400 py-3 text-center">No models match "<em>${searchText}</em>"</p>`;
+  }
+}
+
+// ─── Level filter helpers ──────────────────────────────────────────────────
+
+function _refreshLevelRefSelect() {
+  const sel = el('sel-level-ref-model');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— reference model (auto: ARCH) —</option>';
+  for (const m of [..._coordState.models].sort((a, b) => a.name.localeCompare(b.name))) {
+    const opt = new Option(m.name, m.id);
+    if (m.id === _levelFilter.refModelId) opt.selected = true;
+    sel.add(opt);
+  }
+}
+
+async function loadLevelOptions(modelId) {
+  const model = _coordState.models.find(m => m.id === modelId);
+  if (!model?.viewerUrn) return;
+
+  const pickSel  = el('sel-level-pick');
+  const loadingEl = el('level-filter-loading');
+  if (!pickSel) return;
+
+  pickSel.disabled = true;
+  pickSel.innerHTML = '<option value="">Loading…</option>';
+  if (loadingEl) loadingEl.classList.remove('hidden');
+
+  try {
+    const data = await api('GET', `/api/models/levels?urn=${encodeURIComponent(model.viewerUrn)}`);
+    const levels = data?.levels ?? [];
+    pickSel.innerHTML = '<option value="">— pick a level —</option>';
+    for (const lv of levels) pickSel.add(new Option(lv, lv));
+    if (_levelFilter.level && levels.includes(_levelFilter.level)) {
+      pickSel.value = _levelFilter.level;
+    }
+    pickSel.disabled = false;
+    if (loadingEl) loadingEl.classList.add('hidden');
+  } catch (err) {
+    pickSel.innerHTML = '<option value="">— failed to load levels —</option>';
+    pickSel.disabled = true;
+    if (loadingEl) loadingEl.classList.add('hidden');
+    toast('Could not load levels: ' + err.message, 'error');
+  }
+}
+
+async function applyLevelFilter(levelName) {
+  const badge  = el('level-filter-badge');
+  const clearBtn = el('btn-level-filter-clear');
+
+  if (!levelName) {
+    _levelFilter.level = null;
+    _levelFilter.matchedIds = new Set();
+    if (badge)    { badge.textContent = ''; badge.classList.add('hidden'); }
+    if (clearBtn) clearBtn.classList.add('hidden');
+    renderCoordDisciplineRows();
+    return;
+  }
+
+  _levelFilter.level = levelName;
+  // For each model, check if it has this level via the API
+  const matchedIds = new Set();
+  const norm = levelName.trim().toLowerCase();
+
+  // Fetch levels for all models in parallel (cap to avoid hammering API)
+  const models = _coordState.models.filter(m => m.viewerUrn);
+  const results = await Promise.allSettled(
+    models.map(m =>
+      api('GET', `/api/models/levels?urn=${encodeURIComponent(m.viewerUrn)}`)
+        .then(d => ({ id: m.id, levels: d?.levels ?? [] }))
+    )
+  );
+
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      const { id, levels } = r.value;
+      if (levels.some(lv => lv.trim().toLowerCase() === norm)) matchedIds.add(id);
+    }
+  }
+
+  _levelFilter.matchedIds = matchedIds;
+  const count = matchedIds.size;
+
+  if (badge) {
+    badge.textContent = `${count} model${count === 1 ? '' : 's'} on "${levelName}"`;
+    badge.classList.remove('hidden');
+  }
+  if (clearBtn) clearBtn.classList.remove('hidden');
+
+  renderCoordDisciplineRows();
+  if (!count) toast(`No models found with level "${levelName}"`, 'error');
+  else toast(`Filtered to ${count} model(s) with level "${levelName}"`);
+}
+
+// ─── Create Model Set View ─────────────────────────────────────────────────
+
+function openCreateViewModal() {
+  const modal = el('create-view-modal');
+  if (!modal) return;
+
+  el('create-view-name').value = '';
+  el('create-view-desc').value = '';
+
+  const list = el('create-view-models');
+  list.innerHTML = '';
+
+  const discAssigned = new Set(Object.values(_coordState.assignments).filter(Boolean));
+  const sorted = [..._coordState.models].sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const m of sorted) {
+    const isDisc  = discAssigned.has(m.id);
+    const label   = document.createElement('label');
+    label.className = 'flex items-center gap-2 py-1 px-2 rounded hover:bg-slate-100 cursor-pointer';
+    label.innerHTML = `
+      <input type="checkbox" class="cv-model-cb" data-id="${m.id}" data-raw-urn="${m.rawUrn ?? ''}" ${isDisc ? 'checked' : ''}>
+      <div class="disc-dot flex-shrink-0" style="background:${DISC_COLOR[m.discipline] ?? '#9ca3af'}"></div>
+      <span class="truncate text-sm" title="${m.name}">${m.name}</span>
+      ${isDisc ? '<span class="text-[10px] font-semibold text-emerald-600 ml-auto flex-shrink-0">DISC</span>' : ''}
+    `;
+    list.appendChild(label);
+  }
+
+  modal.classList.remove('hidden');
+  el('create-view-name').focus();
+}
+
+function closeCreateViewModal() {
+  el('create-view-modal')?.classList.add('hidden');
+}
+
+async function submitCreateView() {
+  const name = el('create-view-name').value.trim();
+  if (!name) { toast('View name is required', 'error'); return; }
+
+  const spaceId = getActiveCoordSpaceId();
+  if (!spaceId) { toast('No coordination space selected', 'error'); return; }
+
+  const checked = [...document.querySelectorAll('.cv-model-cb:checked')];
+  if (!checked.length) { toast('Select at least one model', 'error'); return; }
+
+  const btn = el('btn-create-view-submit');
+  btn.disabled = true; btn.textContent = 'Creating…';
+
+  try {
+    const documents = checked.map(cb => ({
+      modelId: cb.dataset.id,
+      rawUrn:  cb.dataset.rawUrn,
+    }));
+
+    const body = {
+      name,
+      description: el('create-view-desc').value.trim() || undefined,
+      documents,
+    };
+
+    const result = await api('POST', `/api/mc/modelsets/${spaceId}/views`, body);
+    const newViewId   = result?.id ?? result?.viewId;
+    const newViewName = result?.name ?? name;
+
+    toast(`View "${newViewName}" created`);
+    closeCreateViewModal();
+
+    // Refresh the view dropdown
+    const viewsData = await api('GET', `/api/mc/modelsets/${spaceId}/views`).catch(() => ({ data: [] }));
+    const vSel = el('sel-coord-view');
+    if (vSel && viewsData?.data) {
+      const cur = vSel.value;
+      vSel.innerHTML = '<option value="">- select a view (optional) -</option>';
+      for (const v of viewsData.data) vSel.add(new Option(v.name, v.id));
+      if (newViewId) vSel.value = newViewId;
+      else vSel.value = cur;
+    }
+  } catch (err) {
+    toast('Failed to create view: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Create View';
   }
 }
 
@@ -4056,6 +4303,220 @@ function _resolveGroupName(g, idx) {
     return testName ? `${testName} · Group ${idx + 1}` : `Group ${idx + 1}`;
   }
   return raw;
+}
+
+// ─── Smart Clash Grouping (Sherlock/Distill-style) ────────────────────────────
+
+const _smartGroupState = {
+  groups: [],   // derived smart groups
+  raw: [],      // raw clashes from the test
+};
+
+// Determine clash severity classification: 'real' | 'soft' | 'interface'
+function _classifyClash(c) {
+  const dist     = c.distance ?? c.penetrationDepth ?? c.clearance ?? null;
+  const status   = (c.status ?? c.clashStatus ?? '').toLowerCase();
+  const type     = (c.clashType ?? c.type ?? '').toLowerCase();
+
+  // Soft / duplicate: zero or negative penetration, or explicitly soft
+  if (type === 'soft' || type === 'clearance') return 'soft';
+  if (status === 'approved' || status === 'resolved') return 'interface';
+  if (dist !== null && dist <= 0) return 'soft';
+
+  // Valid interface: structural member connections (beam/column touching)
+  const a = (c.elementACategory ?? c.categoryA ?? c.objectAName ?? '').toLowerCase();
+  const b = (c.elementBCategory ?? c.categoryB ?? c.objectBName ?? '').toLowerCase();
+  const structPairs = ['beam', 'column', 'brace', 'footing', 'slab', 'wall', 'plate'];
+  const aIsStruct = structPairs.some(p => a.includes(p));
+  const bIsStruct = structPairs.some(p => b.includes(p));
+  if (aIsStruct && bIsStruct) return 'interface';
+
+  return 'real';
+}
+
+// Extract a short element category label from a clash element name/category
+function _shortCategory(name = '') {
+  const n = name.toLowerCase();
+  if (n.includes('duct'))      return 'Duct';
+  if (n.includes('pipe'))      return 'Pipe';
+  if (n.includes('conduit'))   return 'Conduit';
+  if (n.includes('cable'))     return 'Cable Tray';
+  if (n.includes('beam'))      return 'Beam';
+  if (n.includes('column'))    return 'Column';
+  if (n.includes('wall'))      return 'Wall';
+  if (n.includes('slab'))      return 'Slab';
+  if (n.includes('stair'))     return 'Stair';
+  if (n.includes('handrail') || n.includes('railing')) return 'Railing';
+  if (n.includes('sprink') || n.includes('fire')) return 'FP Pipe';
+  if (n.includes('equipment') || n.includes('equip')) return 'Equipment';
+  if (n.includes('fitting'))   return 'Fitting';
+  if (n.includes('hanger'))    return 'Hanger';
+  // Fall back to up to 2 words capitalized
+  const words = name.replace(/[^a-zA-Z\s]/g, ' ').trim().split(/\s+/).slice(0, 2);
+  return words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') || 'Element';
+}
+
+// Build a smart group name: "L05 · MECH vs STRC · Pipe vs Beam"
+function _buildSmartGroupName(levelAbbrev, testName, catA, catB) {
+  const parts = [];
+  if (levelAbbrev) parts.push(levelAbbrev);
+  // Test name gives the discipline pair (already formatted as "ARCH vs STRC")
+  const testPart = testName ? _abbrevTest(testName) || testName : '';
+  if (testPart) parts.push(testPart);
+  if (catA && catB && catA !== catB) parts.push(`${catA} / ${catB}`);
+  else if (catA) parts.push(catA);
+  return parts.join(' · ') || 'Clash Group';
+}
+
+async function runSmartGroupAnalysis() {
+  const testSel = el('sel-clashes-test');
+  const modelSetId = getActiveCoordSpaceId();
+
+  if (!modelSetId) { toast('Select a Coordination Space first', 'error'); return; }
+
+  const panel = el('smart-group-panel');
+  const listEl = el('smart-group-list');
+  const statsEl = el('smart-group-stats');
+  const btn = el('btn-smart-group');
+  const countEl = el('smart-group-count');
+
+  panel.classList.remove('hidden');
+  listEl.innerHTML = '<div class="p-8 text-center text-purple-400 text-sm">Analyzing clashes…</div>';
+  statsEl.classList.add('hidden');
+  btn.disabled = true; btn.textContent = 'Analyzing…';
+
+  try {
+    // Determine which tests to analyze
+    const testId   = testSel?.value ?? '';
+    const tests    = testId
+      ? [_clashesState.tests.find(t => (t.id ?? t.testId) === testId)].filter(Boolean)
+      : _clashesState.tests.slice(0, 5); // cap at 5 tests to avoid hammering API
+
+    if (!tests.length && !_clashesState.tests.length) {
+      // Load tests first
+      const tr = await api('GET', `/api/mc/clash-tests?modelSetId=${encodeURIComponent(modelSetId)}`);
+      const all = tr?.tests ?? (Array.isArray(tr) ? tr : []);
+      _clashesState.tests = all;
+      tests.push(...all.slice(0, 5));
+    }
+
+    if (!tests.length) {
+      listEl.innerHTML = '<div class="p-6 text-center text-purple-400 text-sm">No clash tests found. Run tests in ACC first.</div>';
+      return;
+    }
+
+    // Collect all raw clashes across tests
+    const rawClashes = [];
+    for (const test of tests) {
+      const tid  = test.id ?? test.testId;
+      const vi   = test.versionIndex ?? _mcState.clashTests?.versionIndex ?? '';
+      if (!tid) continue;
+      try {
+        // Try to get individual clashes (raw clash items)
+        const data = await api('GET',
+          `/api/mc/clash-groups?modelSetId=${encodeURIComponent(modelSetId)}&testId=${encodeURIComponent(tid)}&versionIndex=${encodeURIComponent(vi)}`
+        );
+        const groups = data?.clashGroups ?? data?.data ?? data?.groups ?? (Array.isArray(data) ? data : []);
+        for (const g of groups) {
+          const clashes = g.clashes ?? [];
+          for (const c of clashes) {
+            rawClashes.push({ ...c, _testId: tid, _testName: test.name ?? tid, _groupId: g.id ?? g.groupId });
+          }
+          // If no individual clashes, treat the group itself as a clash item
+          if (!clashes.length) {
+            rawClashes.push({ ...g, _testId: tid, _testName: test.name ?? tid, _isSynthetic: true });
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!rawClashes.length) {
+      listEl.innerHTML = '<div class="p-6 text-center text-purple-400 text-sm">No clash data found. Groups may not have detailed clash items.</div>';
+      return;
+    }
+
+    _smartGroupState.raw = rawClashes;
+
+    // Group by: level + testId + catA + catB
+    const buckets = new Map();
+    for (const c of rawClashes) {
+      const level  = c.level ?? c.levelName ?? c.floorName ?? '';
+      const lAbbr  = level ? _abbrevLevel(level) : 'UNK';
+      const catA   = _shortCategory(c.elementACategory ?? c.categoryA ?? c.objectAName ?? c.selectionAName ?? '');
+      const catB   = _shortCategory(c.elementBCategory ?? c.categoryB ?? c.objectBName ?? c.selectionBName ?? '');
+      const [sortedA, sortedB] = catA <= catB ? [catA, catB] : [catB, catA];
+      const key = `${lAbbr}|${c._testId}|${sortedA}|${sortedB}`;
+
+      if (!buckets.has(key)) {
+        buckets.set(key, {
+          key, lAbbr, level, testId: c._testId, testName: c._testName,
+          catA: sortedA, catB: sortedB,
+          clashes: [], real: 0, soft: 0, interface: 0,
+        });
+      }
+      const bucket = buckets.get(key);
+      bucket.clashes.push(c);
+      const cls = _classifyClash(c);
+      bucket[cls]++;
+    }
+
+    // Convert to array, sort by level then test
+    const smartGroups = [...buckets.values()].sort((a, b) => {
+      const la = parseInt(a.lAbbr.replace(/\D/g, '')) || 999;
+      const lb = parseInt(b.lAbbr.replace(/\D/g, '')) || 999;
+      if (la !== lb) return la - lb;
+      return (a.testName ?? '').localeCompare(b.testName ?? '');
+    });
+
+    _smartGroupState.groups = smartGroups;
+
+    const totalReal = smartGroups.reduce((s, g) => s + g.real, 0);
+    const totalSoft = smartGroups.reduce((s, g) => s + g.soft, 0);
+    const totalIface = smartGroups.reduce((s, g) => s + g.interface, 0);
+
+    el('sg-count-real').textContent = totalReal;
+    el('sg-count-soft').textContent = totalSoft;
+    el('sg-count-interface').textContent = totalIface;
+    statsEl.classList.remove('hidden');
+    countEl.textContent = `· ${smartGroups.length} smart groups`;
+
+    const hasSoft = totalSoft > 0;
+    el('btn-smart-approve-all')?.classList.toggle('hidden', !hasSoft);
+
+    // Render smart groups
+    listEl.innerHTML = '';
+    for (const g of smartGroups) {
+      const name  = _buildSmartGroupName(g.lAbbr, g.testName, g.catA, g.catB);
+      const total = g.clashes.length;
+      const classification = g.real > 0 ? 'real' : g.soft > total / 2 ? 'soft' : 'interface';
+      const COLOR = { real: '#ef4444', soft: '#f59e0b', interface: '#94a3b8' };
+      const LABEL = { real: 'Real', soft: 'Soft/Dup', interface: 'Interface' };
+
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-3 px-4 py-2.5 hover:bg-purple-50 transition-colors';
+      row.innerHTML = `
+        <div class="w-2 h-2 rounded-full flex-shrink-0" style="background:${COLOR[classification]}"></div>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium text-slate-800 truncate">${escapeHtml(name)}</p>
+          <p class="text-xs text-slate-500">${escapeHtml(g.testName)} · ${g.level || 'Unknown Level'}</p>
+        </div>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          ${g.real      ? `<span class="text-xs px-1.5 py-0.5 rounded bg-red-50 text-red-700 border border-red-200">${g.real} real</span>` : ''}
+          ${g.soft      ? `<span class="text-xs px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">${g.soft} soft</span>` : ''}
+          ${g.interface ? `<span class="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">${g.interface} iface</span>` : ''}
+          <span class="text-xs px-2 py-0.5 rounded-full font-semibold" style="background:${COLOR[classification]}22;color:${COLOR[classification]};border:1px solid ${COLOR[classification]}44">${LABEL[classification]}</span>
+        </div>
+      `;
+      listEl.appendChild(row);
+    }
+
+    toast(`Smart analysis: ${smartGroups.length} groups from ${rawClashes.length} clashes`);
+  } catch (err) {
+    listEl.innerHTML = `<div class="p-6 text-center text-red-400 text-sm">${escapeHtml(err.message)}</div>`;
+    toast('Smart group analysis failed: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Smart Group';
+  }
 }
 
 function _getGroupPreviewName(g, tpl, seq) {
@@ -5257,6 +5718,17 @@ async function init() {
 
   // Clashes tab
   el('btn-load-clash-groups').addEventListener('click', loadClashGroups);
+  el('btn-smart-group')?.addEventListener('click', runSmartGroupAnalysis);
+  el('btn-smart-group-close')?.addEventListener('click', () => el('smart-group-panel')?.classList.add('hidden'));
+  el('btn-smart-approve-all')?.addEventListener('click', () => {
+    // Mark all soft/interface groups as approved in local state (visual only until pushed)
+    for (const g of _smartGroupState.groups) {
+      if (g.soft > 0 || g.interface > 0) {
+        g._approved = true;
+      }
+    }
+    toast(`Marked soft/interface clashes as approved (not yet pushed to ACC)`);
+  });
   el('btn-new-template').addEventListener('click', () => openTemplateEditor(null));
   el('btn-apply-template').addEventListener('click', applyTemplateToSelected);
   el('btn-push-issues').addEventListener('click', openPushPreview);
@@ -5331,6 +5803,73 @@ async function init() {
     loadCoordinationData();
   });
   el('btn-load-view').addEventListener('click', loadViewIntoViewer);
+  el('btn-create-view')?.addEventListener('click', openCreateViewModal);
+
+  // Discipline search bar
+  el('disc-search')?.addEventListener('input', e => {
+    _discSearchText = e.target.value;
+    const clearBtn = el('btn-disc-search-clear');
+    if (clearBtn) clearBtn.classList.toggle('hidden', !_discSearchText);
+    renderCoordDisciplineRows();
+  });
+  el('btn-disc-search-clear')?.addEventListener('click', () => {
+    _discSearchText = '';
+    const inp = el('disc-search');
+    if (inp) inp.value = '';
+    el('btn-disc-search-clear')?.classList.add('hidden');
+    renderCoordDisciplineRows();
+  });
+
+  // Level filter — reference model selector
+  el('sel-level-ref-model')?.addEventListener('change', e => {
+    const modelId = e.target.value;
+    _levelFilter.refModelId = modelId || null;
+    _levelFilter.level = null;
+    _levelFilter.matchedIds = new Set();
+    const pickSel = el('sel-level-pick');
+    if (pickSel) { pickSel.innerHTML = '<option value="">— pick a level —</option>'; pickSel.disabled = !modelId; }
+    el('level-filter-badge')?.classList.add('hidden');
+    el('btn-level-filter-clear')?.classList.add('hidden');
+    renderCoordDisciplineRows();
+    if (modelId) loadLevelOptions(modelId);
+  });
+
+  // Level filter — level picker
+  el('sel-level-pick')?.addEventListener('change', async e => {
+    await applyLevelFilter(e.target.value || null);
+  });
+
+  // Level filter — clear
+  el('btn-level-filter-clear')?.addEventListener('click', () => {
+    _levelFilter.level = null;
+    _levelFilter.matchedIds = new Set();
+    const pickSel = el('sel-level-pick');
+    if (pickSel) pickSel.value = '';
+    el('level-filter-badge')?.classList.add('hidden');
+    el('btn-level-filter-clear')?.classList.add('hidden');
+    renderCoordDisciplineRows();
+  });
+
+  // Create view modal
+  el('create-view-close')?.addEventListener('click', closeCreateViewModal);
+  el('btn-create-view-cancel')?.addEventListener('click', closeCreateViewModal);
+  el('btn-create-view-submit')?.addEventListener('click', submitCreateView);
+  el('btn-cv-select-all')?.addEventListener('click', () => {
+    document.querySelectorAll('.cv-model-cb').forEach(cb => { cb.checked = true; });
+  });
+  el('btn-cv-select-none')?.addEventListener('click', () => {
+    document.querySelectorAll('.cv-model-cb').forEach(cb => { cb.checked = false; });
+  });
+  el('btn-cv-select-disc')?.addEventListener('click', () => {
+    const discIds = new Set(Object.values(_coordState.assignments).filter(Boolean));
+    document.querySelectorAll('.cv-model-cb').forEach(cb => {
+      cb.checked = discIds.has(cb.dataset.id);
+    });
+  });
+  el('create-view-modal')?.addEventListener('click', e => {
+    if (e.target === el('create-view-modal')) closeCreateViewModal();
+  });
+
   el('btn-clash-incl-all').addEventListener('click', () => {
     _coordState.clashIncludes = _coordState.models.map(m => m.id);
     renderCoordClashRows();
@@ -5447,56 +5986,6 @@ async function init() {
     inp.type = inp.type === 'password' ? 'text' : 'password';
   });
 
-  // Search Sets tab — discipline filter pills
-  document.querySelectorAll('.disc-pill').forEach(pill => {
-    pill.addEventListener('click', () => {
-      document.querySelectorAll('.disc-pill').forEach(p => p.classList.remove('active'));
-      pill.classList.add('active');
-      State.ssFilter = pill.dataset.disc;
-      renderSearchSets(State.config.searchSets, State.ssFilter);
-    });
-  });
-
-  // Search Sets tab — toolbar
-  el('btn-ss-new').addEventListener('click', () => openSSCreator());
-  el('btn-ss-save').addEventListener('click', saveSearchSets);
-  el('btn-ss-import').addEventListener('click', () => el('ss-import-file').click());
-  el('ss-import-file').addEventListener('change', (e) => {
-    const file = e.target.files?.[0];
-    if (file) handleNavisworksFile(file);
-    e.target.value = ''; // allow re-selecting the same file
-  });
-
-  // Editor modal
-  el('ss-modal-close').addEventListener('click', closeSSEditor);
-  el('btn-ss-cancel').addEventListener('click', closeSSEditor);
-  el('btn-ss-save-modal').addEventListener('click', commitSSEditor);
-  el('btn-ss-delete').addEventListener('click', deleteCurrentSS);
-  el('btn-ss-add-cond').addEventListener('click', () => {
-    SSEditor.draft.filter.conditions.push({ property: '', operator: 'equals', value: '' });
-    renderConditionRows();
-  });
-  el('ss-edit-join').addEventListener('change', (e) => {
-    el('ss-edit-join-label').textContent = (e.target.value || 'or').toUpperCase();
-  });
-  el('btn-ss-pull-props').addEventListener('click', openModelPicker);
-
-  // Import preview modal
-  el('ss-import-close').addEventListener('click', () => el('ss-import-modal').classList.add('hidden'));
-  el('btn-import-cancel').addEventListener('click', () => el('ss-import-modal').classList.add('hidden'));
-  el('btn-import-confirm').addEventListener('click', mergeImportedSets);
-
-  // Model picker modal
-  el('ss-model-close').addEventListener('click', () => el('ss-model-modal').classList.add('hidden'));
-  el('btn-model-cancel').addEventListener('click', () => el('ss-model-modal').classList.add('hidden'));
-  el('ss-model-folder').addEventListener('change', (e) => { if (e.target.value) loadFolderModels(e.target.value); });
-  el('ss-model-pick').addEventListener('change', (e) => { el('btn-model-pull').disabled = !e.target.value; });
-  el('btn-model-pull').addEventListener('click', pullModelProperties);
-
-  // Clash Tests tab
-  el('btn-enable-all').addEventListener('click',  () => setAllClashTests(true));
-  el('btn-disable-all').addEventListener('click', () => setAllClashTests(false));
-  el('btn-save-clashes').addEventListener('click', saveClashConfig);
 
   // Settings tab
   el('btn-save-settings').addEventListener('click', saveSettings);
