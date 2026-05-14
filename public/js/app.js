@@ -5706,8 +5706,6 @@ async function init() {
   // Populate all tabs
   populateConnect(State.config);
   populateSettings(State.config);
-  renderSearchSets(State.config.searchSets);
-  renderClashTests(State.config.clashTests);
 
   // Reflect connection state if credentials already set
   if (State.config.env.APS_CLIENT_ID && State.config.hasSecret) {
