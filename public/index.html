@@ -699,6 +699,7 @@
               <option value="">- select a view (optional) -</option>
             </select>
             <button id="btn-load-view" class="btn-primary text-xs px-3 py-1">Load View</button>
+            <button id="btn-create-view" class="btn-secondary text-xs px-3 py-1" title="Create a new model set view from current models">+ View</button>
           </div>
 
           <button id="btn-coord-refresh" class="btn-secondary text-sm">↻ Refresh Models</button>
@@ -721,10 +722,38 @@
       <div id="coord-sections" class="hidden space-y-6">
         <!-- Section 1: Discipline Assignments -->
         <section class="card">
-          <header class="card-header">
-            <h3 class="card-title">Discipline Assignment</h3>
-            <p class="card-sub">Pick the canonical model representing each discipline. Workflow uses these for naming, search-set scoping, and reports.</p>
+          <header class="card-header flex items-start justify-between flex-wrap gap-3">
+            <div>
+              <h3 class="card-title">Discipline Assignment</h3>
+              <p class="card-sub">Pick the canonical model representing each discipline. Workflow uses these for naming, clash scoping, and reports.</p>
+            </div>
+            <!-- Search bar -->
+            <div class="flex items-center gap-2 flex-shrink-0">
+              <div class="relative">
+                <svg class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                </svg>
+                <input id="disc-search" type="text" placeholder="Filter models…"
+                       class="field-input text-xs py-1.5 pl-7 pr-7 w-44" autocomplete="off">
+                <button id="btn-disc-search-clear" class="hidden absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-base leading-none" title="Clear">×</button>
+              </div>
+            </div>
           </header>
+
+          <!-- Level filter bar -->
+          <div id="coord-level-filter" class="px-5 py-2.5 bg-slate-50 border-b border-slate-100 flex flex-wrap items-center gap-3">
+            <span class="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Level Filter</span>
+            <select id="sel-level-ref-model" class="field-input text-xs py-1 w-52" title="Reference model whose levels are used for filtering">
+              <option value="">— reference model (auto: ARCH) —</option>
+            </select>
+            <select id="sel-level-pick" class="field-input text-xs py-1 w-44" disabled title="Select a level to filter">
+              <option value="">— pick a level —</option>
+            </select>
+            <span id="level-filter-badge" class="hidden text-xs font-medium px-2 py-0.5 rounded-full bg-blue-100 text-blue-700"></span>
+            <button id="btn-level-filter-clear" class="hidden text-xs text-slate-400 hover:text-red-500 underline">Clear filter</button>
+            <span id="level-filter-loading" class="hidden text-xs text-slate-400 italic">Loading levels…</span>
+          </div>
+
           <div class="card-body">
             <div id="coord-disc-rows" class="space-y-2"></div>
           </div>
@@ -953,6 +982,38 @@
         </div>
         <div class="flex items-center gap-2">
           <button id="btn-load-clash-groups" class="btn-primary text-sm">Load Clash Groups</button>
+          <button id="btn-smart-group" class="btn-secondary text-sm" title="Auto-group and name clashes by level, discipline pair, and element type (Sherlock/Distill style)">
+            <svg class="w-3.5 h-3.5 inline -mt-0.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+            </svg>
+            Smart Group
+          </button>
+        </div>
+      </div>
+
+      <!-- Smart Group Analysis Panel (hidden until triggered) -->
+      <div id="smart-group-panel" class="hidden mb-5 rounded-xl border border-purple-200 bg-purple-50/60 overflow-hidden">
+        <div class="px-5 py-3 bg-purple-100/60 border-b border-purple-200 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+            </svg>
+            <span class="text-sm font-semibold text-purple-800">Smart Clash Analysis</span>
+            <span id="smart-group-count" class="text-xs text-purple-600"></span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="btn-smart-approve-all" class="text-xs px-3 py-1 rounded-lg bg-emerald-100 text-emerald-700 border border-emerald-200 hover:bg-emerald-200 hidden">✓ Approve Soft Clashes</button>
+            <button id="btn-smart-group-close" class="text-purple-400 hover:text-purple-700 text-xl leading-none px-1">×</button>
+          </div>
+        </div>
+        <!-- Stats bar -->
+        <div id="smart-group-stats" class="px-5 py-2.5 flex flex-wrap gap-4 text-xs border-b border-purple-200 bg-white/50 hidden">
+          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-400 inline-block"></span><span id="sg-count-real">0</span> real</span>
+          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400 inline-block"></span><span id="sg-count-soft">0</span> soft/dup</span>
+          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-slate-400 inline-block"></span><span id="sg-count-interface">0</span> valid interface</span>
+        </div>
+        <div id="smart-group-list" class="divide-y divide-purple-100 max-h-80 overflow-y-auto">
+          <div class="p-8 text-center text-purple-400 text-sm">Select a clash test above and click <strong>Smart Group</strong> to analyze</div>
         </div>
       </div>
 
@@ -1382,6 +1443,43 @@
 
 <!-- ═════════════════════════════════════════════════ TOAST ══════════════ -->
 <div id="toast" class="toast hidden"></div>
+
+<!-- ═══════════════════════ CREATE MODEL SET VIEW MODAL ══════════════════ -->
+<div id="create-view-modal" class="fixed inset-0 z-50 flex items-center justify-center hidden" style="background:rgba(0,0,0,0.45)">
+  <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[80vh]">
+    <header class="flex items-center justify-between px-6 py-4 border-b border-slate-200 flex-shrink-0">
+      <h2 class="text-base font-semibold text-slate-800">Create Model Set View</h2>
+      <button id="create-view-close" class="text-slate-400 hover:text-slate-600 text-2xl leading-none">×</button>
+    </header>
+    <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+      <div>
+        <label class="field-label">View Name <span class="text-red-400">*</span></label>
+        <input id="create-view-name" type="text" class="field-input w-full" placeholder="e.g. All Disciplines · Level 5">
+      </div>
+      <div>
+        <label class="field-label">Description <span class="text-slate-400 font-normal">(optional)</span></label>
+        <input id="create-view-desc" type="text" class="field-input w-full" placeholder="Short description of this view">
+      </div>
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <label class="field-label m-0">Include Models</label>
+          <div class="flex gap-2">
+            <button id="btn-cv-select-all" class="text-xs text-blue-600 hover:underline">All</button>
+            <span class="text-slate-300">|</span>
+            <button id="btn-cv-select-none" class="text-xs text-blue-600 hover:underline">None</button>
+            <span class="text-slate-300">|</span>
+            <button id="btn-cv-select-disc" class="text-xs text-blue-600 hover:underline">Disciplines only</button>
+          </div>
+        </div>
+        <div id="create-view-models" class="space-y-1 max-h-52 overflow-y-auto border border-slate-200 rounded-lg p-2 bg-slate-50"></div>
+      </div>
+    </div>
+    <footer class="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-200 flex-shrink-0 bg-slate-50 rounded-b-xl">
+      <button id="btn-create-view-cancel" class="btn-secondary">Cancel</button>
+      <button id="btn-create-view-submit" class="btn-primary">Create View</button>
+    </footer>
+  </div>
+</div>
 
 <script src="/js/app.js"></script>
 </body>
