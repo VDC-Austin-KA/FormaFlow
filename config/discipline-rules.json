@@ -52,6 +52,10 @@
         { "property": "Category", "operator": "in", "values": ["Walls", "Floors", "Ceilings", "Roofs"] },
         { "property": "Discipline", "operator": "equals", "value": "Architecture" },
         { "property": "Phase Created", "operator": "exists" }
+      ],
+      "groupingValuePatterns": [
+        "^Walls?$", "^Floors?$", "^Ceilings?$", "^Roofs?$", "^Doors?$", "^Windows?$",
+        "^Curtain\\s+(Wall|Panel|Mullion)", "^Casework$", "^Furniture$"
       ]
     },
     "STRUCT": {
@@ -95,6 +99,10 @@
         { "property": "Category", "operator": "in", "values": ["Structural Columns", "Structural Framing", "Structural Foundations"] },
         { "property": "Structural Material", "operator": "exists" },
         { "property": "Discipline", "operator": "equals", "value": "Structural" }
+      ],
+      "groupingValuePatterns": [
+        "^Structural\\s+(Column|Framing|Foundation|Wall|Floor|Beam|Connection|Stiffener|Truss|Rebar)",
+        "^Concrete\\s+", "^Steel\\s+", "Beam:", "Column:"
       ]
     },
     "MECH": {
@@ -152,6 +160,10 @@
         { "property": "Category", "operator": "in", "values": ["Ducts", "Duct Fittings", "Air Terminals", "Flex Ducts"] },
         { "property": "System Classification", "operator": "in", "values": ["Supply Air", "Return Air", "Exhaust Air", "Outside Air"] },
         { "property": "System Type", "operator": "contains", "value": "Air" }
+      ],
+      "groupingValuePatterns": [
+        "Ducts?$", "Duct\\s+(Fitting|Accessory|Insulation|Lining)", "Air\\s+Terminal",
+        "Mechanical\\s+Equipment", "^HVAC", "Supply\\s+Air", "Return\\s+Air", "Exhaust\\s+Air"
       ]
     },
     "PLUMB": {
@@ -214,6 +226,11 @@
       "propertySignatures": [
         { "property": "Category", "operator": "in", "values": ["Pipes", "Pipe Fittings", "Plumbing Fixtures", "Pipe Accessories"] },
         { "property": "System Classification", "operator": "in", "values": ["Domestic Cold Water", "Domestic Hot Water", "Sanitary", "Vent", "Storm"] }
+      ],
+      "groupingValuePatterns": [
+        "^Pipes?$", "Pipe\\s+Fitting", "Plumbing\\s+(Fixture|Equipment)",
+        "Domestic\\s+(Cold|Hot)\\s+Water", "^Sanitary", "^Vent$", "^Storm$",
+        "Hydronic\\s+(Supply|Return)", "Chilled\\s+Water", "Condenser\\s+Water"
       ]
     },
     "ELEC": {
@@ -261,6 +278,11 @@
       "propertySignatures": [
         { "property": "Category", "operator": "in", "values": ["Cable Trays", "Conduits", "Electrical Equipment", "Lighting Fixtures"] },
         { "property": "Voltage", "operator": "exists" }
+      ],
+      "groupingValuePatterns": [
+        "Cable\\s+Tray", "^Conduits?$", "Conduit\\s+Fitting",
+        "Electrical\\s+(Equipment|Fixture)", "Lighting\\s+(Fixture|Device)",
+        "^Power$", "^Lighting$"
       ]
     },
     "FP": {
@@ -303,6 +325,9 @@
       "propertySignatures": [
         { "property": "Category", "operator": "in", "values": ["Sprinklers"] },
         { "property": "System Classification", "operator": "in", "values": ["Fire Protection Wet", "Fire Protection Dry", "Fire Protection Pre-Action"] }
+      ],
+      "groupingValuePatterns": [
+        "^Sprinklers?$", "Fire\\s+Protection", "Fire\\s+Sprinkler", "^FP\\s"
       ]
     },
     "CIVIL": {
@@ -333,6 +358,9 @@
       "requiredCategories": [],
       "propertySignatures": [
         { "property": "Category", "operator": "in", "values": ["Topography", "Site"] }
+      ],
+      "groupingValuePatterns": [
+        "^Topography$", "^Site$", "^Parking$", "^Roads?$", "^Planting$", "^Landscape$"
       ]
     },
     "INTERIORS": {
@@ -359,6 +387,9 @@
       "requiredCategories": [],
       "propertySignatures": [
         { "property": "Category", "operator": "in", "values": ["Furniture", "Furniture Systems", "Casework"] }
+      ],
+      "groupingValuePatterns": [
+        "^Furniture", "^Casework$", "Specialty\\s+Equipment", "FF&E"
       ]
     },
     "TECH": {

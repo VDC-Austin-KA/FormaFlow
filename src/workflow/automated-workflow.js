@@ -31,6 +31,7 @@ import { parseArgs } from 'util';
 import { APSClient }                from '../api/aps-client.js';
 import { ModelCoordinationClient }  from '../api/model-coordination.js';
 import { ModelDerivativeClient }    from '../api/model-derivative.js';
+import { IssuesClient }             from '../api/issues-client.js';
 import { DisciplineClassifier }     from '../model-identification/discipline-classifier.js';
 import { SearchSetGenerator }       from '../search-sets/search-set-generator.js';
 import { ClashTestConfigurator }    from '../clash-tests/clash-test-configurator.js';
@@ -179,15 +180,23 @@ async function main() {
 
   // ── 9. Process and name results ───────────────────────────────────────
   const processor = new ClashResultsProcessor(mcClient, {
-    groupByLevel:  config.results.groupByLevel,
-    groupBySystem: config.results.groupBySystemClassification,
-    outputPath:    config.results.exportPath,
+    groupByLevel:       config.results.groupByLevel,
+    groupBySystem:      config.results.groupBySystemClassification,
+    outputPath:         config.results.exportPath,
+    collapseThreshold:  config.results.collapseThreshold,
+    priorityThreshold:  config.autoAssign?.enabled ? config.autoAssign.priorityThreshold : null,
     dryRun
   });
 
   const report = await processor.processAll(modelSetId, versionIndex, clashTestResults);
 
-  // ── 10. Summary ───────────────────────────────────────────────────────
+  // ── 10. Stage 5 — Auto-assign high-priority groups to ACC Issues ─────
+  let assignedCount = 0;
+  if (config.autoAssign?.enabled && !dryRun) {
+    assignedCount = await autoAssignHighPriorityGroups(mcClient, apsClient, report, config);
+  }
+
+  // ── 11. Summary ───────────────────────────────────────────────────────
   logger.info('');
   logger.info('=== Workflow Complete ===');
   logger.info('  Disciplines identified : %s', detectedDisciplines.join(', '));
@@ -195,12 +204,60 @@ async function main() {
   logger.info('  Clash tests created    : %d', clashTestResults.filter(r => r.created).length);
   logger.info('  Clash groups generated : %d', report.totalGroups);
   logger.info('  Total clashes found    : %d', report.totalClashes);
+  if (config.autoAssign?.enabled) {
+    logger.info('  Groups auto-assigned   : %d', assignedCount);
+  }
   if (!dryRun) {
     logger.info('  Report saved to        : %s', resolve(config.results.exportPath));
   }
   logger.info('');
 
   return report;
+}
+
+/**
+ * Stage 5: batch-create ACC issues for clash groups flagged as
+ * autoAssignCandidate=true and link them via POST /tests/{testId}/clashes:assign.
+ * Idempotent — relies on the clash service to reject duplicate group→issue
+ * assignments (each clash group can be linked to at most one issue).
+ */
+async function autoAssignHighPriorityGroups(mcClient, apsClient, report, config) {
+  const candidates = report.groups.filter(g => g.autoAssignCandidate && g.groupId && !g.collapsedFrom);
+  if (!candidates.length) {
+    logger.info('Stage 5: no auto-assign candidates');
+    return 0;
+  }
+
+  const projectId = process.env.ACC_PROJECT_ID;
+  const issueTypeId = config.autoAssign.issueTypeId ?? process.env.FORMAFLOW_DEFAULT_ISSUE_TYPE_ID;
+
+  if (!projectId || !issueTypeId) {
+    logger.warn(
+      'Stage 5: ACC_PROJECT_ID and (config.autoAssign.issueTypeId or FORMAFLOW_DEFAULT_ISSUE_TYPE_ID) required — skipping auto-assign'
+    );
+    return 0;
+  }
+
+  const issues = new IssuesClient(apsClient, projectId);
+  let assigned = 0;
+
+  for (const group of candidates) {
+    try {
+      const issue = await issues.create({
+        title: group.name,
+        issueTypeId,
+        description:
+          `Auto-detected via FormaFlow. Discipline pair: ${group.disciplineA ?? '?'} vs ${group.disciplineB ?? '?'}. ` +
+          `Test: ${group.testName}. Clashes: ${group.clashCount}.`,
+        status: 'open'
+      });
+      await mcClient.assignClashGroupsToIssue(group.testId, [group.groupId], issue.id ?? issue.data?.id);
+      assigned++;
+    } catch (err) {
+      logger.error('Stage 5: failed to assign group %s: %s', group.name, err.message);
+    }
+  }
+  return assigned;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

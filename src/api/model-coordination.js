@@ -406,21 +406,37 @@ export class ModelCoordinationClient {
   }
 
   /**
-   * Get grouped clash results for a test.
+   * Get grouped clash results.
    *
-   * Tries documented v3 paths first:
-   *   1. /tests/{testId}/clashes/assigned  — assigned (linked to issues)
-   *   2. /tests/{testId}/clashes/closed    — closed/dismissed
-   *   3. Legacy /tests/{testId}/groups paths
-   *   4. /clashinstances paths
-   *   5. /checks/{testId} BETA paths
+   * Primary path (documented as of 2026):
+   *   GET /clash/v3/containers/{c}/modelsets/{m}/clashes/grouped
+   *   Returns the model-set-wide grouped clash report — one entry per
+   *   clash group with `groupingValues[]` (the hierarchy values from the
+   *   active Saved Clash Check), and the verbatim UI-shown `name`.
+   *
+   * Fallbacks (legacy / pipeline variants):
+   *   /tests/{testId}/groups, /clashinstances, /checks/{testId}/...
+   *
+   * @param {string} modelSetId
+   * @param {number} [versionIndex]  - only used by legacy fallback paths
+   * @param {string} [testId]        - filter to a single clash test
+   * @param {object} [opts]          - { pageLimit, continuationToken }
    */
-  async getGroupedClashes(modelSetId, versionIndex, testId) {
+  async getGroupedClashes(modelSetId, versionIndex, testId, opts = {}) {
     const clashBase = getMcClashBase();
     const containerBase = `${clashBase}/containers/${this._container}`;
     const modelsetBase  = `${containerBase}/modelsets/${modelSetId}`;
 
+    // Build query string for the documented endpoint
+    const qs = new URLSearchParams();
+    if (testId)                 qs.set('clashTestId', testId);
+    if (opts.pageLimit)         qs.set('pageLimit', String(opts.pageLimit));
+    if (opts.continuationToken) qs.set('continuationToken', opts.continuationToken);
+    const groupedSuffix = qs.toString() ? `?${qs}` : '';
+
     const candidates = [
+      // PRIMARY — documented v3 endpoint
+      `${modelsetBase}/clashes/grouped${groupedSuffix}`,
       // Documented v3 clash group paths (container-level)
       `${containerBase}/tests/${testId}/clashes/assigned`,
       `${containerBase}/tests/${testId}/clashes/closed`,
@@ -447,6 +463,40 @@ export class ModelCoordinationClient {
       }
     }
     throw lastErr;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Clash Groups: batch assign (Stage 5 — auto-assign to issues)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Batch-assign clash groups to an ACC Issue.
+   * POST /clash/v3/containers/{c}/tests/{testId}/clashes:assign
+   * Body: { issueId, groupIds: [string] }
+   *
+   * @param {string}   testId
+   * @param {string[]} groupIds  - clash group IDs from getGroupedClashes
+   * @param {string}   issueId   - ACC Issue ID to link the groups to
+   */
+  async assignClashGroupsToIssue(testId, groupIds, issueId) {
+    const clashBase = getMcClashBase();
+    return this._client.post(
+      `${clashBase}/containers/${this._container}/tests/${testId}/clashes:assign`,
+      { issueId, groupIds }
+    );
+  }
+
+  /**
+   * Batch-close (mark "Not an issue") a set of clash groups.
+   * POST /clash/v3/containers/{c}/tests/{testId}/clashes:close
+   * Body: { reason, groupIds: [string] }
+   */
+  async closeClashGroups(testId, groupIds, reason = 'NotAnIssue') {
+    const clashBase = getMcClashBase();
+    return this._client.post(
+      `${clashBase}/containers/${this._container}/tests/${testId}/clashes:close`,
+      { reason, groupIds }
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────

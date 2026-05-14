@@ -148,6 +148,55 @@ All 25 URL combinations tried (8 base URL × `/checks` + `/clashchecks` + `/clas
 
 ---
 
+## Stages 3–5: Autonomous Grouping Endpoints (research → wired)
+
+Sourced from the APS reference (https://aps.autodesk.com/en/docs/acc/v1/reference/http/) and the GET clashes/jobs/:jobId page the user referenced. All paths are container-scoped (`/clash/v3/containers/{c}/...`).
+
+| Verb | Path | FormaFlow client method | Stage |
+|---|---|---|---|
+| GET  | `/modelsets/{m}/clashes/grouped` | `getGroupedClashes()` — primary | 3 |
+| GET  | `/modelsets/{m}/clashes/grouped?clashTestId={t}` | same, filtered | 3 |
+| POST | `/tests/{testId}/clashes:assign` | `assignClashGroupsToIssue()` | 5 |
+| POST | `/tests/{testId}/clashes:close`  | `closeClashGroups()` | optional |
+| GET  | `/tests/{testId}/clashes/assigned` | `getAssignedClashGroups()` | existing |
+| GET  | `/modelsets/{m}/clashes/assigned` | `listAssignedClashGroups()` | existing |
+| GET  | `/clashes/jobs/{jobId}` | `getClashGroupJobStatus()` | existing |
+| POST | `/modelsets/{m}/screenshots` | `uploadScreenshot()` | existing |
+| GET  | `/modelsets/{m}/screenshots/{id}` | `getScreenshot()` | existing |
+
+### Expected `/clashes/grouped` response shape
+```jsonc
+{
+  "modelSetId": "...",
+  "modelSetVersion": 1,
+  "clashTestId":     "1ae2261a-...",
+  "groupingHierarchy": ["Level", "System Classification", "Family/Type"],
+  "groups": [
+    {
+      "id":             "grp-001",
+      "name":           "Level 3 > Supply Air > Ducts",
+      "groupingValues": ["Level 3", "Supply Air", "Ducts"],
+      "count":          47,
+      "familyType":     "Ducts",
+      "members":        [{ "documentId": "...", "objectId": 12345 }]
+    }
+  ],
+  "pagination": { "continuationToken": "..." }
+}
+```
+
+> The `name` field is preserved verbatim by FormaFlow (`nameSource: 'api'`) so a click from the FormaFlow report lands on the same group label the ACC UI shows.
+
+### Stage 4 collapse trigger
+Threshold from `config/workflow-config.json#results.collapseThreshold` (default 500). Override at runtime with `PRIORITY_COLLAPSE_THRESHOLD=N`. Collapsed group name = `<original API name> — <Family:Type>`; original IDs preserved in `collapsedFrom: [groupId, ...]`.
+
+### Stage 5 inputs
+- Group must have `autoAssignCandidate=true` (set when `test.priority <= config.autoAssign.priorityThreshold`).
+- Required env: `ACC_PROJECT_ID` and either `FORMAFLOW_DEFAULT_ISSUE_TYPE_ID` or `config.autoAssign.issueTypeId`.
+- Issue title = verbatim `group.name`. Issue body includes discipline pair and clash count.
+
+---
+
 ## Discipline-Pair Fallback (Implemented)
 
 Since the ACC API consistently returns 0 real clash groups (0 hard clashes at 0 tolerance), the workflow now generates **synthetic discipline-pair groups** when all API sources are exhausted. These represent the coordination checks that *were* performed, with 0 detected clashes.
