@@ -2487,10 +2487,93 @@ async function loadClashResultsForViewer() {
     const groups = data?.groups ?? data?.clashGroups ?? [];
     if (!groups.length) { toast('No clash results found — run the workflow first', 'error'); return; }
     _viewerState.clashGroups = groups;
+    _viewerState.clashReportProvenance = data?.provenance ?? null;
+    renderClashProvenanceBanner(_viewerState.clashReportProvenance, groups);
     renderClashGroups(groups);
     toast(`Loaded ${groups.length} clash group(s)`);
   } catch (err) {
     toast('Failed to load clash results: ' + err.message, 'error');
+  }
+}
+
+/**
+ * Render a banner above the clash-group list that surfaces the data's
+ * provenance. Three states:
+ *   - api-grouped → green "verbatim from Forma" banner (or hidden)
+ *   - legacy-fallback → amber "FormaFlow bucketed raw clashes" banner
+ *   - synthetic-discipline-pair / mixed → red "these are placeholders" banner
+ *     with the recovery hint inline.
+ */
+function renderClashProvenanceBanner(reportProvenance, groups) {
+  const host = el('viewer-clash-provenance');
+  if (!host) return;
+
+  // If the report has no provenance object, infer from the groups
+  const groupSources = new Set(groups.map(g => g.provenance?.source ?? (g.synthetic ? 'synthetic-discipline-pair' : 'unknown')));
+  const isSynthetic  = groupSources.has('synthetic-discipline-pair') || (reportProvenance?.synthetic === true);
+  const isFallback   = groupSources.has('legacy-fallback');
+  const isApi        = groupSources.has('api-grouped');
+
+  let level = 'ok', title = '', body = '', hint = '';
+  if (isSynthetic && !isApi) {
+    level = 'error';
+    title = '⚠ Placeholder data — NOT real clashes';
+    body  = 'These groups were generated structurally because the Forma API returned no real clashes. Every group has 0 members and no point coordinates.';
+    hint  = reportProvenance?.recoveryHints?.[0]
+      ?? 'Configure a Saved Clash Check in Forma with a Group-clashes-by hierarchy. See docs/forma-rules-and-grouping-guide.md §2.';
+  } else if (isSynthetic && isApi) {
+    level = 'warn';
+    title = '⚠ Mixed data — some groups are placeholders';
+    body  = 'Some discipline pairs returned real clashes; others returned nothing and were filled with placeholders. The "🤖 auto" badge is disabled on placeholders.';
+    hint  = 'Check the rules document for the empty pairs — likely missing a Side A/B in the active Saved Clash Check.';
+  } else if (isFallback) {
+    level = 'warn';
+    title = 'Legacy grouping — Forma returned raw clashes, not groups';
+    body  = 'FormaFlow bucketed these by Level + System Classification client-side. Forma\'s "Group clashes by" hierarchy is empty for this model set.';
+    hint  = 'Open Forma → Clashes panel → click "Group clashes by" → add Level, System Classification, Category → Save clash check.';
+  } else if (isApi) {
+    // Real data — no banner needed (keep UI quiet on the happy path)
+    host.classList.add('hidden');
+    host.innerHTML = '';
+    return;
+  } else {
+    host.classList.add('hidden');
+    host.innerHTML = '';
+    return;
+  }
+
+  const STYLES = {
+    error: { bg: 'bg-red-900/40',    border: 'border-red-700/60',    text: 'text-red-200',    icon: 'text-red-300' },
+    warn:  { bg: 'bg-amber-900/40',  border: 'border-amber-700/60',  text: 'text-amber-200',  icon: 'text-amber-300' },
+    ok:    { bg: 'bg-emerald-900/40', border: 'border-emerald-700/60', text: 'text-emerald-200', icon: 'text-emerald-300' },
+  };
+  const s = STYLES[level];
+  host.innerHTML = `
+    <div class="${s.bg} border ${s.border} ${s.text} text-xs px-3 py-2 leading-relaxed">
+      <div class="font-semibold ${s.icon} mb-0.5">${title}</div>
+      <div class="opacity-90">${escapeHtml(body)}</div>
+      ${hint ? `<div class="mt-1 opacity-80"><b>Fix:</b> ${escapeHtml(hint)}</div>` : ''}
+      <button id="btn-run-readiness" class="mt-1.5 underline opacity-80 hover:opacity-100">Run readiness check →</button>
+    </div>
+  `;
+  host.classList.remove('hidden');
+  el('btn-run-readiness')?.addEventListener('click', runReadinessCheckAndShow);
+}
+
+async function runReadinessCheckAndShow() {
+  try {
+    const modelSetId = window._appState?.modelSetId
+      ?? el('inp-clash-model-set')?.value
+      ?? prompt('Model Set ID to check?');
+    if (!modelSetId) return;
+    toast('Running readiness check…');
+    const data = await api('GET', `/api/debug/readiness?modelSetId=${encodeURIComponent(modelSetId)}`);
+    const lines = (data.checks ?? []).map(c =>
+      `${c.ok ? '✓' : '✗'} ${c.name}: ${c.detail}${c.fix ? `\n    Fix: ${c.fix}` : ''}`
+    ).join('\n');
+    alert(`Verdict: ${data.verdict}\n\n${lines}\n\nNext step: ${data.nextStep ?? '—'}`);
+  } catch (err) {
+    toast('Readiness check failed: ' + err.message, 'error');
   }
 }
 

@@ -79,12 +79,23 @@ export class ClashResultsProcessor {
     // Stage 4: collapse high-cardinality discipline pairs
     const collapsed = this._maybeCollapseHighCardinality(allGroups);
 
+    // Report-level provenance — `mixed` if groups come from multiple sources
+    const sourceSet = new Set(collapsed.map(g => g.provenance?.source ?? 'unknown'));
+    const reportSource = sourceSet.size === 1 ? [...sourceSet][0] : 'mixed';
+
     const report = {
       generatedAt: new Date().toISOString(),
       totalGroups: collapsed.length,
       totalClashes: collapsed.reduce((sum, g) => sum + g.clashCount, 0),
       collapseThreshold: this._collapseThreshold,
       priorityThreshold: this._priorityThreshold,
+      provenance: {
+        source: reportSource,
+        synthetic: collapsed.some(g => g.provenance?.synthetic === true),
+        sourceBreakdown: Object.fromEntries(
+          [...sourceSet].map(s => [s, collapsed.filter(g => g.provenance?.source === s).length])
+        ),
+      },
       groups: collapsed
     };
 
@@ -220,6 +231,13 @@ export class ClashResultsProcessor {
         // Provenance
         preGrouped: true,
         collapsedFrom: null,
+        provenance: {
+          source: apiName ? 'api-grouped' : 'api-grouped-unnamed',
+          synthetic: false,
+          reason: apiName
+            ? 'Verbatim from the active Saved Clash Check in Forma.'
+            : 'API returned a group but no name — FormaFlow synthesised a fallback name from the level + test name.',
+        },
       };
     });
   }
@@ -340,6 +358,14 @@ export class ClashResultsProcessor {
         autoAssignCandidate: false,
         preGrouped: false,
         collapsedFrom: null,
+        provenance: {
+          source: 'legacy-fallback',
+          synthetic: false,
+          reason: 'API returned raw clash instances (no group structure). FormaFlow bucketed them by Level + System Classification using config/naming-conventions.json (fallback mode).',
+          recoveryHints: [
+            'Configure a Saved Clash Check with a Group-clashes-by hierarchy in Forma so the API returns grouped data directly. See docs/forma-rules-and-grouping-guide.md §2 Step 3.',
+          ],
+        },
       };
     });
   }
