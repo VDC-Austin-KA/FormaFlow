@@ -1,11 +1,18 @@
 {
   "$schema": "../schemas/clash-test-templates.schema.json",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Standard Clash Test pairing templates. Each template defines which Search Sets to use on Side A and Side B, the clash type, tolerance, and auto-pairing rules based on detected disciplines.",
   "clashTypes": {
     "hard": "Physical intersection — two elements occupy the same space",
     "clearance": "Elements are within a specified clearance distance of each other",
     "duplicate": "Duplicate elements occupying identical positions"
+  },
+  "autoAssignDefaults": {
+    "description": "Stage 5 auto-assign defaults. Groups belonging to a test whose `priority` is <= priorityThreshold and whose template has autoAssign=true become candidates for automatic issue creation via POST /tests/{testId}/clashes:assign.",
+    "priorityThreshold": 3,
+    "issueTypeIdEnv": "FORMAFLOW_DEFAULT_ISSUE_TYPE_ID",
+    "issueTitleTemplate": "{groupName}",
+    "issueBodyTemplate": "Auto-detected via FormaFlow. Discipline pair: {disciplineA} vs {disciplineB}. Test: {testName}. Clashes: {clashCount}."
   },
   "clashTests": [
     {
