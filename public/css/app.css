@@ -1367,10 +1367,10 @@ code { font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace; }
 }
 .mc-group-row {
   display: grid;
-  grid-template-columns: 1fr 5rem 4.5rem 6rem;
+  grid-template-columns: 1fr 6rem 3rem;
   gap: 0.5rem;
-  align-items: center;
-  padding: 0.3rem 0.5rem;
+  align-items: start;
+  padding: 0.4rem 0.5rem;
   border-bottom: 1px solid #f8fafc;
   font-size: 0.75rem;
 }

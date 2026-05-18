@@ -114,6 +114,7 @@ export class ClashTestConfigurator {
       selectionA: sideA.ids,
       selectionB: sideB.ids,
       _resolved: { sideA: sideA.ids, sideB: sideB.ids, sideAKeys: sideA.keys, sideBKeys: sideB.keys },
+      _priority: template.priority ?? null,
     };
   }
 
@@ -140,6 +141,7 @@ export class ClashTestConfigurator {
       selectionA: sideA.ids,
       selectionB: sideB.ids,
       _resolved: { sideA: sideA.ids, sideB: sideB.ids, sideAKeys: sideA.keys, sideBKeys: sideB.keys },
+      _priority: subTest.priority ?? parentTemplate.priority ?? null,
     };
   }
 
@@ -167,11 +169,11 @@ export class ClashTestConfigurator {
 
   async _createOne(modelSetId, versionIndex, payload, templateId) {
     // Strip diagnostic-only fields before sending to the API
-    const { _resolved, ...apiPayload } = payload;
+    const { _resolved, _priority, ...apiPayload } = payload;
 
     if (this._dryRun) {
       logger.info('[DRY RUN] Would create clash test: %s', apiPayload.name);
-      return { templateId, name: apiPayload.name, created: false, dryRun: true, resolved: _resolved };
+      return { templateId, name: apiPayload.name, priority: _priority, created: false, dryRun: true, resolved: _resolved };
     }
 
     try {
@@ -186,16 +188,17 @@ export class ClashTestConfigurator {
         return {
           templateId,
           name: apiPayload.name,
+          priority: _priority,
           created: false,
           error: 'API response did not include a remote id (clash test may not have been persisted)',
           resolved: _resolved,
         };
       }
       logger.info('Created clash test: %s (id: %s)', apiPayload.name, remoteId);
-      return { templateId, name: apiPayload.name, created: true, remoteId, resolved: _resolved };
+      return { templateId, name: apiPayload.name, priority: _priority, created: true, remoteId, resolved: _resolved };
     } catch (err) {
       logger.error('Failed to create clash test %s: %s', apiPayload.name, err.message);
-      return { templateId, name: apiPayload.name, created: false, error: err.message, resolved: _resolved };
+      return { templateId, name: apiPayload.name, priority: _priority, created: false, error: err.message, resolved: _resolved };
     }
   }
 }

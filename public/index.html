@@ -1052,6 +1052,13 @@
               </div>
               <span id="clashes-selected-label" class="text-xs text-brand font-semibold hidden"></span>
             </div>
+            <!-- Shown when Forma returns only generic "Group N" names (no grouping hierarchy configured) -->
+            <div id="clash-groups-generic-hint" class="hidden mx-1 mb-1 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+              <strong>Groups have no meaningful names.</strong>
+              Forma returned generic placeholders ("Group 1 / 2 / 3") because no <em>Group-by</em> hierarchy is configured in this coordination space.
+              To fix: in Forma → Model Coordination → your coordination space → <strong>Clash Settings → Group clashes by: Level</strong> (and optionally Category).
+              Publish a new model version to trigger a re-run. FormaFlow has synthesised names from the test name in the meantime.
+            </div>
             <div id="clashes-list" class="overflow-y-auto divide-y divide-slate-100" style="max-height:36rem">
               <div class="p-8 text-center text-slate-400 text-sm">
                 Click <strong>Load Clash Groups</strong> to fetch from Model Coordination
