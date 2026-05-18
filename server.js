@@ -1848,13 +1848,13 @@ app.get('/api/mc/clash-tests', async (req, res) => {
 app.get('/api/mc/clash-groups', async (req, res) => {
   try {
     const modelSetId = req.query.modelSetId ?? process.env.MC_MODEL_SET_ID;
-    const versionIndex = req.query.versionIndex;
-    const testId = req.query.testId;
-    if (!modelSetId || !testId) {
-      return res.status(400).json({ error: 'modelSetId and testId required' });
+    if (!modelSetId) {
+      return res.status(400).json({ error: 'modelSetId required' });
     }
+    const testId      = req.query.testId;      // optional — omit to get all tests
+    const versionIndex = req.query.versionIndex;
     const mc = await buildMcClient(req);
-    const data = await mc.getGroupedClashes(modelSetId, parseInt(versionIndex, 10) || 1, testId);
+    const data = await mc.getGroupedClashes(modelSetId, parseInt(versionIndex, 10) || 1, testId || undefined);
     res.json(data);
   } catch (err) {
     res.status(err.status ?? 500).json({ error: err.message, details: err.body });

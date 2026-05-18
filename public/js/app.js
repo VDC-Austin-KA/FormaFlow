@@ -4325,28 +4325,53 @@ function renderWorkflowClashResults() {
     return;
   }
 
-  const SEV_COLOR = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e', none: '#94a3b8' };
+  listEl.innerHTML = '';
+  const fragment = document.createDocumentFragment();
+  groups.slice(0, 200).forEach((g, gi) => {
+    const cnt  = g.clashCount ?? g.count ?? g.clashes?.length ?? 0;
+    const disc = [g.disciplineA, g.disciplineB].filter(Boolean).join(' × ') || (g.disciplines ?? []).join(' × ') || '';
+    const breadcrumb = Array.isArray(g.groupingValues) && g.groupingValues.length
+      ? g.groupingValues.map(v => escapeHtml(String(v))).join(' › ')
+      : '';
+    const autoBadge = g.autoAssignCandidate
+      ? `<span class="text-xs px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200" title="High priority — auto-assign candidate">🤖 auto</span>`
+      : '';
+    const collapsedBadge = Array.isArray(g.collapsedFrom) && g.collapsedFrom.length
+      ? `<span class="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200" title="Rolled up from ${g.collapsedFrom.length} sub-groups">⤴ ${g.collapsedFrom.length}</span>`
+      : '';
+    const verbatimMark = g.nameSource === 'api'
+      ? `<span class="text-slate-400 text-xs mr-1" title="Name verbatim from Forma">∥</span>`
+      : '';
+    const prov = (g.provenance?.source ?? '');
+    const provBadge = prov === 'synthetic-discipline-pair'
+      ? `<span class="text-xs px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-200" title="Placeholder — no real clashes returned">synthetic</span>`
+      : prov === 'legacy-fallback'
+      ? `<span class="text-xs px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200" title="Client-grouped fallback">legacy</span>`
+      : '';
 
-  listEl.innerHTML = `
-    <div class="mc-groups-table-header mt-2">
-      <span>Group / Test</span><span>Severity</span><span>Clashes</span><span>Disciplines</span>
-    </div>
-    ${groups.slice(0, 200).map((g, gi) => {
-      const sev  = (g.severity ?? 'none').toLowerCase();
-      const cnt  = g.clashCount ?? g.count ?? g.clashes?.length ?? '';
-      const disc = [g.disciplineA, g.disciplineB].filter(Boolean).join(' × ') || (g.disciplines ?? []).join(' × ') || '';
-      return `<div class="mc-group-row">
-        <div>
-          <span class="mc-group-name">${escapeHtml(_resolveGroupName(g, gi))}</span>
-          ${g.testName ? `<span class="mc-row-sub">${escapeHtml(g.testName)}</span>` : ''}
+    const row = document.createElement('div');
+    row.className = 'mc-group-row';
+    row.innerHTML = `
+      <div>
+        <div class="flex items-center gap-1 flex-wrap">
+          ${verbatimMark}<span class="mc-group-name">${escapeHtml(_resolveGroupName(g, gi))}</span>
         </div>
-        <span class="mc-badge" style="background:${SEV_COLOR[sev] ?? SEV_COLOR.none}22;color:${SEV_COLOR[sev] ?? SEV_COLOR.none};border-color:${SEV_COLOR[sev] ?? SEV_COLOR.none}44">${escapeHtml(sev)}</span>
-        <span class="text-xs text-slate-600">${cnt !== '' ? cnt : '—'}</span>
-        <span class="text-xs text-slate-500">${escapeHtml(disc)}</span>
-      </div>`;
-    }).join('')}
-    ${groups.length > 200 ? `<p class="text-xs text-slate-400 px-2 py-1">… and ${groups.length - 200} more groups</p>` : ''}
-  `;
+        ${breadcrumb ? `<div class="text-xs text-amber-700 font-mono mt-0.5">${breadcrumb}</div>` : ''}
+        ${g.testName ? `<span class="mc-row-sub">${escapeHtml(g.testName)}</span>` : ''}
+        <div class="flex flex-wrap gap-1 mt-1">${autoBadge}${collapsedBadge}${provBadge}</div>
+      </div>
+      <span class="text-xs text-slate-500 self-start">${escapeHtml(disc)}</span>
+      <span class="text-xs text-slate-600 self-start">${cnt !== 0 ? cnt : '—'}</span>
+    `;
+    fragment.appendChild(row);
+  });
+  listEl.appendChild(fragment);
+  if (groups.length > 200) {
+    const more = document.createElement('p');
+    more.className = 'text-xs text-slate-400 px-2 py-1';
+    more.textContent = `… and ${groups.length - 200} more groups`;
+    listEl.appendChild(more);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4479,25 +4504,54 @@ async function loadClashGroups() {
     _clashesState.tests = tests;
     _populateTestFilter(tests);
 
-    // Fetch assigned + closed clash groups
+    // Build a testId→name lookup for enriching groups below
+    const testNameById = Object.fromEntries(tests.map(t => [t.id ?? t.testId ?? t.clashTestId, t.name ?? t.id ?? t.testId]));
+
     const groups = [];
+
+    // PRIMARY: model-set-wide grouped clashes endpoint (Stage 3 data — all tests, all groups)
+    // This is the same source the workflow uses; returns groups with groupingValues, name, etc.
+    let primaryOk = false;
+    try {
+      const r = await api('GET', `/api/mc/clash-groups?modelSetId=${encodeURIComponent(modelSetId)}`);
+      const raw = r?.groups ?? r?.clashGroups ?? r?.data ?? (Array.isArray(r) ? r : []);
+      if (raw.length) {
+        raw.forEach(g => {
+          const tid = g.clashTestId ?? g.testId ?? g._testId;
+          groups.push({ ...g, _testId: tid ?? '', _testName: testNameById[tid] ?? tid ?? '', _type: 'grouped' });
+        });
+        primaryOk = true;
+      }
+    } catch (_) {}
+
+    // SECONDARY: per-test assigned (linked to ACC Issues) and closed (resolved) groups
+    // These complement the primary source with status/linkage info the grouped endpoint omits
     for (const test of tests) {
       const testId = test.id ?? test.testId ?? test.clashTestId;
       if (!testId) continue;
       try {
         const r = await api('GET', `/api/mc/clash-groups/assigned?testId=${encodeURIComponent(testId)}&modelSetId=${encodeURIComponent(modelSetId)}`);
         const grps = r?.groups ?? r?.data ?? r?.clashGroups ?? (Array.isArray(r) ? r : []);
-        grps.forEach(g => groups.push({ ...g, _testId: testId, _testName: test.name ?? testId, _type: 'assigned' }));
+        // Merge: if a group already exists from primary source, enrich its _type; else add it
+        grps.forEach(g => {
+          const existing = groups.find(x => x.id === g.id || x.clashGroupId === g.id);
+          if (existing) { existing._type = 'assigned'; }
+          else { groups.push({ ...g, _testId: testId, _testName: test.name ?? testId, _type: 'assigned' }); }
+        });
       } catch (_) {}
       try {
         const r = await api('GET', `/api/mc/clash-groups/closed?testId=${encodeURIComponent(testId)}&modelSetId=${encodeURIComponent(modelSetId)}`);
         const grps = r?.groups ?? r?.data ?? r?.clashGroups ?? (Array.isArray(r) ? r : []);
-        grps.forEach(g => groups.push({ ...g, _testId: testId, _testName: test.name ?? testId, _type: 'closed' }));
+        grps.forEach(g => {
+          const existing = groups.find(x => x.id === g.id || x.clashGroupId === g.id);
+          if (existing) { existing._type = 'closed'; }
+          else { groups.push({ ...g, _testId: testId, _testName: test.name ?? testId, _type: 'closed' }); }
+        });
       } catch (_) {}
     }
 
-    // If no tests found, try the generic endpoint
-    if (!tests.length) {
+    // FALLBACK: if both primary and per-test sources returned nothing, try model-set-wide assigned
+    if (!groups.length) {
       try {
         const r = await api('GET', `/api/mc/clash-groups/assigned?modelSetId=${encodeURIComponent(modelSetId)}`);
         const grps = r?.groups ?? r?.data ?? (Array.isArray(r) ? r : []);
@@ -4515,7 +4569,7 @@ async function loadClashGroups() {
     badge.classList.toggle('hidden', !groups.length);
 
     if (!groups.length) {
-      list.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">No clash groups found. Run coordination clash tests first.</div>';
+      list.innerHTML = '<div class="p-8 text-center text-slate-400 text-sm">No clash groups found. Run coordination clash tests first, then return here.</div>';
     }
   } catch (err) {
     list.innerHTML = '';
@@ -5603,7 +5657,7 @@ function renderIssueDetail(issue) {
     flyToIssuePushpin(e.currentTarget.dataset.id);
   });
 
-  el('sel-issue-status-change').addEventListener('change', async e => {
+  el('sel-issue-status-change')?.addEventListener('change', async e => {
     const newStatus = e.target.value;
     try {
       await api('PATCH', `/api/issues/${encodeURIComponent(issue.id)}?projectId=${encodeURIComponent(el('inp-project-id').value)}`, { status: newStatus });
@@ -5617,8 +5671,8 @@ function renderIssueDetail(issue) {
     }
   });
 
-  el('btn-add-comment').addEventListener('click', async () => {
-    const body = el('inp-issue-comment').value.trim();
+  el('btn-add-comment')?.addEventListener('click', async () => {
+    const body = el('inp-issue-comment')?.value.trim();
     if (!body) return;
     try {
       await api('POST', `/api/issues/${encodeURIComponent(issue.id)}/comments?projectId=${encodeURIComponent(el('inp-project-id').value)}`, { body });
