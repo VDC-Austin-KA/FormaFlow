@@ -2772,6 +2772,127 @@ app.get('/api/debug/all-modelsets', async (req, res) => {
   }
 });
 
+/**
+ * Pre-flight readiness check.
+ *
+ * Diagnoses why FormaFlow's last workflow run produced empty or synthetic
+ * groups. Probes (in order) the rules document, the grouped-clashes endpoint,
+ * and the legacy /tests endpoint, and returns a single JSON object the UI
+ * can render as an "is everything set up?" checklist.
+ *
+ * Usage: GET /api/debug/readiness?modelSetId={m}[&containerId={c}]
+ */
+app.get('/api/debug/readiness', async (req, res) => {
+  try {
+    const env = readEnv();
+    const containerId = (req.query.containerId
+      ?? env.MC_CONTAINER_ID ?? process.env.MC_CONTAINER_ID
+      ?? env.ACC_PROJECT_ID  ?? process.env.ACC_PROJECT_ID ?? '').replace(/^b\./, '');
+    const modelSetId = req.query.modelSetId ?? env.MC_MODEL_SET_ID ?? process.env.MC_MODEL_SET_ID;
+    if (!containerId || !modelSetId) {
+      return res.status(400).json({ error: 'containerId and modelSetId required' });
+    }
+
+    const client = await makeAPSClient();
+    const clashBase = 'https://developer.api.autodesk.com/bim360/clash/v3';
+    const checks = [];
+
+    // 1. Rules document — does the active Saved Clash Check have any rules?
+    let rulesOk = false;
+    let rulesData = null;
+    try {
+      rulesData = await client.get(`${clashBase}/containers/${containerId}/modelsets/${modelSetId}/rules`);
+      const docCount = Object.keys(rulesData?.documentRules ?? {}).length;
+      const fileCount = Object.keys(rulesData?.fileRules ?? {}).length;
+      rulesOk = docCount > 0 || fileCount > 0;
+      checks.push({
+        name: 'Rules document',
+        ok: rulesOk,
+        detail: `documentRules=${docCount}, fileRules=${fileCount}, clashType=${rulesData?.clashType ?? '?'}, clashDisabled=${rulesData?.clashDisabled ?? '?'}`,
+        fix: rulesOk
+          ? null
+          : 'Open Forma → Model Coordination → Clashes panel → click Save clash check (with a Group-clashes-by hierarchy). See docs/forma-rules-and-grouping-guide.md §2 Step 3.',
+      });
+    } catch (e) {
+      checks.push({ name: 'Rules document', ok: false, detail: `error ${e.status ?? 500}: ${e.message}`, fix: 'Verify MC_CONTAINER_ID matches the ACC project and 3-legged token has Model Coordination scope.' });
+    }
+
+    // 2. Grouped clashes — does /clashes/grouped return any groups for this model set?
+    let groupedOk = false;
+    let groupedCount = 0;
+    let groupedSample = null;
+    try {
+      const data = await client.get(`${clashBase}/containers/${containerId}/modelsets/${modelSetId}/clashes/grouped`);
+      const groups = Array.isArray(data?.groups) ? data.groups
+        : Array.isArray(data?.clashGroups) ? data.clashGroups
+        : Array.isArray(data) ? data
+        : [];
+      groupedCount = groups.length;
+      groupedOk = groupedCount > 0;
+      groupedSample = groupedOk ? { name: groups[0]?.name, groupingValues: groups[0]?.groupingValues, count: groups[0]?.count ?? groups[0]?.clashCount } : null;
+      checks.push({
+        name: 'Grouped clashes endpoint',
+        ok: groupedOk,
+        detail: `returned ${groupedCount} group(s)` + (groupedOk ? ` — first group: ${JSON.stringify(groupedSample)}` : ''),
+        fix: groupedOk
+          ? null
+          : 'API returned no groups. Either no Saved Clash Check is active, or the active check has no grouping hierarchy, or tolerance filtered out all clashes. See docs/forma-rules-and-grouping-guide.md §6.',
+      });
+    } catch (e) {
+      const is404 = e.status === 404;
+      checks.push({
+        name: 'Grouped clashes endpoint',
+        ok: false,
+        detail: `error ${e.status ?? 500}: ${e.message}`,
+        fix: is404
+          ? 'Endpoint not available for this model set. Confirm it is a V2 coordination space (clashEngineVersion=2). Some V1 spaces only expose /tests.'
+          : 'Check token scopes and container ID.',
+      });
+    }
+
+    // 3. Tests endpoint — fallback path
+    let testsCount = 0;
+    let testsOk = false;
+    try {
+      const data = await client.get(`${clashBase}/containers/${containerId}/modelsets/${modelSetId}/tests`);
+      const tests = Array.isArray(data?.tests) ? data.tests : Array.isArray(data) ? data : [];
+      testsCount = tests.length;
+      testsOk = testsCount > 0;
+      const lastTest = tests[tests.length - 1];
+      checks.push({
+        name: 'Legacy /tests endpoint',
+        ok: testsOk,
+        detail: `${testsCount} test(s); latest status=${lastTest?.status ?? '?'}, completedOn=${lastTest?.completedOn ?? '?'}`,
+        fix: testsOk ? null : 'No clash tests have run on this model set. Trigger one by publishing a new model set version.',
+      });
+    } catch (e) {
+      checks.push({ name: 'Legacy /tests endpoint', ok: false, detail: `error ${e.status ?? 500}: ${e.message}`, fix: null });
+    }
+
+    // Overall verdict
+    const willProduceSynthetic = !groupedOk;
+    const willProduceFallback  = !groupedOk && testsOk;
+    let verdict = 'ready';
+    if (willProduceSynthetic && !testsOk) verdict = 'synthetic-only — workflow will produce structural placeholders';
+    else if (willProduceFallback) verdict = 'fallback — workflow will fall back to legacy /tests grouping (less rich than /clashes/grouped)';
+    else if (groupedOk) verdict = 'ready — /clashes/grouped will populate real groups';
+
+    res.json({
+      containerId,
+      modelSetId,
+      verdict,
+      willProduceSynthetic,
+      willProduceFallback,
+      checks,
+      nextStep: willProduceSynthetic
+        ? 'Set up a Saved Clash Check in Forma — see docs/forma-rules-and-grouping-guide.md §2.'
+        : (willProduceFallback ? 'Add a grouping hierarchy to the active Saved Clash Check for richer output.' : null),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Routes — Issues (ACC Construction Issues v1)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3608,13 +3729,37 @@ app.post('/api/workflow/run', async (req, res) => {
                 testName:   `${discs[i]} vs ${discs[j]}`,
                 sequence:   seq,
                 synthetic:  true,
+                nameSource: 'synthetic',
                 note:       'No hard clashes detected at current tolerance. Increase tolerance in ACC Clash Checks to surface real intersections.',
+                provenance: {
+                  source: 'synthetic-discipline-pair',
+                  synthetic: true,
+                  reason: 'API returned 0 real clash instances; FormaFlow generated a structural placeholder so the workflow has at least one row per discipline pair.',
+                  warnings: [
+                    'These groups do NOT represent real clashes detected by Autodesk.',
+                    'clashCount is 0 — no member objects, no point coordinates, no Forma group ID.',
+                  ],
+                  recoveryHints: [
+                    'Open Forma → Model Coordination → Clashes → Settings → Object exclusions: ensure exclusions are not removing too much.',
+                    'Open Forma → Clashes panel → click "Save clash check" with a Group-clashes-by hierarchy (Level, System Classification, Category).',
+                    'See docs/forma-rules-and-grouping-guide.md §6 for the full root-cause checklist.',
+                  ],
+                },
               });
               emit('info', `  ＋ ${grpName} (structural — 0 hard clashes at current tolerance)`);
             }
           }
           report.totalGroups = report.groups.length;
           report.totalClashes = 0;
+          report.provenance = {
+            source: 'synthetic-discipline-pair',
+            synthetic: true,
+            reason: 'No real clashes were returned by /clashes/grouped, /tests/, or /clashchecks. Synthetic placeholders generated from detected disciplines.',
+            recoveryHints: [
+              'Configure a Saved Clash Check with a grouping hierarchy in Forma — see docs/forma-rules-and-grouping-guide.md §2 Step 3.',
+              'GET /api/debug/readiness?modelSetId=' + modelSetId + ' for an automated diagnosis.',
+            ],
+          };
           emit('info', `  ✓ ${pairSeq} discipline-pair group(s) created`);
         }
       }
