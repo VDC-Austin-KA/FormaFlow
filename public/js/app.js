@@ -4620,11 +4620,19 @@ function _isGuidOrBase64(str) {
   return false;
 }
 
+function _isGenericGroupName(name) {
+  if (!name) return true;
+  return /^(clash\s+)?group[_\s]*\d+$/i.test(name.trim());
+}
+
 function _resolveGroupName(g, idx) {
   const raw = g.name ?? g.groupName ?? '';
-  if (!raw || _isGuidOrBase64(raw)) {
-    const testName = g._testName ?? '';
-    return testName ? `${testName} · Group ${idx + 1}` : `Group ${idx + 1}`;
+  if (!raw || _isGuidOrBase64(raw) || _isGenericGroupName(raw)) {
+    const testName  = g._testName ?? '';
+    const pairPart  = (g.disciplineA && g.disciplineB) ? `${g.disciplineA}×${g.disciplineB}` : '';
+    const levelPart = g.level && g.level !== 'ZUNK' ? g.level : '';
+    const label     = [testName, pairPart, levelPart].filter(Boolean).join(' · ');
+    return label ? `${label} · GRP${String(idx + 1).padStart(3, '0')}` : `Group ${idx + 1}`;
   }
   return raw;
 }
@@ -4869,6 +4877,16 @@ function renderClashGroupsList() {
     return;
   }
 
+  // Show a diagnostic banner when Forma returned only generic group names —
+  // this means no Group-by hierarchy is configured in the coordination space.
+  const allGenericNames = groups.length > 0 && groups.every(g => _isGenericGroupName(g.name ?? g.groupName ?? ''));
+  const diagBanner = el('clash-groups-generic-hint');
+  if (allGenericNames && diagBanner) {
+    diagBanner.classList.remove('hidden');
+  } else if (diagBanner) {
+    diagBanner.classList.add('hidden');
+  }
+
   // Get the active template for preview names
   const activeTplId = el('sel-apply-template')?.value;
   const activeTpl   = activeTplId ? _clashesState.templates.find(t => t.id === activeTplId) : null;
@@ -4905,7 +4923,9 @@ function renderClashGroupsList() {
       : '';
     const verbatimMark = g.nameSource === 'api'
       ? `<span class="text-slate-400 text-xs" title="Group name read verbatim from the Forma Clashes panel">∥</span>`
-      : '';
+      : (g.nameSource === 'generic-override' || (_isGenericGroupName(g.name ?? g.groupName ?? '') && !g.nameSource))
+        ? `<span class="text-amber-500 text-xs" title="Forma returned a generic placeholder name — FormaFlow synthesised this name. Configure Group-by in Forma for real names.">⚠</span>`
+        : '';
 
     const row = document.createElement('div');
     row.className = `px-3 py-2.5 hover:bg-slate-50 transition-colors${isChecked ? ' bg-blue-50' : ''}`;

@@ -144,6 +144,26 @@ export class ClashResultsProcessor {
 
     // Pre-grouped path: API returned canonical clash groups.
     if (clashes.length && this._looksPreGrouped(clashes[0])) {
+      const allGeneric = clashes.every(c => this._isGenericGroupName(c.name ?? c.displayName ?? null));
+      if (allGeneric) {
+        // Forma returned "Group 1 / 2 / 3"-style groups — no grouping hierarchy is
+        // configured in the Forma coordination space. Attempt to fetch the raw clash
+        // instances so we can apply our own Level+System grouping and produce
+        // meaningful group names. If that also returns nothing, fall back to using
+        // the generic groups with a synthesised name.
+        logger.info(
+          'Test %s: all %d pre-grouped groups have generic names — attempting raw-instance fetch',
+          test.name, clashes.length
+        );
+        const resourceRaw = await this._fetchFromResources(modelSetId, versionIndex, test.remoteId);
+        const rawInstances = this._normaliseClashes(resourceRaw);
+        if (rawInstances.length && !this._looksPreGrouped(rawInstances[0])) {
+          logger.info('Test %s: raw instance fetch succeeded (%d instances) — applying Level+System grouping', test.name, rawInstances.length);
+          const grouped = this._groupClashes(rawInstances, test);
+          return this._nameFallbackGroups(grouped, test);
+        }
+        logger.info('Test %s: raw instance fetch returned no instances — using generic groups with synthesised names', test.name);
+      }
       logger.info('Test %s results appear pre-grouped (%d groups)', test.name, clashes.length);
       return this._processPreGrouped(clashes, test);
     }
@@ -171,6 +191,13 @@ export class ClashResultsProcessor {
       !('objectId' in item) && !('objectIdA' in item);
   }
 
+  // Detects generic placeholder names returned by Forma when no Group-by
+  // hierarchy is configured: "Group 1", "Clash Group 2", "group_3", etc.
+  _isGenericGroupName(name) {
+    if (!name) return true;
+    return /^(clash\s+)?group[_\s]*\d+$/i.test(name.trim());
+  }
+
   /**
    * Process pre-grouped clashes (the modern `/modelsets/{m}/clashes/grouped` path).
    *
@@ -182,9 +209,12 @@ export class ClashResultsProcessor {
       const seq = String(index + 1).padStart(3, '0');
       const groupingValues = Array.isArray(g.groupingValues) ? g.groupingValues : [];
 
-      // Stage 3: preserve API name verbatim; derive a fallback only if absent.
+      // Stage 3: preserve API name verbatim; derive a fallback when absent or generic.
       const apiName = g.name ?? g.displayName ?? null;
-      const name = apiName ?? this._buildFallbackName(g, test, seq);
+      const nameIsGeneric = this._isGenericGroupName(apiName);
+      const name = (!apiName || nameIsGeneric)
+        ? this._buildMeaningfulName(g, test, seq)
+        : apiName;
 
       // Stage 3: infer discipline pair from groupingValues + test metadata.
       const disciplinePair = this._classifier.classifyFromGroupingValues(
@@ -203,14 +233,14 @@ export class ClashResultsProcessor {
 
       logger.debug(
         'group naming: { apsName: %j, formaFlowName: %j, source: %s }',
-        apiName, name, apiName ? 'api' : 'fallback'
+        apiName, name, apiName && !nameIsGeneric ? 'api' : nameIsGeneric ? 'generic-override' : 'fallback'
       );
 
       return {
         // Identity
         groupId: g.id ?? g.groupId ?? null,
         name,
-        nameSource: apiName ? 'api' : 'fallback',
+        nameSource: apiName && !nameIsGeneric ? 'api' : nameIsGeneric ? 'generic-override' : 'fallback',
         // Hierarchy
         groupingValues,
         familyType,
@@ -232,11 +262,13 @@ export class ClashResultsProcessor {
         preGrouped: true,
         collapsedFrom: null,
         provenance: {
-          source: apiName ? 'api-grouped' : 'api-grouped-unnamed',
+          source: apiName && !nameIsGeneric ? 'api-grouped' : nameIsGeneric ? 'api-grouped-generic' : 'api-grouped-unnamed',
           synthetic: false,
-          reason: apiName
+          reason: apiName && !nameIsGeneric
             ? 'Verbatim from the active Saved Clash Check in Forma.'
-            : 'API returned a group but no name — FormaFlow synthesised a fallback name from the level + test name.',
+            : nameIsGeneric
+              ? `Forma returned a generic placeholder name ("${apiName}") — no Group-by hierarchy is configured in the Forma coordination space. FormaFlow synthesised a name from the test name. Configure "Group clashes by: Level" in the Forma Model Coordination settings for meaningful groups.`
+              : 'API returned a group but no name — FormaFlow synthesised a fallback name from the level + test name.',
         },
       };
     });
@@ -379,6 +411,26 @@ export class ClashResultsProcessor {
     return [level, testName, seq].filter(Boolean).join('_');
   }
 
+  /**
+   * Build a meaningful group name when the API returned a generic placeholder.
+   * Priority: level from groupingValues → test name → sequence number.
+   * Output examples:
+   *   "L02 · ARCH_vs_STRUCT · 001"
+   *   "ARCH_vs_STRUCT · 001"   (when no level info is available)
+   */
+  _buildMeaningfulName(group, test, seq) {
+    const gv = Array.isArray(group.groupingValues) ? group.groupingValues.filter(Boolean) : [];
+    // Try to find a level-like value in groupingValues
+    const levelVal = gv.find(v => /^(level|L\d|B\d|RF|PH|GF|ground)/i.test(String(v)));
+    const level = levelVal ? this._normaliseLevel(String(levelVal)) : null;
+
+    // Short form of the test name — strip project-code prefix if present
+    const testShort = (test.name ?? 'CLASH').replace(/^[A-Z]{2,10}_\d{8}_/i, '').slice(0, 40);
+
+    const parts = [level, testShort, seq].filter(Boolean);
+    return parts.join(' · ');
+  }
+
   _extractLevel(clash) {
     const levelA = clash?.levelA ?? clash?.elementA?.level ?? clash?.level;
     const levelB = clash?.levelB ?? clash?.elementB?.level;
@@ -440,7 +492,7 @@ export class ClashResultsProcessor {
  * @typedef {Object} ClashGroup
  * @property {string|null}    groupId
  * @property {string}         name              - Verbatim from ACC UI when nameSource='api'
- * @property {'api'|'fallback'|'collapsed'} nameSource
+ * @property {'api'|'fallback'|'generic-override'|'collapsed'} nameSource
  * @property {string[]}       groupingValues    - Hierarchy values from the active Saved Clash Check
  * @property {string|null}    familyType        - Stage 4 collapse signature
  * @property {number}         clashCount

@@ -3593,11 +3593,24 @@ app.post('/api/workflow/run', async (req, res) => {
         });
         if (completed.length) {
           emit('info', `  Found ${completed.length} completed clash test(s) in ACC`);
-          testsForResults = completed.map(t => ({
-            name:     t.name ?? t.id,
-            created:  true,
-            remoteId: t.id ?? t.testId,
-          }));
+          // Try to match each ACC test name against FormaFlow templates to pick up
+          // requiredDisciplines and priority — used by ClashResultsProcessor for
+          // discipline pair inference and Stage 5 auto-assign candidate flagging.
+          const templates = clashConfig?.clashTests ?? [];
+          testsForResults = completed.map(t => {
+            const tName = t.name ?? t.id ?? '';
+            const match = templates.find(tmpl =>
+              tName.includes(tmpl.name) || tmpl.name.includes(tName) ||
+              (tmpl.displayName && tName.includes(tmpl.displayName))
+            );
+            return {
+              name:               tName,
+              created:            true,
+              remoteId:           t.id ?? t.testId,
+              priority:           match?.priority ?? null,
+              requiredDisciplines: match?.requiredDisciplines ?? null,
+            };
+          });
         } else if (existing.length) {
           emit('warn', `  ${existing.length} clash test(s) found in ACC but none are COMPLETE (statuses: ${[...new Set(existing.map(t => t.status))].join(', ')})`);
         } else {
