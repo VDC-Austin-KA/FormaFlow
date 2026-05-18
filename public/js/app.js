@@ -4534,7 +4534,8 @@ async function loadClashGroups() {
         const grps = r?.groups ?? r?.data ?? r?.clashGroups ?? (Array.isArray(r) ? r : []);
         // Merge: if a group already exists from primary source, enrich its _type; else add it
         grps.forEach(g => {
-          const existing = groups.find(x => x.id === g.id || x.clashGroupId === g.id);
+          const gId = g.id ?? g.groupId ?? g.clashGroupId;
+          const existing = gId ? groups.find(x => (x.id ?? x.groupId ?? x.clashGroupId) === gId) : null;
           if (existing) { existing._type = 'assigned'; }
           else { groups.push({ ...g, _testId: testId, _testName: test.name ?? testId, _type: 'assigned' }); }
         });
@@ -4543,7 +4544,8 @@ async function loadClashGroups() {
         const r = await api('GET', `/api/mc/clash-groups/closed?testId=${encodeURIComponent(testId)}&modelSetId=${encodeURIComponent(modelSetId)}`);
         const grps = r?.groups ?? r?.data ?? r?.clashGroups ?? (Array.isArray(r) ? r : []);
         grps.forEach(g => {
-          const existing = groups.find(x => x.id === g.id || x.clashGroupId === g.id);
+          const gId = g.id ?? g.groupId ?? g.clashGroupId;
+          const existing = gId ? groups.find(x => (x.id ?? x.groupId ?? x.clashGroupId) === gId) : null;
           if (existing) { existing._type = 'closed'; }
           else { groups.push({ ...g, _testId: testId, _testName: test.name ?? testId, _type: 'closed' }); }
         });
@@ -4885,7 +4887,7 @@ function renderClashGroupsList() {
     previewSeq++;
     const previewName = _getGroupPreviewName(g, activeTpl, previewSeq);
 
-    const TYPE_COLOR = { assigned: '#3b82f6', closed: '#64748b' };
+    const TYPE_COLOR = { grouped: '#8b5cf6', assigned: '#3b82f6', closed: '#64748b' };
     const typeColor  = TYPE_COLOR[type] ?? '#9ca3af';
 
     // Stage 3/4/5 enrichments

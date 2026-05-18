@@ -3637,9 +3637,11 @@ app.post('/api/workflow/run', async (req, res) => {
       }
 
       const processor = new ClashResultsProcessor(mcClient, {
-        groupByLevel:  config.results.groupByLevel,
-        groupBySystem: config.results.groupBySystemClassification,
-        outputPath:    config.results.exportPath,
+        groupByLevel:       config.results.groupByLevel,
+        groupBySystem:      config.results.groupBySystemClassification,
+        outputPath:         config.results.exportPath,
+        collapseThreshold:  config.results.collapseThreshold,
+        priorityThreshold:  config.autoAssign?.enabled ? config.autoAssign.priorityThreshold : null,
         dryRun,
       });
       report = await processor.processAll(modelSetId, versionIndex, testsForResults);
